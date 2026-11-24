@@ -23,6 +23,31 @@ def is_local_url(url: str) -> bool:
     return ip.is_loopback or ip.is_private or ip.is_link_local
 
 
+def resolves_to_internal(url: str) -> bool:
+    """True if the URL's host resolves to a loopback / private / link-local / reserved /
+    unspecified / multicast address — not a safe target for an outbound webhook (SSRF guard).
+    A host that cannot be resolved returns False: it is simply not delivered to at send time."""
+    import ipaddress
+    import socket
+    from urllib.parse import urlsplit
+    host = urlsplit(url).hostname or ""
+    if not host:
+        return True
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return False
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved
+                or ip.is_unspecified or ip.is_multicast):
+            return True
+    return False
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OCR_", env_file=".env", extra="ignore")
 

@@ -14,7 +14,7 @@ import time
 
 import httpx
 
-from .config import get_settings
+from .config import get_settings, resolves_to_internal
 from .db import ApiClient, Job
 
 log = logging.getLogger("ocr.webhooks")
@@ -38,6 +38,9 @@ def payload_for(job: Job) -> dict:
 
 
 def _deliver(url: str, secret: bytes, payload: dict) -> None:
+    if resolves_to_internal(url):
+        log.warning("webhook for %s not sent: %s is a local or internal address", payload["id"], url)
+        return
     body = json.dumps(payload, separators=(",", ":")).encode()
     outcome = "failed"
     for delay in BACKOFF:

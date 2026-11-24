@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from .. import crypto, extract, service
 from ..auth import new_api_key, require_admin
-from ..config import get_settings
+from ..config import get_settings, resolves_to_internal
 from ..db import ApiClient, Audit, Job, Usage, get_db
 from ..errors import ApiError
 from .ocr import job_out, read_input
@@ -31,8 +31,13 @@ class WebhookChange(BaseModel):
 
 def _check_url(url: Optional[str]) -> Optional[str]:
     url = (url or "").strip() or None
-    if url and not url.lower().startswith(("https://", "http://")):
+    if url is None:
+        return None
+    if not url.lower().startswith(("https://", "http://")):
         raise ApiError(422, "bad_webhook_url", "the webhook URL must start with https:// or http://")
+    if resolves_to_internal(url):
+        raise ApiError(422, "bad_webhook_url",
+                       "the webhook URL must be a public address, not localhost or a private or internal host")
     return url
 
 
