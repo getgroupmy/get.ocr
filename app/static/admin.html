@@ -78,6 +78,7 @@
       <button role="tab" data-tab="clients" aria-selected="true">API clients</button>
       <button role="tab" data-tab="try">Try it</button>
       <button role="tab" data-tab="jobs">Jobs</button>
+      <button role="tab" data-tab="people">People</button>
       <button role="tab" data-tab="integrate">Integrate</button>
     </nav>
     <p id="error" class="notice bad" hidden></p>
@@ -147,6 +148,21 @@
       </div>
     </section>
 
+    <section data-panel="people" hidden>
+      <div class="card">
+        <h2>Console sign-ins</h2>
+        <p class="muted small">Give another person a sign-in of their own in place of sharing the owner's token. A viewer may look and try documents; an admin may also create and revoke API clients. Only the owner's token can manage this list.</p>
+        <form id="user-form" class="row">
+          <div><label for="u-name">Name</label><input type="text" id="u-name" required maxlength="120"></div>
+          <div><label for="u-role">Role</label><select id="u-role"><option value="viewer">Viewer</option><option value="admin">Admin</option></select></div>
+          <button class="primary" type="submit">Create sign-in</button>
+        </form>
+        <div id="user-new" class="notice ok" hidden></div>
+        <div class="scroll"><table><thead><tr><th>Name</th><th>Role</th><th>Created</th><th></th></tr></thead><tbody id="users"></tbody></table></div>
+        <p id="users-note" class="muted" hidden></p>
+      </div>
+    </section>
+
     <section data-panel="jobs" hidden>
       <div class="card">
         <h2>Recent jobs</h2>
@@ -213,6 +229,7 @@ document.querySelectorAll("nav button").forEach((b) => b.addEventListener("click
   showError("");
   if (b.dataset.tab === "clients") loadClients().catch((e) => showError(e.message));
   if (b.dataset.tab === "jobs") loadJobs().catch((e) => showError(e.message));
+  if (b.dataset.tab === "people") loadUsers();
 }));
 
 async function loadClients() {
@@ -272,6 +289,30 @@ async function revoke(c) {
   if (!confirm("Revoke the key of “" + c.name + "”? The app stops working with it at once. This cannot be undone.")) return;
   try { await api("/clients/" + c.id, { method: "DELETE" }); await loadClients(); } catch (e) { showError(e.message); }
 }
+
+async function loadUsers() {
+  const tb = $("#users"); tb.replaceChildren(); const note = $("#users-note"); note.hidden = true;
+  let r;
+  try { r = await api("/users"); } catch (e) { note.textContent = "Only the owner's token can see and manage console sign-ins."; note.hidden = false; return; }
+  for (const u of r.users) {
+    const tr = el("tr"); tr.append(el("td", u.name), el("td", u.role), el("td", when(u.created_at)));
+    const td = el("td");
+    if (u.active) { const b = el("button", "Revoke", "danger"); b.type = "button";
+      b.addEventListener("click", async () => { if (!confirm("Revoke the sign-in of " + u.name + "?")) return;
+        try { await api("/users/" + u.id, { method: "DELETE" }); loadUsers(); } catch (e) { showError(e.message); } }); td.append(b);
+    } else td.append(el("span", "revoked", "tag"));
+    tr.append(td); tb.append(tr);
+  }
+  if (!r.users.length) { note.textContent = "No sign-ins yet: only the owner's token is in use."; note.hidden = false; }
+}
+$("#user-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault(); showError("");
+  try {
+    const u = await api("/users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: $("#u-name").value, role: $("#u-role").value }) });
+    const box = $("#user-new"); box.replaceChildren(el("p", "Token for " + u.name + " (" + u.role + "). It is shown this once: copy it now."), el("code", u.token)); box.hidden = false;
+    ev.target.reset(); loadUsers();
+  } catch (e) { showError(e.message); }
+});
 
 async function loadJobs() {
   const r = await api("/jobs");
