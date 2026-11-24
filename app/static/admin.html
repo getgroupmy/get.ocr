@@ -398,7 +398,7 @@ function showFields(r) {
   }
   if (r.not_found_in_text.length) checks.append(el("p", "Not found in the text, check by hand: " + r.not_found_in_text.join(", "), "notice bad small"));
   if (r.truncated) checks.append(el("p", "The document was longer than the model can take; the end was left out.", "notice bad small"));
-  const listKey = ["transactions", "items", "line_items", "lines", "people", "rows"].find((k) => Array.isArray(r.fields[k])) || "";
+  const listKey = ["transactions", "items", "line_items", "lines", "people", "rows", "grid"].find((k) => Array.isArray(r.fields[k])) || "";
   const kv = $("#try-kv"); kv.replaceChildren();
   for (const [k, v] of Object.entries(r.fields)) {
     if (k === listKey) continue;

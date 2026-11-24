@@ -12,7 +12,7 @@ from datetime import timedelta
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from . import codes, crypto, engine, extract, marks, storage, vision, webhooks
+from . import codes, crypto, engine, extract, marks, signatures, storage, vision, webhooks
 from .config import get_settings
 from .db import ApiClient, Correction, Job, Route, Seen, Usage, session_scope, utcnow
 from .documents import Document, parse_pages
@@ -103,6 +103,8 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
                     out["checkboxes"] = [{**c, "box": to_page(c["box"])} for c in marks.checkboxes(image, seen_lines)] \
                         if page.image is not None else []
                     out["stamps"] = [{**st, "box": to_page(st["box"])} for st in marks.stamps(image)]
+                    if signatures.available():
+                        out["signatures"] = [{**sg, "box": to_page(sg["box"])} for sg in signatures.find(image)]
                 if options.get("preview") and len(pages) < 3:  # the console's review view: the page as it was read
                     import base64
                     import cv2
@@ -122,9 +124,41 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
         }
 
 
+def table_grids(data: bytes, options: dict, max_pages: int) -> dict:
+    """The structure of the table on each page, merged cells included, read from the page's picture."""
+    from . import tablegrid
+    started = time.monotonic()
+    with Document(data) as doc:
+        numbers = parse_pages(options.get("pages"), doc.page_count)
+        if len(numbers) > max_pages:
+            raise ApiError(422, "too_many_pages", f"{len(numbers)} pages asked for, the limit here is {max_pages}")
+        found, pages = [], []
+        for n in numbers:
+            page = doc.page(n, use_text_layer=False)
+            _, upright, turned = engine.read_upright(page.image)
+            table = tablegrid.read(upright)
+            pages.append({"page": n, "width": upright.shape[1], "height": upright.shape[0], "source": "ocr",
+                          "confidence": None, **({"rotated": turned} if turned else {})})
+            if table:
+                found.append({"page": n, **table})
+        if not found:
+            raise ApiError(422, "no_table", "no table was found on the page(s)")
+        first = found[0]
+        return {"document_type": "table_grid",
+                "fields": {"html": first["html"], "merged_cells": first["merged_cells"], "cells": first["cells"],
+                           "other_tables": found[1:], "grid": [{f"c{i + 1}": v for i, v in enumerate(row)} for row in first["grid"]]},
+                "checks": [], "checks_passed": None, "not_found_in_text": [], "unreadable_dates": [], "sources": {},
+                "evidence": {}, "balance_columns_swapped": 0, "truncated": False, "model": "slanet-plus",
+                "model_calls": len(found), "read_by": "table_model", "engine": engine.NAME, "kind": doc.kind,
+                "file": doc.info(), "page_count": doc.page_count, "pages": pages, "codes": [], "einvoice": None,
+                "duration_ms": int((time.monotonic() - started) * 1000)}
+
+
 def extract_fields(data: bytes, options: dict, max_pages: int) -> dict:
     """Read the document, then have the local model turn the text into fields."""
     from . import llm
+    if options.get("extract") == "table_grid":
+        return table_grids(data, options, max_pages)
     if options.get("extract") != "table" and not llm.ready():  # a table is read by position, without the model
         raise ApiError(503, "extraction_unavailable",
                        "field extraction is not available: the model server on this machine is not answering, "
@@ -147,7 +181,7 @@ def extract_fields(data: bytes, options: dict, max_pages: int) -> dict:
         out = extract.run(ocr["pages"], texts, kind, options.get("fields"))
     out.update(engine=ocr["engine"], kind=ocr["kind"], page_count=ocr["page_count"], file=ocr["file"],
                pages=[{k: p.get(k) for k in ("page", "width", "height", "source", "confidence", "quality", "rotated",
-                                             "checkboxes", "stamps", "preview") if k in p}
+                                             "checkboxes", "stamps", "signatures", "preview") if k in p}
                       for p in ocr["pages"]])
     out["codes"] = [{"page": p["page"], **c} for p in ocr["pages"] for c in p.get("codes") or []]
     out["einvoice"] = codes.einvoice(out["codes"])

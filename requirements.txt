@@ -14,5 +14,7 @@ onnxruntime>=1.18
 # QR codes and barcodes (Apache-2.0). OpenCV's own readers missed most 1D barcodes in testing.
 zxing-cpp>=2.2,<3; python_version < "3.10"   # the last line with ready-built packages for Python 3.9
 zxing-cpp>=2.2; python_version >= "3.10"
+# Table structure with merged cells (Apache-2.0). Fetches a 7 MB model on first use.
+rapid_table>=3.0
 # PDF rendering and text layer (Apache-2.0 / BSD-3). Not PyMuPDF, which is AGPL.
 pypdfium2>=4.30,<6

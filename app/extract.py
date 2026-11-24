@@ -17,7 +17,7 @@ from .errors import ApiError
 
 SALE_TYPES = ("invoice", "receipt", "credit_note", "debit_note", "quotation", "purchase_order", "delivery_order")
 STATEMENT_TYPES = ("bank_statement", "card_statement", "ewallet_statement")
-TYPES = ("auto", *SALE_TYPES, *STATEMENT_TYPES, "order", "payslip", "utility_bill", *doctypes.DOCS, "table", "custom")
+TYPES = ("auto", *SALE_TYPES, *STATEMENT_TYPES, "order", "payslip", "utility_bill", *doctypes.DOCS, "table", "table_grid", "custom")
 TOLERANCE = 0.05  # receipts round to 5 sen
 
 _NUM = {"type": ["number", "null"]}
@@ -574,6 +574,8 @@ def catalogue() -> list[dict]:
              "checks": [c[1] for c in d["checks"]]} for t, d in doctypes.DOCS.items()]
     out.append({"type": "table", "label": "Any table (read by position, no model)", "fields": ["columns", "totals"],
                 "rows": "rows", "checks": ["column_totals"]})
+    out.append({"type": "table_grid", "label": "A table with merged cells (structure model, pictures only)",
+                "fields": ["html", "cells", "merged_cells"], "rows": "grid", "checks": []})
     out.append({"type": "custom", "label": "My own list of fields", "fields": [], "rows": None, "checks": []})
     return out
 
