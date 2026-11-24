@@ -231,3 +231,103 @@ def test_plain_ocr_ignores_type(client, api_key, need_engine):
 def test_blank_page_has_nothing_to_extract(client, api_key, need_engine, fake_model):
     r = client.post("/v1/extract", files={"file": ("a.png", synth.image_bytes([]), "image/png")}, headers=api_key)
     assert r.status_code == 422 and r.json()["error"] == "no_text"
+
+
+# --- the statement table, read without the model -----------------------------------
+def piece(text, x, y, right=False, char=6.0):
+    """A piece of text as the reader gives it; right=True ends it at x, as amounts are printed."""
+    w = len(text) * char
+    x0 = x - w if right else x
+    return {"text": text, "confidence": 1.0, "box": [[x0, y], [x0 + w, y], [x0 + w, y + 10], [x0, y + 10]]}
+
+
+def table_page(rows, number=1):
+    lines = [piece(*cell) if isinstance(cell, tuple) else cell for y, row in enumerate(rows) for cell in
+             [(c[0], c[1], 20 + 14 * y, *c[2:]) for c in row]]
+    return {"page": number, "width": 600, "height": 800, "lines": lines, "text": engine.layout_text(lines)}
+
+
+def test_statement_dates_and_amounts():
+    from app import statement
+    assert statement._date("02-01-2026", "dmy", None) == "2026-01-02"
+    assert statement._date("02/01/26", "mdy", None) == "2026-02-01"
+    assert statement._date("2 Jan 2026", "dmy", None) == "2026-01-02" and statement._date("15Mac", "dmy", 2026) == "2026-03-15"
+    assert statement._date("03/04", "dmy", 2025) == "2025-04-03" and statement._date("03/04", "dmy", None) is None
+    assert statement._date("668.55", "dmy", 2026) is None and statement._date("12.05", "dmy", 2026) is None
+    assert statement._money("1,250.80") == (1250.8, "") and statement._money("1250.80CR") == (1250.8, "+")
+    assert statement._money("(40.00)") == (40.0, "-") and statement._money("40.00-") == (40.0, "-")
+    assert statement._money("2026") is None and statement._money("02-01-2026") is None
+
+
+def test_statement_with_text_layer_is_read_exactly(client, api_key, need_engine, fake_model):
+    answers, prompts = fake_model
+    pdf, truth = synth.bank_statement(pages=2)
+    answers.append({"bank_name": "Hong Leong Bank Berhad", "account_holder": "DELTA KARGO SDN. BHD.",
+                    "account_number": "02800999123", "currency": "MYR", "period_start": "2026-01-01",
+                    "period_end": "2026-01-31"})
+    r = client.post("/v1/extract", files={"file": ("s.pdf", pdf, "application/pdf")}, data={"type": "bank_statement"},
+                    headers=api_key)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["read_by"] == "table" and body["model_calls"] == 1 and len(prompts) == 1
+    assert body["fields"]["transactions"] == truth["transactions"] and len(truth["transactions"]) == 28
+    assert body["fields"]["opening_balance"] == truth["opening_balance"]
+    assert body["fields"]["closing_balance"] == truth["closing_balance"]
+    assert body["checks_passed"] is True and body["not_found_in_text"] == []
+    assert [c["name"] for c in body["checks"]] == ["running_balances", "balance_reconciles", "printed_totals"]
+    assert body["fields"]["account_holder"] == "DELTA KARGO SDN. BHD." and body["sources"]["account_holder"]["box"]
+    # the model is shown the top of the first page only, and none of the transactions on later pages
+    assert "DELTA KARGO" in prompts[0][1] and "2 of 2" not in prompts[0][1] and "Closing Balance" not in prompts[0][1]
+
+
+def test_scanned_statement_is_read_exactly(need_engine):
+    from app import service, statement
+    pdf, truth = synth.bank_statement(pages=1, per_page=12, seed=3)
+    ocr = service.recognise(pdf, {"detail": "lines", "force_ocr": True}, 5)
+    assert ocr["pages"][0]["source"] == "ocr"
+    got = statement.parse(ocr["pages"])
+    assert [(t["date"], t["debit"], t["credit"], t["balance"]) for t in got["transactions"]] == \
+           [(t["date"], t["debit"], t["credit"], t["balance"]) for t in truth["transactions"]]
+    assert got["closing_balance"] == truth["closing_balance"]
+    assert got["printed"]["total_debits"] == round(sum(t["debit"] or 0 for t in truth["transactions"]), 2)
+    wrong = {**got, "transactions": got["transactions"][:-1]}
+    assert [c["passed"] for c in extract.statement_checks(wrong, got["printed"])] == [True, False, False]
+
+
+def test_statement_with_one_amount_column_and_no_headings():
+    from app import statement
+    page = table_page([
+        [("PENYATA AKAUN", 30)],
+        [("BALANCE B/F", 100), ("1,000.00", 560, True)],
+        [("01/04", 30), ("SALARY APRIL", 100), ("3,000.00CR", 440, True), ("4,000.00", 560, True)],
+        [("02/04", 30), ("RENT", 100), ("1,200.00", 440, True), ("2,800.00", 560, True)],
+        [("TRANSFER FEE", 100), ("0.50", 440, True), ("2,799.50", 560, True)],  # same day, date printed once
+        [("05/04", 30), ("OVERDRAWN TEST", 100), ("3,000.00", 440, True), ("200.50DR", 560, True)],
+        [("Statement date 30/04/2026", 30)],
+    ])
+    got = statement.parse([page])
+    assert got["opening_balance"] == 1000.0
+    assert [(t["date"], t["debit"], t["credit"], t["balance"]) for t in got["transactions"]] == [
+        ("2026-04-01", None, 3000.0, 4000.0), ("2026-04-02", 1200.0, None, 2800.0),
+        ("2026-04-02", 0.5, None, 2799.5), ("2026-04-05", 3000.0, None, -200.5)]
+    assert extract.statement_checks({**got})[0]["passed"] is True
+
+
+def test_statement_columns_are_proved_by_the_balance_when_headings_do_not_say():
+    from app import statement
+    rows = [[("Date", 30), ("Details", 100), ("Out", 380, True), ("In", 460, True), ("Balance", 560, True)],
+            [("Opening balance", 100), ("500.00", 560, True)],
+            [("03 Jan 2026", 30), ("CARD PAYMENT 12.50 USD", 100), ("60.00", 380, True), ("440.00", 560, True)],
+            [("second line of description", 100)],
+            [("04 Jan 2026", 30), ("REFUND", 100), ("10.00", 460, True), ("450.00", 560, True)],
+            [("Total", 100), ("60.00", 380, True), ("10.00", 460, True)]]
+    got = statement.parse([table_page(rows)])
+    assert [(t["debit"], t["credit"], t["balance"]) for t in got["transactions"]] == [(60.0, None, 440.0), (None, 10.0, 450.0)]
+    assert got["transactions"][0]["description"] == "CARD PAYMENT 12.50 USD second line of description"
+    assert got["transactions"][1]["date"] == "2026-01-04"
+
+
+def test_text_without_a_table_gives_no_transactions():
+    from app import statement
+    page = table_page([[("Dear customer, your balance on 01/04/2026 is fine.", 30)], [("Thank you.", 30)]])
+    assert statement.parse([page])["transactions"] == []

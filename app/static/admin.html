@@ -274,6 +274,9 @@ $("#try-form").addEventListener("submit", async (ev) => {
   if ($("#t-force").checked) fd.append("force_ocr", "true");
   if ($("#t-type").value) { fd.append("type", $("#t-type").value); fd.append("include_text", "true"); }
   const go = $("#t-go"); go.disabled = true; go.textContent = "Reading…";
+  const began = Date.now();  // a model can take minutes: show that it is still working
+  const tick = setInterval(() => { go.textContent = "Reading… " + Math.round((Date.now() - began) / 1000) + " s"; }, 1000);
+  $("#try-out").hidden = true;
   try {
     const r = await api("/try", { method: "POST", body: fd });
     $("#try-out").hidden = false;
@@ -282,13 +285,13 @@ $("#try-form").addEventListener("submit", async (ev) => {
     showFields(r);
     $("#try-json").textContent = JSON.stringify(r, null, 2);
   } catch (e) { $("#try-out").hidden = true; showError(e.message); }
-  finally { go.disabled = false; go.textContent = "Read"; }
+  finally { clearInterval(tick); go.disabled = false; go.textContent = "Read"; }
 });
 
 function showFields(r) {
   const box = $("#try-fields"); box.hidden = !r.fields; if (!r.fields) return;
   const checks = $("#try-checks"); checks.replaceChildren();
-  const head = el("p"); head.append(el("strong", r.document_type.replace("_", " ")), document.createTextNode(" · model " + r.model + " · " + r.model_calls + " call(s)"));
+  const head = el("p"); head.append(el("strong", r.document_type.replace("_", " ")), document.createTextNode((r.read_by === "table" ? " · rows read from the table · header by " : " · read by ") + "model " + r.model + " · " + r.model_calls + " call(s)"));
   checks.append(head);
   for (const c of r.checks) {
     const p = el("p", null, "small"); p.append(el("span", c.passed === null ? "not checked" : c.passed ? "passed" : "failed",

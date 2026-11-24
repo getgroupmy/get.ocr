@@ -54,7 +54,8 @@ mkdir -p data && sudo chown 10001 data && chmod 700 data
 
 ## Mac mini (M-series) without Docker
 
-Every dependency ships an Apple Silicon build, so nothing is compiled. This is the same way
+Every dependency ships an Apple Silicon build, so nothing is compiled, and the Python that comes with
+macOS (3.9) is enough. This is the same way
 get.ekyc runs on the Mac mini.
 
 ```bash
@@ -213,16 +214,28 @@ A bank statement gives `bank_name`, `account_holder`, `account_number`, `currenc
 `period_end`, `opening_balance`, `closing_balance` and `transactions` (each with `date`,
 `description`, `reference`, `debit`, `credit`, `balance`).
 
+**Statements are read as a table, not by the model.** The transactions are taken from where the words
+sit on the page: a row starts with a date, its amounts are placed in the deposit, withdrawal or
+balance column by their position, and following lines without a date are added to the description.
+Which column is money out is taken from the headings (English or Malay) and proved against the
+printed balances. This is exact and takes well under a second for a 20-page statement with a text
+layer; a scanned statement takes as long as its OCR. The model is called once, for the account
+details at the top of the first page. `read_by` is `"table"` for this, and `"model"` when the pages
+do not look like a table of dated amounts and the model read everything (slow, and much less
+reliable: look at the checks). `reference` is `null` in a table reading; references stay in the
+description.
+
 **How to use the answer.** A local model misreads more often than a cloud one, so the answer tells
 you how far to trust it:
 
 | Field | Meaning |
 |---|---|
-| `checks` | Arithmetic on what was extracted. Invoices and receipts: quantity × unit price against each amount, the lines against the subtotal, and subtotal + charges + tax against the total. Statements: every running balance, and opening + credits − debits against closing. `passed` is `null` when the document does not print what the check needs |
+| `checks` | Arithmetic on what was extracted. Invoices and receipts: quantity × unit price against each amount, the lines against the subtotal, and subtotal + charges + tax against the total. Statements: every running balance, opening + credits − debits against closing, and the sum and number of debits and credits against the totals the statement prints. `passed` is `null` when the document does not print what the check needs |
 | `checks_passed` | `true` only when every check that could run passed. Treat `false` or `null` as "a person should look" |
 | `not_found_in_text` | Values the model gave that are not printed in the text, so it invented or altered them. Dates are not looked up, because they are rewritten to `YYYY-MM-DD` |
 | `sources` | For each top-level value, the page and the box of the line it was found on |
-| `model_calls` | 1 per invoice or statement page, plus 1 for each re-reading. A failed check triggers one re-reading; it is kept only if fewer checks fail |
+| `model_calls` | 1 per invoice, plus 1 re-reading when a check fails (kept only if fewer checks fail). 1 for a statement read as a table; one per page plus re-readings when the model read it |
+| `read_by` | `table` or `model`, see above |
 | `balance_columns_swapped` | Statement lines where debit and credit were exchanged because only that fits the printed balance |
 | `truncated` | `true` when the text was longer than the model can take and the end was left out |
 
@@ -312,18 +325,21 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
   not read; RapidOCR has models for other scripts, but none is wired in here.
 - **Rotated pages.** On a page that is upside down or on its side the lines are still read, but
   they come out in the wrong order (bottom line first, or all on one row). Rotate it upright before sending.
-- **Field extraction has not been run with a real model.** It was built and tested against a
-  stand-in that returns prepared answers, so everything around the model is tested (what it is sent,
-  the checks, the lookups, the re-reading) but how well `qwen2.5:7b` reads real invoices and
-  statements, and how long it takes on the Mac mini, is unknown. Try it on your own documents and
-  compare with the originals before relying on it. The checks catch wrong amounts; they cannot catch
-  a wrong supplier name or date that is printed somewhere on the page.
+- **How good the model is.** On the Mac mini `qwen2.5:7b` answers in 30 to 40 seconds per call. It
+  could not copy a dense statement table (wrong balances, invented values), which is why statements
+  are now read as a table by code. Invoices and receipts are still read by the model and have not
+  been tried on real documents: compare with the originals before relying on it. The checks catch
+  wrong amounts; they cannot catch a wrong supplier name or date that is printed somewhere on the page.
+- **Statement layouts.** The table reader was checked against one real 20-page Hong Leong Bank
+  statement (192 transactions, equal to the totals the bank prints) and made-up ones. It expects a
+  date at the start of each transaction and right-aligned amount columns. Other banks' layouts are
+  untested; the three checks say when a reading does not add up.
 - **Three document kinds.** Invoices, receipts and bank statements. `auto` tells a statement from the
   rest by its wording. Other documents are not extracted. For identity documents use get.ekyc, which
   validates what it reads.
 - **Extraction reads the OCR text, not the picture.** What the OCR cannot read (handwriting, Jawi,
-  Tamil, Thai) cannot be extracted either. Statements are read one page at a time; a transaction
-  split across two pages can be misread.
+  Tamil, Thai) cannot be extracted either. A statement transaction whose description continues on
+  the next page loses those lines.
 - **One page at a time.** Each reading already uses every core; requests queue behind each other.
 - **One admin token.** There are no console users or roles, and no audit trail, unlike get.ekyc.
 - **No per-client rate limit.** A client can fill the queue up to `OCR_MAX_QUEUE`.
@@ -348,6 +364,7 @@ app/routers/ocr.py       /v1/ocr and /v1/jobs
 app/routers/admin.py     /admin/api: clients, usage, try it
 app/service.py           reading a document, the job queue, retention
 app/documents.py         images and PDFs into pages
+app/statement.py         the transaction table of a bank statement, read by position
 app/engine.py            PP-OCR through RapidOCR
 app/extract.py           fields, arithmetic checks, lookup of values in the text
 app/llm.py               the local model server (Ollama or OpenAI-compatible)

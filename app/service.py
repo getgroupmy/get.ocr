@@ -1,5 +1,6 @@
 """Reading a document, the job queue, and housekeeping."""
 from __future__ import annotations
+from typing import Optional
 
 import logging
 import queue
@@ -20,7 +21,7 @@ log = logging.getLogger("ocr.service")
 DETAILS = ("lines", "text")
 
 
-def clean_options(pages: str | None, detail: str | None, force_ocr: bool, extract_type: str | None = None,
+def clean_options(pages: Optional[str], detail: Optional[str], force_ocr: bool, extract_type: Optional[str] = None,
                   include_text: bool = False) -> dict:
     detail = (detail or "lines").lower()
     if detail not in DETAILS:
@@ -45,11 +46,11 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
                            "use the 'pages' option, or POST /v1/jobs for long documents")
         pages = []
         for n in numbers:
-            page = doc.page(n, use_text_layer=not options.get("force_ocr"))
+            page = doc.page(n, use_text_layer=not options.get("force_ocr"), with_lines=bool(options.get("layer_lines")))
             out: dict = {"page": n, "width": page.width, "height": page.height}
             if page.text_layer is not None:
                 out.update(source="text_layer", text=page.text_layer, confidence=None)
-                lines: list[dict] = []
+                lines: list[dict] = page.text_lines or []
             else:
                 lines = engine.read(page.image)
                 conf = round(sum(ln["confidence"] for ln in lines) / len(lines), 4) if lines else None
@@ -75,8 +76,8 @@ def extract_fields(data: bytes, options: dict, max_pages: int) -> dict:
                        "field extraction is not available: the model server on this machine is not answering, "
                        "or the model is not installed")
     started = time.monotonic()
-    ocr = recognise(data, {**options, "detail": "lines"}, max_pages)
-    texts = [engine.layout_columns(p["lines"]) if p["source"] == "ocr" else p["text"] for p in ocr["pages"]]
+    ocr = recognise(data, {**options, "detail": "lines", "layer_lines": True}, max_pages)
+    texts = [engine.layout_columns(p["lines"]) if p["lines"] else p["text"] for p in ocr["pages"]]
     out = extract.run(ocr["pages"], texts, options.get("extract") or "auto")
     out.update(engine=ocr["engine"], kind=ocr["kind"], page_count=ocr["page_count"],
                pages=[{k: p[k] for k in ("page", "width", "height", "source", "confidence")} for p in ocr["pages"]])
@@ -96,9 +97,9 @@ def record_usage(db: Session, client_id: str, kind: str, ok: bool, pages: int, s
 
 
 # --- job queue -----------------------------------------------------------------
-_queue: "queue.Queue[str | None]" = queue.Queue()
+_queue: "queue.Queue[Optional[str]]" = queue.Queue()
 _stop = threading.Event()
-_worker: threading.Thread | None = None
+_worker: Optional[threading.Thread] = None
 
 
 def queue_length() -> int:

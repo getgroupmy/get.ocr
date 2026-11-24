@@ -1,5 +1,6 @@
 """The client API: read a file now (/v1/ocr) or queue it (/v1/jobs)."""
 from __future__ import annotations
+from typing import Optional
 
 import base64
 import binascii
@@ -48,7 +49,7 @@ def _truthy(v) -> bool:  # noqa: ANN001
     return v is True or str(v).strip().lower() in ("1", "true", "yes", "on")
 
 
-async def read_input(request: Request) -> tuple[bytes, dict, str | None]:
+async def read_input(request: Request) -> tuple[bytes, dict, Optional[str]]:
     """The uploaded file, the reading options and external_ref, from a
     multipart form or a JSON body with the file in base64."""
     limit = get_settings().max_upload_bytes
@@ -166,7 +167,7 @@ async def create_job(request: Request, client: ApiClient = Depends(require_clien
 
 
 @router.get("/jobs", summary="List your jobs")
-def list_jobs(status: str | None = None, external_ref: str | None = None, limit: int = 50,
+def list_jobs(status: Optional[str] = None, external_ref: Optional[str] = None, limit: int = 50,
               client: ApiClient = Depends(require_client), db: Session = Depends(get_db)):
     q = select(Job).where(Job.client_id == client.id).order_by(Job.created_at.desc()).limit(max(1, min(limit, 200)))
     if status:

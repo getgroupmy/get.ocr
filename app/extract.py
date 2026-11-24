@@ -5,11 +5,12 @@ The model only reads text the OCR produced, and only on this machine. Its answer
 is not trusted as it comes: amounts are re-added, running balances are followed,
 and every value is looked up in the text it is supposed to come from."""
 from __future__ import annotations
+from typing import Optional
 
 import re
 from datetime import date
 
-from . import llm
+from . import llm, statement
 from .config import get_settings
 from .errors import ApiError
 
@@ -40,6 +41,9 @@ STATEMENT_SCHEMA = _obj({
                                                      "debit": _NUM, "credit": _NUM, "balance": _NUM})},
 })
 
+HEADER_SCHEMA = _obj({k: STATEMENT_SCHEMA["properties"][k] for k in
+                      ("bank_name", "account_holder", "account_number", "currency", "period_start", "period_end")})
+
 _RULES = """You extract data from the text of a scanned document. The text was read by OCR and keeps the page \
 layout: columns are separated by runs of spaces, so the numbers of a table line up under each other.
 Rules:
@@ -64,6 +68,15 @@ Each transaction has one of the two, as a positive number; the other is null.
 them. A line that only states an opening, brought-forward or closing balance is not a transaction.
 - The account details are usually on the first page; use null on pages that do not show them."""
 
+_HEADER = """This is the top of the first page of a bank or card statement. Give only the account details.
+- bank_name is the bank that issued the statement.
+- account_holder is the customer the statement is addressed to: the person or company whose name stands above the \
+postal address. It is not the name of the account product (such as "Current Account" or "Savings Account-i") and \
+not the bank.
+- account_number is the number of this account, digits only as printed.
+- period_start and period_end are the first and last day the statement covers. When only a statement date is \
+printed, that is period_end and period_start is null."""
+
 _BANK_WORDS = re.compile(r"statement of account|account statement|bank statement|penyata akaun|penyata bank|"
                          r"opening balance|closing balance|balance b/?f|brought forward|baki awal|baki akhir|"
                          r"beginning balance|ending balance", re.I)
@@ -74,7 +87,7 @@ def guess_type(text: str) -> str:
 
 
 # --- cleaning what the model answered ----------------------------------------
-def _num(v) -> float | None:  # noqa: ANN001
+def _num(v) -> Optional[float]:  # noqa: ANN001
     if isinstance(v, bool) or v is None:
         return None
     if isinstance(v, (int, float)):
@@ -88,12 +101,12 @@ def _num(v) -> float | None:  # noqa: ANN001
         return None
 
 
-def _text(v) -> str | None:  # noqa: ANN001
+def _text(v) -> Optional[str]:  # noqa: ANN001
     s = " ".join(str(v).split()) if v is not None else ""
     return s if s and s.lower() not in ("null", "none", "n/a", "-") else None
 
 
-def _date(v, bad: list[str], name: str) -> str | None:  # noqa: ANN001
+def _date(v, bad: list[str], name: str) -> Optional[str]:  # noqa: ANN001
     s = _text(v)
     if s is None:
         return None
@@ -128,7 +141,7 @@ def _near(a: float, b: float, tol: float = TOLERANCE) -> bool:
     return abs(a - b) <= tol + 1e-9
 
 
-def _check(name: str, passed: bool | None, detail: str) -> dict:
+def _check(name: str, passed: Optional[bool], detail: str) -> dict:
     return {"name": name, "passed": passed, "detail": detail}
 
 
@@ -167,7 +180,7 @@ def sale_checks(f: dict) -> list[dict]:
     return out
 
 
-def repair_balances(txns: list[dict], start: float | None) -> int:
+def repair_balances(txns: list[dict], start: Optional[float]) -> int:
     """Follow the running balance. Where a line fits only with debit and credit
     exchanged, exchange them (the model put the amount in the wrong column).
     Returns how many lines were exchanged."""
@@ -184,7 +197,7 @@ def repair_balances(txns: list[dict], start: float | None) -> int:
     return swapped
 
 
-def broken_balances(txns: list[dict], start: float | None) -> list[int]:
+def broken_balances(txns: list[dict], start: Optional[float]) -> list[int]:
     """1-based positions of lines whose printed balance does not follow from the one before."""
     bad, prev, pending = [], start, 0.0
     for i, t in enumerate(txns, 1):
@@ -197,7 +210,7 @@ def broken_balances(txns: list[dict], start: float | None) -> list[int]:
     return bad
 
 
-def statement_checks(f: dict) -> list[dict]:
+def statement_checks(f: dict, printed: Optional[dict] = None) -> list[dict]:
     txns, opening, closing = f["transactions"], f["opening_balance"], f["closing_balance"]
     out = []
     with_balance = sum(1 for t in txns if t["balance"] is not None)
@@ -215,6 +228,17 @@ def statement_checks(f: dict) -> list[dict]:
         out.append(_check("balance_reconciles", _near(got, closing),
                           f"opening {opening:.2f} + credits {credits:.2f} − debits {debits:.2f} = {got:.2f}; "
                           f"closing is {closing:.2f}"))
+    printed = printed or {}
+    if printed.get("total_debits") is not None or printed.get("total_credits") is not None:
+        n_debit, n_credit = sum(t["debit"] is not None for t in txns), sum(t["credit"] is not None for t in txns)
+        wrong = [f"{name} are {got:.2f} in {n} item(s), the statement prints {want:.2f}" + (f" in {count}" if count else "")
+                 for name, got, n, want, count in (
+                     ("debits", debits, n_debit, printed.get("total_debits"), printed.get("debit_count")),
+                     ("credits", credits, n_credit, printed.get("total_credits"), printed.get("credit_count")))
+                 if want is not None and (not _near(got, want) or (count is not None and count != n))]
+        out.append(_check("printed_totals", not wrong, "; ".join(wrong) if wrong else
+                          f"debits {debits:.2f} in {n_debit} item(s) and credits {credits:.2f} in {n_credit} item(s) "
+                          "match the totals the statement prints"))
     return out
 
 
@@ -244,14 +268,14 @@ def _found(value, text: str) -> bool:  # noqa: ANN001
     return _squash(value) in _squash(text)
 
 
-def ground(fields: dict, list_key: str, pages: list[dict]) -> tuple[list[str], dict]:
+def ground(fields: dict, list_key: str, pages: list[dict], check_rows: bool = True) -> tuple[list[str], dict]:
     """Which values are not printed in the text (so the model made them up or
     changed them), and where on the page the others are. Dates and the document
     type are rewritten on purpose and are not looked up."""
     whole = "\n".join(p["text"] for p in pages)
     missing, sources = [], {}
 
-    def locate(value) -> dict | None:  # noqa: ANN001
+    def locate(value) -> Optional[dict]:  # noqa: ANN001
         for p in pages:
             for ln in p.get("lines") or []:
                 if _found(value, ln["text"]):
@@ -269,7 +293,7 @@ def ground(fields: dict, list_key: str, pages: list[dict]) -> tuple[list[str], d
         where = locate(value)
         if where:
             sources[key] = where
-    for i, row in enumerate(fields[list_key]):
+    for i, row in enumerate(fields[list_key] if check_rows else []):
         for key, value in row.items():
             if value is None or key == "date":
                 continue
@@ -315,6 +339,24 @@ def _sale(pages: list[dict], texts: list[str], wanted: str) -> dict:
 
 
 def _statement(pages: list[dict], texts: list[str]) -> dict:
+    """The transactions are read from the table by position (no model, exact
+    and fast); the model only names the account details at the top of the first
+    page. A statement that is not laid out as a table goes to the model whole."""
+    table = statement.parse(pages, get_settings().date_order)
+    if not table["transactions"]:
+        return _statement_by_model(pages, texts)
+    first = next(t for t in texts if t.strip())
+    head, bad_dates = _ask(_HEADER, HEADER_SCHEMA, "\n".join(first.splitlines()[:40])[:4000])
+    fields = {**head, "opening_balance": table["opening_balance"], "closing_balance": table["closing_balance"],
+              "transactions": table["transactions"]}
+    repaired = repair_balances(fields["transactions"], fields["opening_balance"])
+    return {"document_type": "bank_statement", "fields": fields,
+            "checks": statement_checks(fields, table["printed"]), "attempts": 1,
+            "bad_dates": bad_dates, "truncated": False, "list_key": "transactions", "repaired": repaired,
+            "method": "table"}
+
+
+def _statement_by_model(pages: list[dict], texts: list[str]) -> dict:
     limit = get_settings().llm_context * 2
     merged: dict = {k: None for k in STATEMENT_SCHEMA["properties"]}
     merged["transactions"] = []
@@ -365,7 +407,8 @@ def run(pages: list[dict], texts: list[str], wanted: str) -> dict:
         raise ApiError(422, "no_text", "no text was found in the document, so there is nothing to extract")
     kind = wanted if wanted != "auto" else guess_type("\n".join(texts))
     r = _statement(pages, texts) if kind == "bank_statement" else _sale(pages, texts, wanted)
-    missing, sources = ground(r["fields"], r["list_key"], pages)
+    # rows read from the table by position are the printed text already; only the model's values are looked up
+    missing, sources = ground(r["fields"], r["list_key"], pages, check_rows=r.get("method") != "table")
     done = [c for c in r["checks"] if c["passed"] is not None]
     return {
         "document_type": r["document_type"],
@@ -380,4 +423,6 @@ def run(pages: list[dict], texts: list[str], wanted: str) -> dict:
         "truncated": r["truncated"],
         "model": get_settings().llm_model,
         "model_calls": r["attempts"],
+        # "table": rows read by position, the model only named the header fields. "model": the model read everything.
+        "read_by": r.get("method", "model"),
     }
