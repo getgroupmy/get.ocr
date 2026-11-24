@@ -534,3 +534,83 @@ def test_picture_quality_is_reported(client, api_key, need_engine):
     import cv2
     assert "blurry" in engine.quality(cv2.GaussianBlur(sharp, (0, 0), 6))["issues"]
     assert "dark" in engine.quality((sharp * 0.15).astype("uint8"))["issues"]
+
+
+# --- the second reader: a vision model -------------------------------------------------------
+@pytest.fixture
+def fake_vision(monkeypatch):
+    """Stands in for the vision model: records what it is sent and answers with prepared text."""
+    seen = []
+
+    def read_image(prompt, image):
+        seen.append((prompt, image))
+        return "```markdown\nKepada Encik Ali,\nBayaran RM 250.00 diterima.\n```"
+
+    monkeypatch.setattr(llm, "vision_ready", lambda *a, **k: True)
+    monkeypatch.setattr(llm, "read_image", read_image)
+    return seen
+
+
+def test_vision_reader_is_off_until_its_model_is_installed(client, api_key, need_engine):
+    llm._vision_status = (0.0, False)
+    r = client.post("/v1/ocr", files={"file": ("a.png", synth.image_bytes(["hello"]), "image/png")},
+                    data={"engine": "glm"}, headers=api_key)
+    assert r.status_code == 503 and r.json()["error"] == "reader_unavailable" and "ollama pull glm-ocr" in r.json()["message"]
+    assert client.get("/health").json()["vision_reader"] is False
+    bad = client.post("/v1/ocr", files={"file": ("a.png", synth.image_bytes(["hello"]), "image/png")},
+                      data={"engine": "tesseract"}, headers=api_key)
+    assert bad.status_code == 422 and bad.json()["error"] == "bad_engine"
+
+
+def test_vision_reader_reads_the_picture_of_each_page(client, api_key, need_engine, fake_vision):
+    r = client.post("/v1/ocr", files={"file": ("a.png", synth.image_bytes(["anything"]), "image/png")},
+                    data={"engine": "glm"}, headers=api_key)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    page = body["pages"][0]
+    assert body["engine"] == "glm-ocr" and page["source"] == "glm" and page["confidence"] is None and page["lines"] == []
+    assert page["text"] == "Kepada Encik Ali,\nBayaran RM 250.00 diterima."  # the code fence is taken off
+    prompt, image = fake_vision[0]
+    assert prompt == "Text Recognition:" and image[:3] == b"\xff\xd8\xff"  # a JPEG
+
+
+def test_vision_reader_reads_a_text_pdf_as_a_picture_and_takes_a_task(client, api_key, need_engine, fake_vision):
+    pdf = synth.text_pdf("Perjanjian sewa kenderaan 2026")
+    r = client.post("/v1/ocr", files={"file": ("a.pdf", pdf, "application/pdf")},
+                    data={"engine": "glm", "task": "table"}, headers=api_key)
+    assert r.status_code == 200 and r.json()["pages"][0]["source"] == "glm" and fake_vision[0][0] == "Table Recognition:"
+    bad = client.post("/v1/ocr", files={"file": ("a.pdf", pdf, "application/pdf")}, data={"engine": "glm", "task": "poem"},
+                      headers=api_key)
+    assert bad.status_code == 422 and bad.json()["error"] == "bad_task"
+
+
+def test_fields_are_extracted_from_what_the_vision_reader_read(client, api_key, need_engine, fake_vision, fake_model):
+    answers, prompts = fake_model
+    answers.append({"payee": "Encik Ali", "amount": 250, "made_up": "x"})
+    r = client.post("/v1/extract", files={"file": ("a.png", synth.image_bytes(["scribble"]), "image/png")},
+                    data={"engine": "glm", "type": "custom", "fields": '{"payee": "string", "amount": "number", "made_up": "string"}'},
+                    headers=api_key)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["fields"]["amount"] == 250.0 and body["not_found_in_text"] == ["made_up"]
+    assert "Bayaran RM 250.00 diterima." in prompts[0][1] and body["pages"][0]["source"] == "glm"
+
+
+def test_what_is_sent_to_the_model_server_for_a_picture(monkeypatch):
+    sent = {}
+
+    class Reply:
+        status_code = 200
+
+        def json(self):
+            return {"message": {"role": "assistant", "content": "ok"}, "done": True}
+
+    def post(url, json, timeout):
+        sent.update(url=url, body=json)
+        return Reply()
+
+    monkeypatch.setattr(llm.httpx, "post", post)
+    assert llm.read_image("Text Recognition:", b"\xff\xd8\xffabc") == "ok"
+    msg = sent["body"]["messages"][0]
+    assert sent["url"].endswith("/api/chat") and sent["body"]["model"] == "glm-ocr" and sent["body"]["stream"] is False
+    assert msg["content"] == "Text Recognition:" and msg["images"] == ["/9j/YWJj"] and msg["role"] == "user"

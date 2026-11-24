@@ -41,6 +41,51 @@ def ready(max_age: float = 30.0) -> bool:
     return ok
 
 
+_vision_status: tuple[float, bool] = (0.0, False)
+
+
+def vision_ready(max_age: float = 30.0) -> bool:
+    """Is the vision reader's model installed on the model server? Ollama only. Cached briefly."""
+    global _vision_status
+    s = get_settings()
+    if not s.llm_url or not s.vlm_model or s.llm_api != "ollama":
+        return False
+    if time.monotonic() - _vision_status[0] < max_age and _vision_status[0]:
+        return _vision_status[1]
+    try:
+        names = [m.get("name", "") for m in httpx.get(_base() + "/api/tags", timeout=2).json().get("models", [])]
+        ok = (s.vlm_model if ":" in s.vlm_model else s.vlm_model + ":latest") in names
+    except Exception:  # noqa: BLE001
+        ok = False
+    _vision_status = (time.monotonic(), ok)
+    return ok
+
+
+def read_image(prompt: str, image: bytes) -> str:
+    """What the vision model answers for one picture (JPEG or PNG bytes). The picture goes to the
+    model server on this machine as base64, in the message's `images`, as Ollama's chat API takes it."""
+    import base64
+    s = get_settings()
+    body = {"model": s.vlm_model, "stream": False, "keep_alive": "30m",
+            "messages": [{"role": "user", "content": prompt, "images": [base64.b64encode(image).decode()]}],
+            "options": {"temperature": 0, "num_predict": s.vlm_max_tokens}}
+    try:
+        with _lock:
+            r = httpx.post(_base() + "/api/chat", json=body, timeout=s.vlm_timeout_seconds)
+    except httpx.TimeoutException as exc:
+        raise ApiError(504, "reader_timeout", "the vision reader took too long on a page") from exc
+    except httpx.HTTPError as exc:
+        raise ApiError(503, "reader_unavailable", "the model server on this machine is not answering") from exc
+    if r.status_code == 404:
+        raise ApiError(503, "reader_unavailable", f"the model '{s.vlm_model}' is not installed on the model server")
+    if r.status_code >= 300:
+        raise ApiError(503, "reader_unavailable", f"the model server answered HTTP {r.status_code}")
+    try:
+        return str(r.json()["message"]["content"])
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ApiError(502, "reader_failed", "the vision reader did not answer with text") from exc
+
+
 def chat_json(system: str, user: str, schema: dict) -> dict:
     """One answer from the model as JSON that follows `schema`."""
     s = get_settings()

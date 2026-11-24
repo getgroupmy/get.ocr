@@ -34,6 +34,11 @@ _FILE_BODY = {
             "fields": {"type": "string",
                        "description": "With type=custom: the values to find. Names separated by commas, or JSON "
                                       '{"name": "string|number|date"} or {"name": {"type": ..., "description": ...}}'},
+            "engine": {"type": "string", "enum": ["standard", "glm"], "default": "standard",
+                       "description": "'glm' reads each page with the vision model (handwriting, hard photos): "
+                                      "slower, whole-page text, no line positions"},
+            "task": {"type": "string", "enum": ["text", "table", "formula"], "default": "text",
+                     "description": "With engine=glm: what to ask the vision model for"},
             "split": {"type": "boolean", "default": False,
                       "description": "Extraction only: the file holds several documents scanned together; "
                                      "answer with one entry per document under 'documents'"},
@@ -98,7 +103,7 @@ async def read_input(request: Request) -> tuple[bytes, dict, Optional[str]]:
     options = service.clean_options(fields.get("pages"), fields.get("detail"), _truthy(fields.get("force_ocr", False)),
                                     fields.get("type"), _truthy(fields.get("include_text", False)),
                                     fields.get("fields"), _truthy(fields.get("codes", False)),
-                                    _truthy(fields.get("split", False)))
+                                    _truthy(fields.get("split", False)), fields.get("engine"), fields.get("task"))
     ref = fields.get("external_ref")
     return data, options, (str(ref)[:200] if ref else None)
 
