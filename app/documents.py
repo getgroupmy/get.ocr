@@ -1,5 +1,6 @@
 """Turns an upload (an image or a PDF) into pages the reader can take."""
 from __future__ import annotations
+from typing import Optional
 
 import io
 import re
@@ -20,10 +21,10 @@ _pdf_lock = threading.Lock()  # pdfium is not thread-safe
 @dataclass
 class Page:
     number: int  # 1-based, as in the document
-    image: np.ndarray | None  # BGR; None when the text layer was used
+    image: Optional[np.ndarray]  # BGR; None when the text layer was used
     width: int
     height: int
-    text_layer: str | None = None
+    text_layer: Optional[str] = None
 
 
 def _bgr(im: Image.Image) -> np.ndarray:
@@ -34,7 +35,7 @@ def _bgr(im: Image.Image) -> np.ndarray:
     return np.ascontiguousarray(np.asarray(im)[:, :, ::-1])
 
 
-def parse_pages(spec: str | None, count: int) -> list[int]:
+def parse_pages(spec: Optional[str], count: int) -> list[int]:
     """'1-3,7' -> [1, 2, 3, 7]. Empty means every page."""
     if not spec or not spec.strip():
         return list(range(1, count + 1))

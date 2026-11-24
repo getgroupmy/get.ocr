@@ -1,5 +1,6 @@
 """Reading a document, the job queue, and housekeeping."""
 from __future__ import annotations
+from typing import Optional
 
 import logging
 import queue
@@ -20,7 +21,7 @@ log = logging.getLogger("ocr.service")
 DETAILS = ("lines", "text")
 
 
-def clean_options(pages: str | None, detail: str | None, force_ocr: bool, extract_type: str | None = None,
+def clean_options(pages: Optional[str], detail: Optional[str], force_ocr: bool, extract_type: Optional[str] = None,
                   include_text: bool = False) -> dict:
     detail = (detail or "lines").lower()
     if detail not in DETAILS:
@@ -96,9 +97,9 @@ def record_usage(db: Session, client_id: str, kind: str, ok: bool, pages: int, s
 
 
 # --- job queue -----------------------------------------------------------------
-_queue: "queue.Queue[str | None]" = queue.Queue()
+_queue: "queue.Queue[Optional[str]]" = queue.Queue()
 _stop = threading.Event()
-_worker: threading.Thread | None = None
+_worker: Optional[threading.Thread] = None
 
 
 def queue_length() -> int:

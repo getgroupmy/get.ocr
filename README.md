@@ -54,7 +54,8 @@ mkdir -p data && sudo chown 10001 data && chmod 700 data
 
 ## Mac mini (M-series) without Docker
 
-Every dependency ships an Apple Silicon build, so nothing is compiled. This is the same way
+Every dependency ships an Apple Silicon build, so nothing is compiled, and the Python that comes with
+macOS (3.9) is enough. This is the same way
 get.ekyc runs on the Mac mini.
 
 ```bash

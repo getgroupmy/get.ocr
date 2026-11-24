@@ -1,5 +1,6 @@
 """The console's API: API clients, usage, and a test reading. Admin token only."""
 from __future__ import annotations
+from typing import Optional
 
 import secrets
 
@@ -21,21 +22,21 @@ router = APIRouter(prefix="/admin/api", tags=["admin"], dependencies=[Depends(re
 
 class CreateClient(BaseModel):
     name: str = Field(min_length=1, max_length=120)
-    webhook_url: str | None = Field(default=None, max_length=500)
+    webhook_url: Optional[str] = Field(default=None, max_length=500)
 
 
 class WebhookChange(BaseModel):
-    webhook_url: str | None = Field(default=None, max_length=500)
+    webhook_url: Optional[str] = Field(default=None, max_length=500)
 
 
-def _check_url(url: str | None) -> str | None:
+def _check_url(url: Optional[str]) -> Optional[str]:
     url = (url or "").strip() or None
     if url and not url.lower().startswith(("https://", "http://")):
         raise ApiError(422, "bad_webhook_url", "the webhook URL must start with https:// or http://")
     return url
 
 
-def _client_out(c: ApiClient, usage: dict | None = None) -> dict:
+def _client_out(c: ApiClient, usage: Optional[dict] = None) -> dict:
     u = usage or {}
     return {"id": c.id, "name": c.name, "key_prefix": c.key_prefix, "webhook_url": c.webhook_url, "active": c.active,
             "created_at": c.created_at.isoformat() + "Z", "requests": u.get("requests", 0), "pages": u.get("pages", 0),

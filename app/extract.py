@@ -5,6 +5,7 @@ The model only reads text the OCR produced, and only on this machine. Its answer
 is not trusted as it comes: amounts are re-added, running balances are followed,
 and every value is looked up in the text it is supposed to come from."""
 from __future__ import annotations
+from typing import Optional
 
 import re
 from datetime import date
@@ -74,7 +75,7 @@ def guess_type(text: str) -> str:
 
 
 # --- cleaning what the model answered ----------------------------------------
-def _num(v) -> float | None:  # noqa: ANN001
+def _num(v) -> Optional[float]:  # noqa: ANN001
     if isinstance(v, bool) or v is None:
         return None
     if isinstance(v, (int, float)):
@@ -88,12 +89,12 @@ def _num(v) -> float | None:  # noqa: ANN001
         return None
 
 
-def _text(v) -> str | None:  # noqa: ANN001
+def _text(v) -> Optional[str]:  # noqa: ANN001
     s = " ".join(str(v).split()) if v is not None else ""
     return s if s and s.lower() not in ("null", "none", "n/a", "-") else None
 
 
-def _date(v, bad: list[str], name: str) -> str | None:  # noqa: ANN001
+def _date(v, bad: list[str], name: str) -> Optional[str]:  # noqa: ANN001
     s = _text(v)
     if s is None:
         return None
@@ -128,7 +129,7 @@ def _near(a: float, b: float, tol: float = TOLERANCE) -> bool:
     return abs(a - b) <= tol + 1e-9
 
 
-def _check(name: str, passed: bool | None, detail: str) -> dict:
+def _check(name: str, passed: Optional[bool], detail: str) -> dict:
     return {"name": name, "passed": passed, "detail": detail}
 
 
@@ -167,7 +168,7 @@ def sale_checks(f: dict) -> list[dict]:
     return out
 
 
-def repair_balances(txns: list[dict], start: float | None) -> int:
+def repair_balances(txns: list[dict], start: Optional[float]) -> int:
     """Follow the running balance. Where a line fits only with debit and credit
     exchanged, exchange them (the model put the amount in the wrong column).
     Returns how many lines were exchanged."""
@@ -184,7 +185,7 @@ def repair_balances(txns: list[dict], start: float | None) -> int:
     return swapped
 
 
-def broken_balances(txns: list[dict], start: float | None) -> list[int]:
+def broken_balances(txns: list[dict], start: Optional[float]) -> list[int]:
     """1-based positions of lines whose printed balance does not follow from the one before."""
     bad, prev, pending = [], start, 0.0
     for i, t in enumerate(txns, 1):
@@ -251,7 +252,7 @@ def ground(fields: dict, list_key: str, pages: list[dict]) -> tuple[list[str], d
     whole = "\n".join(p["text"] for p in pages)
     missing, sources = [], {}
 
-    def locate(value) -> dict | None:  # noqa: ANN001
+    def locate(value) -> Optional[dict]:  # noqa: ANN001
         for p in pages:
             for ln in p.get("lines") or []:
                 if _found(value, ln["text"]):

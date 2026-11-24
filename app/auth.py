@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 
 import hmac
 import secrets
@@ -17,7 +18,7 @@ def new_api_key() -> str:
     return "ok_" + secrets.token_urlsafe(32)
 
 
-def find_client(db: Session, key: str) -> ApiClient | None:
+def find_client(db: Session, key: str) -> Optional[ApiClient]:
     if not key:
         return None
     client = db.scalar(select(ApiClient).where(ApiClient.key_hash == crypto.sha256_hex(key)))

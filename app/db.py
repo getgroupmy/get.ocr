@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any, Iterator
+from typing import Any, Iterator, Optional
 
 from sqlalchemy import (JSON, Boolean, DateTime, ForeignKey, Integer, LargeBinary, String, TypeDecorator,
                         create_engine, event)
@@ -23,10 +23,10 @@ class EncryptedJSON(TypeDecorator):
     impl = LargeBinary
     cache_ok = True
 
-    def process_bind_param(self, value: Any, dialect: Any) -> bytes | None:
+    def process_bind_param(self, value: Any, dialect: Any) -> Optional[bytes]:
         return None if value is None else crypto.encrypt(json.dumps(value).encode())
 
-    def process_result_value(self, value: bytes | None, dialect: Any) -> Any:
+    def process_result_value(self, value: Optional[bytes], dialect: Any) -> Any:
         return None if value is None else json.loads(crypto.decrypt(value))
 
 
@@ -34,10 +34,10 @@ class EncryptedBytes(TypeDecorator):
     impl = LargeBinary
     cache_ok = True
 
-    def process_bind_param(self, value: bytes | None, dialect: Any) -> bytes | None:
+    def process_bind_param(self, value: Optional[bytes], dialect: Any) -> Optional[bytes]:
         return None if value is None else crypto.encrypt(value)
 
-    def process_result_value(self, value: bytes | None, dialect: Any) -> bytes | None:
+    def process_result_value(self, value: Optional[bytes], dialect: Any) -> Optional[bytes]:
         return None if value is None else crypto.decrypt(value)
 
 
@@ -52,8 +52,8 @@ class ApiClient(Base):
     name: Mapped[str] = mapped_column(String(120))
     key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     key_prefix: Mapped[str] = mapped_column(String(16))
-    webhook_url: Mapped[str | None] = mapped_column(String(500))
-    webhook_secret: Mapped[bytes | None] = mapped_column(EncryptedBytes)
+    webhook_url: Mapped[Optional[str]] = mapped_column(String(500))
+    webhook_secret: Mapped[Optional[bytes]] = mapped_column(EncryptedBytes)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
@@ -64,16 +64,16 @@ class Job(Base):
     __tablename__ = "jobs"
     id: Mapped[str] = mapped_column(String(40), primary_key=True)
     client_id: Mapped[str] = mapped_column(ForeignKey("api_clients.id"), index=True)
-    external_ref: Mapped[str | None] = mapped_column(String(200), index=True)
+    external_ref: Mapped[Optional[str]] = mapped_column(String(200), index=True)
     status: Mapped[str] = mapped_column(String(20), index=True, default="queued")  # queued|processing|completed|failed
-    options: Mapped[dict | None] = mapped_column(JSON)
+    options: Mapped[Optional[dict]] = mapped_column(JSON)
     size_bytes: Mapped[int] = mapped_column(Integer, default=0)
-    pages: Mapped[int | None] = mapped_column(Integer)  # pages read
-    result: Mapped[dict | None] = mapped_column(EncryptedJSON)
-    error: Mapped[str | None] = mapped_column(String(60))  # machine readable code, no content
-    error_message: Mapped[str | None] = mapped_column(String(300))
+    pages: Mapped[Optional[int]] = mapped_column(Integer)  # pages read
+    result: Mapped[Optional[dict]] = mapped_column(EncryptedJSON)
+    error: Mapped[Optional[str]] = mapped_column(String(60))  # machine readable code, no content
+    error_message: Mapped[Optional[str]] = mapped_column(String(300))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     result_purged: Mapped[bool] = mapped_column(Boolean, default=False)
 
     client: Mapped[ApiClient] = relationship()
@@ -93,7 +93,7 @@ class Usage(Base):
 
 
 _engine = None
-_Session: sessionmaker[Session] | None = None
+_Session: Optional[sessionmaker] = None
 
 
 def init_db() -> None:
