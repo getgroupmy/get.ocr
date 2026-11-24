@@ -110,7 +110,10 @@
               <option value="">Text only</option><option value="auto">Fields: detect the document</option>
               <option value="invoice">Fields: invoice or receipt</option><option value="bank_statement">Fields: bank statement</option>
               <option value="order">Fields: order list</option>
+              <option value="payslip">Fields: payslip</option><option value="utility_bill">Fields: utility bill</option>
+              <option value="custom">Fields: my own list</option>
             </select></div>
+            <div id="t-fields-box" hidden><label for="t-fields">Fields to find</label><input type="text" id="t-fields" placeholder="policy_number, expiry_date, sum_insured"></div>
             <div><label for="t-pages">PDF pages (optional)</label><input type="text" id="t-pages" placeholder="1-3"></div>
             <div><label for="t-force"><input type="checkbox" id="t-force"> Ignore the PDF's text layer</label></div>
             <button class="primary" type="submit" id="t-go">Read</button>
@@ -149,7 +152,7 @@
         <p>Call it from your backend with the client's key in <code>X-API-Key</code>. Do not ship the key inside a mobile or web app. Full reference: <a href="/docs">/docs</a>.</p>
         <label>Read a file now (images, PDFs up to <span data-limit="sync_max_pages">5</span> pages)</label>
         <pre data-snippet>curl -s -X POST {BASE}/v1/ocr -H "X-API-Key: $KEY" -F file=@receipt.jpg</pre>
-        <label>Fields from an invoice, receipt or bank statement</label>
+        <label>Fields from a document (invoice, statement, payslip, bill, order list, or your own fields)</label>
         <pre data-snippet>curl -s -X POST {BASE}/v1/extract -H "X-API-Key: $KEY" -F file=@invoice.pdf</pre>
         <label>Queue a long PDF (up to <span data-limit="max_pages">100</span> pages), then fetch the result</label>
         <pre data-snippet>curl -s -X POST {BASE}/v1/jobs -H "X-API-Key: $KEY" -F file=@contract.pdf -F external_ref=doc-1042</pre>
@@ -267,6 +270,7 @@ async function loadJobs() {
   $("#jobs-empty").hidden = r.jobs.length > 0;
 }
 
+$("#t-type").addEventListener("change", () => { $("#t-fields-box").hidden = $("#t-type").value !== "custom"; });
 $("#try-form").addEventListener("submit", async (ev) => {
   ev.preventDefault(); showError("");
   const f = $("#t-file").files[0]; if (!f) return;
@@ -274,6 +278,7 @@ $("#try-form").addEventListener("submit", async (ev) => {
   if ($("#t-pages").value.trim()) fd.append("pages", $("#t-pages").value.trim());
   if ($("#t-force").checked) fd.append("force_ocr", "true");
   if ($("#t-type").value) { fd.append("type", $("#t-type").value); fd.append("include_text", "true"); }
+  if ($("#t-type").value === "custom") fd.append("fields", $("#t-fields").value);
   const go = $("#t-go"); go.disabled = true; go.textContent = "Reading…";
   const began = Date.now();  // a model can take minutes: show that it is still working
   const tick = setInterval(() => { go.textContent = "Reading… " + Math.round((Date.now() - began) / 1000) + " s"; }, 1000);
@@ -300,14 +305,14 @@ function showFields(r) {
   }
   if (r.not_found_in_text.length) checks.append(el("p", "Not found in the text, check by hand: " + r.not_found_in_text.join(", "), "notice bad small"));
   if (r.truncated) checks.append(el("p", "The document was longer than the model can take; the end was left out.", "notice bad small"));
-  const listKey = r.fields.transactions ? "transactions" : r.fields.items ? "items" : "line_items";
+  const listKey = ["transactions", "items", "line_items", "lines"].find((k) => Array.isArray(r.fields[k])) || "";
   const kv = $("#try-kv"); kv.replaceChildren();
   for (const [k, v] of Object.entries(r.fields)) {
     if (k === listKey) continue;
     const tr = el("tr"); tr.append(el("th", k.replace(/_/g, " ")), el("td", v === null ? "–" : String(v))); kv.append(tr);
   }
   const rows = r.fields[listKey] || [];
-  $("#try-rows-title").textContent = listKey.replace("_", " ") + " (" + rows.length + ")";
+  $("#try-rows-title").textContent = listKey ? listKey.replace("_", " ") + " (" + rows.length + ")" : "";
   const th = $("#try-rows-head"); th.replaceChildren(); const tb = $("#try-rows"); tb.replaceChildren();
   if (rows.length) {
     const cols = Object.keys(rows[0]); const hr = el("tr"); cols.forEach((c) => hr.append(el("th", c.replace(/_/g, " ")))); th.append(hr);

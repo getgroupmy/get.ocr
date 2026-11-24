@@ -164,7 +164,7 @@ def test_extraction_off_answers_503_and_health_says_so(client, api_key, need_eng
     assert r.status_code == 503 and r.json()["error"] == "extraction_unavailable"
     h = client.get("/health").json()
     assert h["extraction"] is False and h["status"] == "ok"  # plain reading still works
-    assert post_invoice(client, api_key, type="payslip").json()["error"] == "bad_type"
+    assert post_invoice(client, api_key, type="passport").json()["error"] == "bad_type"
 
 
 def test_extracts_an_invoice(client, api_key, need_engine, fake_model):
@@ -380,3 +380,102 @@ def test_a_shadow_is_evened_out_and_a_clean_page_is_left_alone():
     assert evened is not None and evened.shape == shaded.shape
     paper = lambda img: float(np.percentile(img[page.shape[0] // 2 + 60:, :, 0], 90))  # noqa: E731
     assert paper(shaded) < 130 and paper(evened) > 200
+
+
+# --- payslips, bills, other sales documents, and a caller's own fields -------------------
+PAYSLIP_LINES = ["DELTA KARGO SDN BHD", "PAYSLIP January 2026", "Name: NUR AINA BINTI OMAR", "Basic Salary 3,000.00",
+                 "Overtime 250.00", "EPF Employee 357.00", "SOCSO Employee 16.25", "PCB 40.00",
+                 "EPF Employer 423.00", "Gross Pay 3,250.00", "Total Deductions 413.25", "Net Pay 2,836.75"]
+PAYSLIP = {"employer_name": "DELTA KARGO SDN BHD", "employee_name": "NUR AINA BINTI OMAR", "employee_id": None,
+           "id_number": None, "position": None, "pay_period": "January 2026", "pay_date": None, "currency": "MYR",
+           "lines": [{"kind": "earning", "description": "Basic Salary", "amount": 3000.0},
+                     {"kind": "earning", "description": "Overtime", "amount": 250.0},
+                     {"kind": "deduction", "description": "EPF Employee", "amount": 357.0},
+                     {"kind": "deduction", "description": "SOCSO Employee", "amount": 16.25},
+                     {"kind": "deduction", "description": "PCB", "amount": 40.0},
+                     {"kind": "employer", "description": "EPF Employer", "amount": 423.0}],
+           "gross_pay": 3250.0, "total_deductions": 413.25, "net_pay": 2836.75}
+BILL_LINES = ["TENAGA ELEKTRIK BERHAD", "Bil Elektrik", "No. Akaun: 220012345678", "Tarikh Bil: 05/01/2026",
+              "Bayar Sebelum: 04/02/2026", "Penggunaan 412 kWh", "Tunggakan 50.00", "Caj Semasa 148.30",
+              "Jumlah Perlu Dibayar 198.30"]
+BILL = {"provider_name": "TENAGA ELEKTRIK BERHAD", "customer_name": None, "account_number": "220012345678",
+        "bill_number": None, "bill_date": "2026-01-05", "due_date": "2026-02-04", "period_start": None,
+        "period_end": None, "currency": "MYR", "usage": 412, "usage_unit": "kWh", "previous_balance": 50.0,
+        "payments_received": None, "current_charges": 148.3, "tax": None, "rounding": None, "total_due": 198.3}
+
+
+def extract_image(client, key, lines, **data):
+    return client.post("/v1/extract", files={"file": ("d.png", synth.image_bytes(lines), "image/png")}, data=data,
+                       headers=key)
+
+
+def test_kinds_are_told_apart():
+    assert extract.guess_type("\n".join(PAYSLIP_LINES)) == "payslip"
+    assert extract.guess_type("\n".join(BILL_LINES)) == "utility_bill"
+    assert extract.guess_type("\n".join(INVOICE_LINES)) == "invoice"
+
+
+def test_payslip_checks():
+    fields = extract._clean(PAYSLIP, extract.PAYSLIP_SCHEMA, [])
+    assert [c["passed"] for c in extract.payslip_checks(fields)] == [True, True, True]
+    fields["lines"][0]["amount"] = 2000.0  # a misread salary shows in the sum of earnings
+    assert [c["passed"] for c in extract.payslip_checks(fields)] == [False, True, True]
+    bare = {**fields, "gross_pay": None, "total_deductions": None, "lines": []}
+    assert [c["passed"] for c in extract.payslip_checks(bare)] == [None, None, None]
+
+
+def test_extracts_a_payslip(client, api_key, need_engine, fake_model):
+    answers, prompts = fake_model
+    answers.append(PAYSLIP)
+    r = extract_image(client, api_key, PAYSLIP_LINES)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["document_type"] == "payslip" and body["checks_passed"] is True and body["model_calls"] == 1
+    assert body["fields"]["net_pay"] == 2836.75 and len(body["fields"]["lines"]) == 6
+    assert body["not_found_in_text"] == [] and "payslip" in prompts[0][1]
+
+
+def test_extracts_a_utility_bill_and_rereads_when_the_total_is_off(client, api_key, need_engine, fake_model):
+    answers, prompts = fake_model
+    answers += [{**BILL, "current_charges": 143.3}, BILL]
+    r = extract_image(client, api_key, BILL_LINES)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["document_type"] == "utility_bill" and body["model_calls"] == 2 and "total_due" in prompts[1][1]
+    assert body["checks"][0]["passed"] is True and body["fields"]["current_charges"] == 148.3
+    assert body["fields"]["due_date"] == "2026-02-04" and body["fields"]["usage"] == 412.0
+    assert body["not_found_in_text"] == []
+
+
+def test_other_sales_documents_use_the_invoice_fields(client, api_key, need_engine, fake_model):
+    answers, _ = fake_model
+    answers.append({**INVOICE, "document_type": "other"})
+    body = post_invoice(client, api_key, type="quotation").json()
+    assert body["document_type"] == "quotation" and body["fields"]["total"] == 135.54
+
+
+def test_a_callers_own_fields(client, api_key, need_engine, fake_model):
+    answers, prompts = fake_model
+    lines = ["MOTOR INSURANCE COVER NOTE", "Policy No: MX-778812", "Sum Insured RM 45,000.00", "Expiry 31/12/2026"]
+    answers.append({"policy_number": "MX-778812", "sum_insured": "45,000.00", "expiry": "2026-12-31", "insurer": "ZURICH"})
+    wanted = {"policy_number": "string", "sum_insured": {"type": "number", "description": "amount covered"},
+              "expiry": "date", "insurer": "string"}
+    r = extract_image(client, api_key, lines, type="custom", fields=json.dumps(wanted))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["document_type"] == "custom" and body["checks"] == [] and body["checks_passed"] is None
+    assert body["fields"] == {"policy_number": "MX-778812", "sum_insured": 45000.0, "expiry": "2026-12-31",
+                              "insurer": "ZURICH"}
+    assert body["not_found_in_text"] == ["insurer"]  # the model made it up; the date is rewritten and not looked up
+    assert "- sum_insured (number): amount covered" in prompts[0][1] and "- expiry (date)" in prompts[0][1]
+    assert set(prompts[0][2]["properties"]) == set(wanted)
+
+
+def test_custom_fields_are_validated(client, api_key, need_engine, fake_model):
+    answers, prompts = fake_model
+    assert extract.clean_fields("policy_number, expiry_date") == {
+        "policy_number": {"type": "string", "description": None}, "expiry_date": {"type": "date", "description": None}}
+    for bad in ("", "Bad Name", '{"a": "money"}', '{"a": 1}', "{not json", json.dumps({f"f{i}": "string" for i in range(41)})):
+        r = extract_image(client, api_key, INVOICE_LINES, type="custom", fields=bad)
+        assert r.status_code == 422 and r.json()["error"] == "bad_fields", bad
+    assert prompts == []

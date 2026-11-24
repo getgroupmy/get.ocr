@@ -22,15 +22,18 @@ DETAILS = ("lines", "text")
 
 
 def clean_options(pages: Optional[str], detail: Optional[str], force_ocr: bool, extract_type: Optional[str] = None,
-                  include_text: bool = False) -> dict:
+                  include_text: bool = False, fields=None) -> dict:  # noqa: ANN001
     detail = (detail or "lines").lower()
     if detail not in DETAILS:
         raise ApiError(422, "bad_detail", "detail must be 'lines' or 'text'")
     extract_type = (extract_type or "").strip().lower() or None
     if extract_type and extract_type not in extract.TYPES:
         raise ApiError(422, "bad_type", "type must be one of: " + ", ".join(extract.TYPES))
+    wanted = extract.clean_fields(fields) if extract_type == "custom" else None
+    if extract_type == "custom" and not wanted:
+        raise ApiError(422, "bad_fields", "type=custom needs 'fields': the values to find in the document")
     return {"pages": (pages or "").strip()[:200] or None, "detail": detail, "force_ocr": bool(force_ocr),
-            "extract": extract_type, "include_text": bool(include_text)}
+            "extract": extract_type, "include_text": bool(include_text), "fields": wanted}
 
 
 def recognise(data: bytes, options: dict, max_pages: int) -> dict:
@@ -78,7 +81,7 @@ def extract_fields(data: bytes, options: dict, max_pages: int) -> dict:
     started = time.monotonic()
     ocr = recognise(data, {**options, "detail": "lines", "layer_lines": True}, max_pages)
     texts = [engine.layout_columns(p["lines"]) if p["lines"] else p["text"] for p in ocr["pages"]]
-    out = extract.run(ocr["pages"], texts, options.get("extract") or "auto")
+    out = extract.run(ocr["pages"], texts, options.get("extract") or "auto", options.get("fields"))
     out.update(engine=ocr["engine"], kind=ocr["kind"], page_count=ocr["page_count"],
                pages=[{k: p[k] for k in ("page", "width", "height", "source", "confidence")} for p in ocr["pages"]])
     if options.get("include_text"):

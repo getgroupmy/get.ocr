@@ -18,7 +18,7 @@ webhooks, and data encrypted at rest.
 | **Queue** | `POST /v1/jobs` for long PDFs. Answers at once with a job id; the result comes by signed webhook or by polling |
 | **Output** | Plain text in reading order, and every line with its position and the model's confidence |
 | **PDF text layer** | A PDF page that already carries text is read from that text (exact and fast). Scanned pages are read as pictures. `force_ocr` reads everything as pictures |
-| **Fields** | `POST /v1/extract` turns an invoice, receipt, bank statement or order list into fields and lines, checks the arithmetic, and flags values that are not in the text. Needs a language model installed on the same machine (see below) |
+| **Fields** | `POST /v1/extract` turns a document into fields and lines (invoices and other sales documents, bank statements, payslips, utility bills, order lists, or your own list of fields), checks the arithmetic, and flags values that are not in the text. Needs a language model installed on the same machine (see below) |
 | **Engine** | PP-OCR (PaddleOCR models through RapidOCR), on the CPU. Latin script (English, Malay) and Chinese |
 
 ## Quick start (Docker)
@@ -205,7 +205,7 @@ The shape of the answer (shortened):
 }
 ```
 
-Send `type` (`auto`, `invoice`, `receipt`, `bank_statement`, `order`; default `auto`) to say what the document
+Send `type` (default `auto`; the kinds are listed below) to say what the document
 is, and `include_text=true` to also get the full text. `pages` and `force_ocr` work as for `/v1/ocr`.
 For long documents queue it instead: `POST /v1/jobs` with a `type` field gives the same answer as the
 job's `result`.
@@ -213,6 +213,40 @@ job's `result`.
 A bank statement gives `bank_name`, `account_holder`, `account_number`, `currency`, `period_start`,
 `period_end`, `opening_balance`, `closing_balance` and `transactions` (each with `date`,
 `description`, `reference`, `debit`, `credit`, `balance`).
+
+| `type` | Document | Checks |
+|---|---|---|
+| `invoice`, `receipt`, `credit_note`, `debit_note`, `quotation`, `purchase_order`, `delivery_order` | Sales documents; all give the invoice fields | `line_amounts`, `line_items_sum`, `total` |
+| `bank_statement` | Bank or card statement | `running_balances`, `balance_reconciles`, `printed_totals` |
+| `payslip` | Salary slip | `earnings_sum`, `deductions_sum`, `net_pay` |
+| `utility_bill` | Electricity, water, internet, phone bill | `total_due` |
+| `order` | Kitchen or counter order list | `item_quantities` |
+| `custom` | Anything else: you name the fields | none |
+
+`auto` recognises statements, order lists, payslips and utility bills by their wording and treats
+everything else as a sales document. It never picks `custom`.
+
+A payslip gives `employer_name`, `employee_name`, `employee_id`, `id_number`, `position`, `pay_period`,
+`pay_date`, `currency`, `gross_pay`, `total_deductions`, `net_pay` and `lines` (each with `kind`:
+`earning`, `deduction` or `employer`, a `description` and an `amount`). Employer contributions are
+listed but not taken off the pay in the checks.
+
+A utility bill gives `provider_name`, `customer_name`, `account_number`, `bill_number`, `bill_date`,
+`due_date`, `period_start`, `period_end`, `currency`, `usage`, `usage_unit`, `previous_balance`,
+`payments_received`, `current_charges`, `tax`, `rounding` and `total_due`.
+
+**Your own fields.** For any other document, send `type=custom` and `fields`: the values to find.
+
+```bash
+curl -s -X POST $BASE/v1/extract -H "X-API-Key: $KEY" -F file=@cover-note.pdf -F type=custom \
+  -F 'fields={"policy_number": "string", "expiry": "date", "sum_insured": {"type": "number", "description": "amount covered"}}'
+```
+
+`fields` is JSON as above (types `string`, `number`, `date`; a `description` helps the model), or
+just names separated by commas (`policy_number,expiry_date`; a name containing `date` is a date).
+Names are lower case letters, digits and `_`, at most 40 fields. There is nothing to add up, so
+`checks` is empty and `checks_passed` is `null`; `not_found_in_text` still lists values the model
+gave that are not printed.
 
 An order list (the slip a restaurant prints for the kitchen: items and quantities, no prices) gives
 `title`, `order_number`, `table`, `guests`, `date`, `time`, `staff`, `service_type` and `items` (each
@@ -345,9 +379,9 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
   statement (192 transactions, equal to the totals the bank prints) and made-up ones. It expects a
   date at the start of each transaction and right-aligned amount columns. Other banks' layouts are
   untested; the three checks say when a reading does not add up.
-- **Three document kinds.** Invoices, receipts and bank statements. `auto` tells a statement from the
-  rest by its wording. Other documents are not extracted. For identity documents use get.ekyc, which
-  validates what it reads.
+- **Which kinds were tried for real.** Only bank statements have run on real documents with the real
+  model. Sales documents, payslips, utility bills, order lists and custom fields were built against a
+  stand-in model and made-up documents. For identity documents use get.ekyc, which validates what it reads.
 - **Extraction reads the OCR text, not the picture.** What the OCR cannot read (handwriting, Jawi,
   Tamil, Thai) cannot be extracted either. A statement transaction whose description continues on
   the next page loses those lines.
