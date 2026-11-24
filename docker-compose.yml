@@ -1,0 +1,43 @@
+services:
+  ocr:
+    build: .
+    image: get-ocr:1
+    container_name: ocr
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Inside the container the data folder is always the mounted volume.
+      - OCR_DATA_DIR=/data
+    mem_limit: 2g
+    ports:
+      # Published on localhost only: the Cloudflare tunnel below reaches the
+      # container over the compose network, so nothing is exposed on the LAN.
+      # 8090 on the host, so it can sit beside get.ekyc (8080) on the same machine.
+      # Use "8090:8080" instead to let other machines on the LAN call it.
+      - "127.0.0.1:${OCR_PORT:-8090}:8080"
+    volumes:
+      # Database, and uploads waiting in the job queue (both encrypted).
+      - ${OCR_DATA_PATH:-./data}:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  # Optional HTTPS without opening a port, as get.ekyc does.
+  # Start with: docker compose --profile tunnel up -d
+  # In Cloudflare Zero Trust, point the tunnel's public hostname at
+  # service HTTP  ocr:8080, and put TUNNEL_TOKEN in .env.
+  tunnel:
+    image: cloudflare/cloudflared:2024.10.1
+    container_name: ocr-tunnel
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      # Empty unless you use the tunnel profile; cloudflared then stops with a clear error.
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN:-}
+    depends_on:
+      - ocr

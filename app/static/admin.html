@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GET OCR console</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#16202c; --muted:#5b6777; --line:#dfe3e9; --accent:#0b6bcb; --accent-ink:#fff;
+          --ok:#12734a; --bad:#b3261e; --warn:#8a5a00; --code:#eef1f5; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#12161c; --card:#1a2029; --ink:#e8ecf1; --muted:#9aa6b5; --line:#2c3541; --accent:#5aa9f5; --accent-ink:#0b1420;
+            --ok:#5fd0a0; --bad:#ff8a80; --warn:#f0c060; --code:#232b36; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  header { display:flex; align-items:center; gap:12px; padding:14px 16px; border-bottom:1px solid var(--line); background:var(--card); }
+  header h1 { font-size:17px; margin:0; flex:1; }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--muted); display:inline-block; margin-right:6px; }
+  .dot.ok { background:var(--ok); } .dot.bad { background:var(--bad); }
+  main { max-width:980px; margin:0 auto; padding:16px; }
+  nav { display:flex; gap:4px; flex-wrap:wrap; margin-bottom:16px; }
+  nav button { background:none; border:1px solid transparent; color:var(--muted); padding:8px 12px; border-radius:8px; font:inherit; cursor:pointer; }
+  nav button[aria-selected=true] { background:var(--card); border-color:var(--line); color:var(--ink); font-weight:600; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
+  h2 { font-size:16px; margin:0 0 10px; }
+  p { margin:0 0 10px; } .muted { color:var(--muted); } .small { font-size:13px; }
+  label { display:block; font-weight:600; font-size:13px; margin:10px 0 4px; }
+  input[type=text], input[type=password], input[type=url], select { width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); font:inherit; }
+  button.primary, button.plain, button.danger { padding:9px 14px; border-radius:8px; font:inherit; cursor:pointer; border:1px solid var(--line); background:var(--card); color:var(--ink); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:var(--accent-ink); font-weight:600; }
+  button.danger { color:var(--bad); }
+  button:disabled { opacity:.55; cursor:default; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:end; } .row > div { flex:1; min-width:200px; }
+  .scroll { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.03em; }
+  code, pre { font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; background:var(--code); border-radius:6px; }
+  code { padding:1px 5px; } pre { padding:12px; overflow-x:auto; margin:0 0 10px; white-space:pre-wrap; word-break:break-word; }
+  .notice { border:1px solid var(--line); border-left:4px solid var(--accent); border-radius:8px; padding:12px; margin-bottom:12px; }
+  .notice code { word-break:break-all; white-space:normal; }
+  td.clip { max-width:220px; overflow:hidden; text-overflow:ellipsis; }
+  .notice.bad { border-left-color:var(--bad); } .notice.ok { border-left-color:var(--ok); }
+  .tag { font-size:12px; padding:2px 8px; border-radius:99px; border:1px solid var(--line); }
+  .tag.ok { color:var(--ok); } .tag.bad { color:var(--bad); } .tag.warn { color:var(--warn); }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin-bottom:16px; }
+  .stat { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; }
+  .stat b { display:block; font-size:22px; } .stat span { color:var(--muted); font-size:13px; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>GET OCR</h1>
+  <span class="small muted" id="health"><span class="dot"></span>checking…</span>
+  <button class="plain" id="signout" hidden>Sign out</button>
+</header>
+<main>
+  <section id="signin" class="card" hidden>
+    <h2>Sign in</h2>
+    <p class="muted">Enter the admin token (<code>OCR_ADMIN_TOKEN</code> in the server's <code>.env</code>). It is kept for this browser tab only.</p>
+    <form id="signin-form">
+      <label for="token">Admin token</label>
+      <input type="password" id="token" autocomplete="current-password" required>
+      <p id="signin-error" class="notice bad" hidden style="margin-top:12px"></p>
+      <p style="margin-top:12px"><button class="primary" type="submit">Sign in</button></p>
+    </form>
+  </section>
+
+  <div id="app" hidden>
+    <nav role="tablist">
+      <button role="tab" data-tab="clients" aria-selected="true">API clients</button>
+      <button role="tab" data-tab="try">Try it</button>
+      <button role="tab" data-tab="jobs">Jobs</button>
+      <button role="tab" data-tab="integrate">Integrate</button>
+    </nav>
+    <p id="error" class="notice bad" hidden></p>
+
+    <section data-panel="clients">
+      <div class="stats" id="stats"></div>
+      <div id="new-key" class="notice ok" hidden></div>
+      <div class="card">
+        <h2>New API client</h2>
+        <p class="muted small">One client per app that will call this service. The key is shown once.</p>
+        <form id="client-form" class="row">
+          <div><label for="c-name">App name</label><input type="text" id="c-name" maxlength="120" placeholder="get-ride" required></div>
+          <div><label for="c-hook">Webhook URL (optional, for jobs)</label><input type="url" id="c-hook" maxlength="500" placeholder="https://app.example.com/hooks/ocr"></div>
+          <button class="primary" type="submit">Create</button>
+        </form>
+      </div>
+      <div class="card">
+        <h2>Clients</h2>
+        <div class="scroll"><table>
+          <thead><tr><th>Name</th><th>Key</th><th>Readings</th><th>Pages</th><th>Last used</th><th>Webhook</th><th></th></tr></thead>
+          <tbody id="clients"></tbody>
+        </table></div>
+        <p id="clients-empty" class="muted" hidden>No clients yet. Create one above to get an API key.</p>
+      </div>
+    </section>
+
+    <section data-panel="try" hidden>
+      <div class="card">
+        <h2>Read a file</h2>
+        <p class="muted small">Runs on this server. The file and the text are not stored, and this is not counted as usage.</p>
+        <form id="try-form">
+          <label for="t-file">Image or PDF</label>
+          <input type="file" id="t-file" accept="image/*,application/pdf" required>
+          <div class="row">
+            <div><label for="t-pages">PDF pages (optional)</label><input type="text" id="t-pages" placeholder="1-3"></div>
+            <div><label for="t-force"><input type="checkbox" id="t-force"> Ignore the PDF's text layer</label></div>
+            <button class="primary" type="submit" id="t-go">Read</button>
+          </div>
+        </form>
+      </div>
+      <div class="card" id="try-out" hidden>
+        <h2 id="try-title">Result</h2>
+        <p class="muted small" id="try-meta"></p>
+        <pre id="try-text"></pre>
+        <details><summary class="muted small">Full JSON answer</summary><pre id="try-json"></pre></details>
+      </div>
+    </section>
+
+    <section data-panel="jobs" hidden>
+      <div class="card">
+        <h2>Recent jobs</h2>
+        <p class="muted small">Status only. The text of a job is readable only with the client's API key.</p>
+        <div class="scroll"><table>
+          <thead><tr><th>Job</th><th>Client</th><th>Status</th><th>Pages</th><th>Created</th><th>Your reference</th></tr></thead>
+          <tbody id="jobs"></tbody>
+        </table></div>
+        <p id="jobs-empty" class="muted" hidden>No jobs yet. Jobs appear when an app calls <code>POST /v1/jobs</code>.</p>
+      </div>
+    </section>
+
+    <section data-panel="integrate" hidden>
+      <div class="card">
+        <h2>Calling the API</h2>
+        <p>Call it from your backend with the client's key in <code>X-API-Key</code>. Do not ship the key inside a mobile or web app. Full reference: <a href="/docs">/docs</a>.</p>
+        <label>Read a file now (images, PDFs up to <span data-limit="sync_max_pages">5</span> pages)</label>
+        <pre data-snippet>curl -s -X POST {BASE}/v1/ocr -H "X-API-Key: $KEY" -F file=@receipt.jpg</pre>
+        <label>Queue a long PDF (up to <span data-limit="max_pages">100</span> pages), then fetch the result</label>
+        <pre data-snippet>curl -s -X POST {BASE}/v1/jobs -H "X-API-Key: $KEY" -F file=@contract.pdf -F external_ref=doc-1042</pre>
+        <pre data-snippet>curl -s {BASE}/v1/jobs/$JOB_ID -H "X-API-Key: $KEY"</pre>
+        <label>Check the server and the key</label>
+        <pre data-snippet>curl -s {BASE}/health -H "X-API-Key: $KEY"</pre>
+        <p class="muted small">Files up to <span data-limit="max_upload_mb">20</span> MB. Job results are kept <span data-limit="retention_days">7</span> day(s), then deleted. With a webhook URL on the client, a signed <code>ocr.completed</code> call is sent when a job finishes; verify <code>X-OCR-Signature</code> as described in the README.</p>
+      </div>
+    </section>
+  </div>
+</main>
+<script>
+const $ = (s, r = document) => r.querySelector(s);
+const el = (tag, text, cls) => { const e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; };
+let token = sessionStorage.getItem("ocr_admin") || "";
+
+async function api(path, opts = {}) {
+  const r = await fetch("/admin/api" + path, { ...opts, headers: { "X-Admin-Token": token, ...(opts.headers || {}) } });
+  if (r.status === 401) { signOut(); throw new Error("The admin token is not valid."); }
+  const body = r.status === 204 ? null : await r.json().catch(() => null);
+  if (!r.ok) throw new Error((body && body.message) || ("Request failed (" + r.status + ")"));
+  return body;
+}
+function showError(msg) { const e = $("#error"); e.textContent = msg || ""; e.hidden = !msg; }
+function when(iso) { return iso ? new Date(iso).toLocaleString() : "never"; }
+
+function signOut() { token = ""; sessionStorage.removeItem("ocr_admin"); $("#app").hidden = true; $("#signout").hidden = true; $("#signin").hidden = false; }
+async function enter() {
+  try { await loadClients(); } catch (e) { return false; }
+  $("#signin").hidden = true; $("#app").hidden = false; $("#signout").hidden = false; return true;
+}
+$("#signin-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  token = $("#token").value.trim();
+  const ok = await enter();
+  $("#signin-error").hidden = ok;
+  if (ok) { sessionStorage.setItem("ocr_admin", token); $("#token").value = ""; }
+  else $("#signin-error").textContent = "That token was not accepted. Check OCR_ADMIN_TOKEN on the server.";
+});
+$("#signout").addEventListener("click", signOut);
+
+document.querySelectorAll("nav button").forEach((b) => b.addEventListener("click", () => {
+  document.querySelectorAll("nav button").forEach((x) => x.setAttribute("aria-selected", x === b));
+  document.querySelectorAll("[data-panel]").forEach((p) => { p.hidden = p.dataset.panel !== b.dataset.tab; });
+  showError("");
+  if (b.dataset.tab === "clients") loadClients().catch((e) => showError(e.message));
+  if (b.dataset.tab === "jobs") loadJobs().catch((e) => showError(e.message));
+}));
+
+async function loadClients() {
+  const [list, s] = await Promise.all([api("/clients"), api("/stats")]);
+  const stats = $("#stats"); stats.replaceChildren();
+  const add = (v, label) => { const d = el("div", null, "stat"); d.append(el("b", String(v)), el("span", label)); stats.append(d); };
+  add(s.requests, "readings"); add(s.pages, "pages read"); add(s.failed, "failed");
+  add(s.seconds_per_page == null ? "–" : s.seconds_per_page + " s", "per page"); add(s.queue, "waiting in queue");
+  document.querySelectorAll("[data-limit]").forEach((n) => { n.textContent = s.limits[n.dataset.limit]; });
+  const tb = $("#clients"); tb.replaceChildren();
+  for (const c of list.clients) {
+    const tr = el("tr");
+    tr.append(el("td", c.name));
+    const key = el("td"); key.append(el("code", c.key_prefix + "…")); tr.append(key);
+    tr.append(el("td", String(c.requests)), el("td", String(c.pages)), el("td", when(c.last_used_at)));
+    const hk = el("td", c.webhook_url || "none", "clip"); hk.title = c.webhook_url || ""; tr.append(hk);
+    const act = el("td");
+    if (c.active) {
+      const hook = el("button", "Webhook", "plain"); hook.addEventListener("click", () => changeWebhook(c));
+      const rev = el("button", "Revoke", "danger"); rev.style.marginLeft = "6px"; rev.addEventListener("click", () => revoke(c));
+      act.append(hook, rev);
+    } else act.append(el("span", "revoked", "tag bad"));
+    tr.append(act); tb.append(tr);
+  }
+  $("#clients-empty").hidden = list.clients.length > 0;
+}
+function showSecrets(title, pairs) {
+  const box = $("#new-key"); box.replaceChildren(el("strong", title));
+  box.append(el("p", "Copy these now. They are not shown again.", "small muted"));
+  for (const [label, value] of pairs) { if (!value) continue; const p = el("p", label + ": "); p.append(el("code", value)); box.append(p); }
+  box.hidden = false;
+}
+$("#client-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault(); showError("");
+  try {
+    const c = await api("/clients", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: $("#c-name").value, webhook_url: $("#c-hook").value || null }) });
+    showSecrets("Client “" + c.name + "” created", [["API key", c.api_key], ["Webhook secret", c.webhook_secret]]);
+    ev.target.reset(); await loadClients();
+  } catch (e) { showError(e.message); }
+});
+async function changeWebhook(c) {
+  const url = prompt("Webhook URL for " + c.name + " (leave empty to remove). A new signing secret is made.", c.webhook_url || "");
+  if (url === null) return;
+  try {
+    const r = await api("/clients/" + c.id + "/webhook", { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ webhook_url: url.trim() || null }) });
+    if (r.webhook_secret) showSecrets("Webhook set for “" + c.name + "”", [["Webhook secret", r.webhook_secret]]);
+    await loadClients();
+  } catch (e) { showError(e.message); }
+}
+async function revoke(c) {
+  if (!confirm("Revoke the key of “" + c.name + "”? The app stops working with it at once. This cannot be undone.")) return;
+  try { await api("/clients/" + c.id, { method: "DELETE" }); await loadClients(); } catch (e) { showError(e.message); }
+}
+
+async function loadJobs() {
+  const r = await api("/jobs");
+  const tb = $("#jobs"); tb.replaceChildren();
+  for (const j of r.jobs) {
+    const tr = el("tr");
+    const id = el("td"); id.append(el("code", j.id)); tr.append(id, el("td", j.client || ""));
+    const st = el("td"); st.append(el("span", j.status + (j.error ? " (" + j.error + ")" : ""),
+      "tag " + (j.status === "completed" ? "ok" : j.status === "failed" ? "bad" : "warn"))); tr.append(st);
+    tr.append(el("td", j.pages == null ? "" : String(j.pages)), el("td", when(j.created_at)), el("td", j.external_ref || ""));
+    tb.append(tr);
+  }
+  $("#jobs-empty").hidden = r.jobs.length > 0;
+}
+
+$("#try-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault(); showError("");
+  const f = $("#t-file").files[0]; if (!f) return;
+  const fd = new FormData(); fd.append("file", f);
+  if ($("#t-pages").value.trim()) fd.append("pages", $("#t-pages").value.trim());
+  if ($("#t-force").checked) fd.append("force_ocr", "true");
+  const go = $("#t-go"); go.disabled = true; go.textContent = "Reading…";
+  try {
+    const r = await api("/try", { method: "POST", body: fd });
+    $("#try-out").hidden = false;
+    $("#try-meta").textContent = r.pages.length + " of " + r.page_count + " page(s) in " + (r.duration_ms / 1000).toFixed(2) + " s";
+    $("#try-text").textContent = r.text || "(no text found)";
+    $("#try-json").textContent = JSON.stringify(r, null, 2);
+  } catch (e) { $("#try-out").hidden = true; showError(e.message); }
+  finally { go.disabled = false; go.textContent = "Read"; }
+});
+
+document.querySelectorAll("[data-snippet]").forEach((p) => { p.textContent = p.textContent.replace("{BASE}", location.origin); });
+fetch("/health").then((r) => r.json()).then((h) => {
+  $("#health").replaceChildren(el("span", null, "dot " + (h.status === "ok" ? "ok" : "bad")),
+    document.createTextNode(h.status === "ok" ? "engine ready" : "engine not loaded"));
+}).catch(() => { $("#health").textContent = "server unreachable"; });
+if (token) enter().then((ok) => { if (!ok) signOut(); }); else $("#signin").hidden = false;
+</script>
+</body>
+</html>
