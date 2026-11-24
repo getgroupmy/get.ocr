@@ -166,6 +166,13 @@ On the Mac mini, from `~/get.ocr`:
 - **Routing by kind.** `PUT /admin/api/clients/{id}/routes` with `{"routes": {"invoice": "https://…"}}`
   sends that client's finished jobs of that kind to their own address, signed with the client's
   webhook secret.
+- **Where webhooks may go.** A webhook or route URL that resolves to this machine, the local network
+  or another internal address is refused, and checked again when it is sent, so that someone with
+  the console cannot make the server call internal services. If the apps that receive webhooks run
+  on the same Mac or network, set `OCR_WEBHOOK_ALLOW_INTERNAL=true`.
+- **Size of a request.** The upload limit is enforced on the bytes actually received, whatever
+  length the request claims. A TIFF with more pages than `OCR_MAX_PAGES` is refused before any page
+  is decoded.
 - **Limits per app.** One API key may make `OCR_RATE_PER_MINUTE` requests a minute (429
   `rate_limited` beyond that).
 - **Activity log.** Creating, revoking and changing clients is recorded with the time and the

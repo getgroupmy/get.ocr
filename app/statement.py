@@ -148,11 +148,13 @@ def _near(a: float, b: float) -> bool:
     return abs(a - b) <= TOLERANCE + 1e-9
 
 
-def _follows(txns: list[dict], start: Optional[float]) -> int:
-    """How many printed balances follow from the one before."""
+def _follows(txns: list[dict], start: Optional[float], owed: bool = False) -> int:
+    """How many printed balances follow from the one before. owed: a charge (debit)
+    raises the balance and a payment (credit) lowers it, as on a credit card."""
     hits, prev, pending = 0, start, 0.0
     for t in txns:
-        pending += (t["credit"] or 0) - (t["debit"] or 0)
+        move = (t["debit"] or 0) - (t["credit"] or 0) if owed else (t["credit"] or 0) - (t["debit"] or 0)
+        pending += move
         if t["balance"] is None:
             continue
         if prev is not None and _near(prev + pending, t["balance"]):
@@ -171,12 +173,12 @@ def _printed_total(rows: list[dict], label: re.Pattern) -> tuple[Optional[float]
         for word in r["text"][m.end():].split():
             if _money(word):
                 return _money(word)[0], count
-            if word.isdigit() and count is None:
+            if word.isdigit() and count is None and int(word) < 1000:  # a small count, never a year
                 count = int(word)
     return None, None
 
 
-def parse(pages: list[dict], order: str = "dmy") -> dict:
+def parse(pages: list[dict], order: str = "dmy", owed: bool = False) -> dict:
     """`pages` as service.recognise returns them, with lines. Returns
     the transactions, the opening and closing balance, and the totals the
     statement prints (None when it prints none); the list is empty when the
@@ -294,7 +296,7 @@ def parse(pages: list[dict], order: str = "dmy") -> dict:
     for combo in product((-1, 1), repeat=len(amount_cols)) if len(amount_cols) <= 4 else []:
         signs = dict(zip(amount_cols, combo))
         txns = build(signs)
-        score = (_follows(txns, opening), signs == prior)
+        score = (_follows(txns, opening, owed), signs == prior)
         if best_score is None or score > best_score:
             best, best_score = txns, score
 

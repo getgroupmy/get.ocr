@@ -23,6 +23,33 @@ def is_local_url(url: str) -> bool:
     return ip.is_loopback or ip.is_private or ip.is_link_local
 
 
+def resolves_to_internal(url: str) -> bool:
+    """True if the URL's host resolves to a loopback / private / link-local / reserved /
+    unspecified / multicast address — not a safe target for an outbound webhook (SSRF guard).
+    A host that cannot be resolved returns False: it is simply not delivered to at send time."""
+    import ipaddress
+    import socket
+    from urllib.parse import urlsplit
+    host = urlsplit(url).hostname or ""
+    if not host:
+        return True
+    if get_settings().webhook_allow_internal:
+        return False
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return False
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved
+                or ip.is_unspecified or ip.is_multicast):
+            return True
+    return False
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OCR_", env_file=".env", extra="ignore")
 
@@ -60,6 +87,10 @@ class Settings(BaseSettings):
     max_upload_mb: int = 20
     sync_max_pages: int = 5  # POST /v1/ocr answers in the request; longer PDFs go to /v1/jobs
     max_pages: int = 100  # per job
+    # Webhooks to this machine or the local network are refused unless this is on: whoever can set a
+    # webhook could otherwise make the server call internal services. Turn it on only when the apps
+    # that receive webhooks really do run on this machine or network.
+    webhook_allow_internal: bool = False
     rate_per_minute: int = 120  # requests one API key may make in a minute; 0 = no limit
     duplicate_days: int = 365  # how long a document is remembered (as a hash only) to spot it coming in twice
     workers: int = 1  # queued documents read at the same time; the reader and the model still take one at a time

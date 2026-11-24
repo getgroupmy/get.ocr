@@ -13,7 +13,7 @@ from . import engine, llm, service
 from .auth import find_client
 from .config import get_settings
 from .db import get_db, init_db
-from .errors import ApiError
+from .errors import ApiError, RequestTooLarge
 from .routers import admin, ocr
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -40,6 +40,35 @@ _origins = [o.strip() for o in get_settings().cors_origins.split(",") if o.strip
 if _origins:
     app.add_middleware(CORSMiddleware, allow_origins=_origins, allow_methods=["*"], allow_headers=["*"])
 
+
+class _BodySizeLimitMiddleware:
+    """A hard ceiling on request-body bytes, independent of Content-Length, so an upload
+    sent chunked cannot stream past the limit onto disk before read_input's own
+    per-endpoint check runs. Raises RequestTooLarge, answered as 413."""
+
+    def __init__(self, app):  # noqa: ANN001
+        self.app = app
+
+    async def __call__(self, scope, receive, send):  # noqa: ANN001
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        limit = get_settings().max_upload_bytes * 4 // 3 + 65536  # base64 JSON is a third larger
+        total = 0
+
+        async def rcv():
+            nonlocal total
+            message = await receive()
+            if message.get("type") == "http.request":
+                total += len(message.get("body", b""))
+                if total > limit:
+                    raise RequestTooLarge()
+            return message
+
+        await self.app(scope, rcv, send)
+
+
+app.add_middleware(_BodySizeLimitMiddleware)
+
 app.include_router(ocr.router)
 app.include_router(admin.router)
 
@@ -55,6 +84,12 @@ async def _validation_error(_: Request, exc: RequestValidationError):
     where = ".".join(str(p) for p in first.get("loc", ())[1:])
     return JSONResponse({"error": "bad_request", "message": f"{where}: {first.get('msg', 'invalid')}".strip(": ")},
                         status_code=422)
+
+
+@app.exception_handler(RequestTooLarge)
+async def _too_large(_: Request, __: RequestTooLarge):
+    return JSONResponse({"error": "too_large", "message": "the request body is larger than allowed"},
+                        status_code=413)
 
 
 @app.get("/health", tags=["system"])
