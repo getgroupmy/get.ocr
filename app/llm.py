@@ -2,14 +2,30 @@
 (Ollama by default); nothing is sent anywhere else."""
 from __future__ import annotations
 
+import contextvars
 import json
 import threading
 import time
 
 import httpx
 
+from typing import Optional
+
 from .config import get_settings
 from .errors import ApiError
+
+_model = contextvars.ContextVar("extraction_model", default=None)  # set for one request to try another model
+
+
+def current_model() -> str:
+    return _model.get() or get_settings().llm_model
+
+
+def use_model(name: Optional[str]) -> None:
+    """Have the extraction calls of this request use another installed model (the console's Try it and
+    the accuracy script use this to compare models)."""
+    _model.set((name or "").strip()[:80] or None)
+
 
 _lock = threading.Lock()  # one request at a time: a local model uses the whole machine
 _status: tuple[float, bool] = (0.0, False)
@@ -94,11 +110,11 @@ def chat_json(system: str, user: str, schema: dict) -> dict:
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     if s.llm_api == "ollama":
         url = _base() + "/api/chat"
-        body = {"model": s.llm_model, "messages": messages, "stream": False, "format": schema, "keep_alive": "30m",
+        body = {"model": current_model(), "messages": messages, "stream": False, "format": schema, "keep_alive": "30m",
                 "options": {"temperature": 0, "num_ctx": s.llm_context}}
     else:
         url = _base() + "/chat/completions"
-        body = {"model": s.llm_model, "messages": messages, "temperature": 0,
+        body = {"model": current_model(), "messages": messages, "temperature": 0,
                 "response_format": {"type": "json_schema",
                                     "json_schema": {"name": "extraction", "schema": schema, "strict": True}}}
     try:
@@ -109,7 +125,7 @@ def chat_json(system: str, user: str, schema: dict) -> dict:
     except httpx.HTTPError as exc:
         raise ApiError(503, "extraction_unavailable", "the model server on this machine is not answering") from exc
     if r.status_code == 404:
-        raise ApiError(503, "extraction_unavailable", f"the model '{s.llm_model}' is not installed on the model server")
+        raise ApiError(503, "extraction_unavailable", f"the model '{current_model()}' is not installed on the model server")
     if r.status_code >= 300:
         raise ApiError(503, "extraction_unavailable", f"the model server answered HTTP {r.status_code}")
     try:

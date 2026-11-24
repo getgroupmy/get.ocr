@@ -1,6 +1,8 @@
 from __future__ import annotations
 from typing import Optional
 
+import threading
+import time
 import hmac
 import secrets
 
@@ -25,10 +27,31 @@ def find_client(db: Session, key: str) -> Optional[ApiClient]:
     return client if client is not None and client.active else None
 
 
+_calls: dict = {}  # client id -> times of its recent requests
+_calls_lock = threading.Lock()
+
+
+def _within_rate(client_id: str) -> bool:
+    limit = get_settings().rate_per_minute
+    if limit <= 0:
+        return True
+    now = time.monotonic()
+    with _calls_lock:
+        recent = [t for t in _calls.get(client_id, ()) if now - t < 60]
+        ok = len(recent) < limit
+        if ok:
+            recent.append(now)
+        _calls[client_id] = recent
+    return ok
+
+
 def require_client(x_api_key: str = Header(default=""), db: Session = Depends(get_db)) -> ApiClient:
     client = find_client(db, x_api_key)
     if client is None:
         raise ApiError(401, "unauthorized", "invalid or missing X-API-Key")
+    if not _within_rate(client.id):
+        raise ApiError(429, "rate_limited", f"more than {get_settings().rate_per_minute} requests in a minute; "
+                                            "slow down and try again")
     return client
 
 

@@ -72,6 +72,33 @@ def even_lighting(img: np.ndarray) -> Optional[np.ndarray]:
     return cv2.cvtColor(flat, cv2.COLOR_GRAY2BGR)
 
 
+def sideways(lines: list[dict]) -> bool:
+    """Do the lines run up or down the picture, as on a page photographed on its side?"""
+    tall = wide = 0
+    for ln in lines:
+        xs, ys = [p[0] for p in ln["box"]], [p[1] for p in ln["box"]]
+        w, h = max(xs) - min(xs), max(ys) - min(ys)
+        if len(ln["text"]) >= 4:
+            tall, wide = tall + (h > 1.5 * w), wide + (w > 1.5 * h)
+    return tall >= 1 and tall > 2 * wide
+
+
+def read_upright(img: np.ndarray) -> tuple[list[dict], np.ndarray, int]:
+    """Read a picture, turning it first when it lies on its side. Returns the lines, the picture
+    as it was read, and how far it was turned clockwise (0, 90 or 270 degrees)."""
+    lines = read(img)
+    if not sideways(lines):
+        return lines, img, 0
+    best = (0.0, lines, img, 0)  # kept only if neither turn reads as an upright page
+    for quarter, angle in ((1, 270), (3, 90)):  # np.rot90 turns anticlockwise
+        turned = np.ascontiguousarray(np.rot90(img, quarter))
+        got = read(turned)
+        score = sum(ln["confidence"] * len(ln["text"]) for ln in got) if not sideways(got) else 0
+        if score > best[0]:
+            best = (score, got, turned, angle)
+    return best[1], best[2], best[3]
+
+
 def quality(img: np.ndarray) -> dict:
     """How fit a picture is for reading: its sharpness (variance of the edges,
     higher is sharper), its brightness (0 to 255) and what is wrong with it."""

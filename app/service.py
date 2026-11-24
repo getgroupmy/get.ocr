@@ -4,16 +4,17 @@ from typing import Optional
 
 import logging
 import queue
+import re
 import threading
 import time
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from . import codes, engine, extract, storage, vision, webhooks
+from . import codes, crypto, engine, extract, storage, vision, webhooks
 from .config import get_settings
-from .db import ApiClient, Job, Usage, session_scope, utcnow
+from .db import ApiClient, Job, Seen, Usage, session_scope, utcnow
 from .documents import Document, parse_pages
 from .errors import ApiError
 
@@ -74,7 +75,10 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
                 out.update(source="text_layer", text=page.text_layer, confidence=None)
                 lines = page.text_lines or []
             else:
-                lines = engine.read(page.image)
+                lines, upright, turned = engine.read_upright(page.image)
+                if turned:  # the page lay on its side: positions are given on the page turned upright
+                    page.image = upright
+                    out.update(width=upright.shape[1], height=upright.shape[0], rotated=turned)
                 conf = round(sum(ln["confidence"] for ln in lines) / len(lines), 4) if lines else None
                 out.update(source="ocr", text=engine.layout_text(lines), confidence=conf,
                            quality=engine.quality(page.image))
@@ -138,6 +142,39 @@ def run(data: bytes, options: dict, max_pages: int) -> dict:
     return extract_fields(data, options, max_pages) if options.get("extract") else recognise(data, options, max_pages)
 
 
+def _fingerprint(doc: dict) -> Optional[str]:
+    """What identifies a sales document whatever file it arrives in: who issued it, its number and its total."""
+    f = doc.get("fields") or {}
+    if doc.get("document_type") not in extract.SALE_TYPES or not f.get("document_number") or f.get("total") is None:
+        return None
+    parts = (doc["document_type"], re.sub(r"\W", "", str(f.get("supplier_name") or "").lower()),
+             re.sub(r"\W", "", str(f["document_number"]).lower()), f"{f['total']:.2f}")
+    return crypto.sha256_hex("|".join(parts))
+
+
+def note_duplicates(db: Session, client_id: str, data: bytes, result: dict) -> None:
+    """Add to the answer whether this client has sent the same file, or the same
+    document in another file, before. Only hashes are remembered."""
+    days = get_settings().duplicate_days
+    if days <= 0:
+        return
+
+    def seen(kind: str, digest: Optional[str]) -> Optional[str]:
+        if digest is None:
+            return None
+        first = db.scalar(select(Seen.at).where(Seen.client_id == client_id, Seen.kind == kind, Seen.digest == digest)
+                          .order_by(Seen.at).limit(1))
+        if first is None:
+            db.add(Seen(client_id=client_id, kind=kind, digest=digest))
+        return first.isoformat() + "Z" if first else None
+
+    file_seen = seen("file", crypto.sha256_hex(data))
+    documents = result.get("documents") or ([result] if "fields" in result else [])
+    for doc in documents:
+        doc["duplicate"] = {"same_document_first_seen": seen("content", _fingerprint(doc))}
+    result["duplicate_file_first_seen"] = file_seen
+
+
 def record_usage(db: Session, client_id: str, kind: str, ok: bool, pages: int, size: int, ms: int) -> None:
     db.add(Usage(client_id=client_id, kind=kind, ok=ok, pages=pages, size_bytes=size, duration_ms=ms))
 
@@ -164,9 +201,10 @@ def process(job_id: str) -> None:
         job.status = "processing"
         options, client_id, size = dict(job.options or {}), job.client_id, job.size_bytes
     started = time.monotonic()
-    result, error = None, None
+    result, error, data = None, None, None
     try:
-        result = run(storage.load(job_id), options, get_settings().max_pages)
+        data = storage.load(job_id)
+        result = run(data, options, get_settings().max_pages)
     except ApiError as exc:
         error = (exc.code, exc.message)
     except FileNotFoundError:
@@ -183,6 +221,8 @@ def process(job_id: str) -> None:
         if error:
             job.status, job.error, job.error_message = "failed", error[0], error[1][:300]
         else:
+            if data is not None:
+                note_duplicates(db, client_id, data, result)
             job.status, job.result, job.pages = "completed", result, len(result["pages"])
         record_usage(db, client_id, "job", error is None, job.pages or 0, size,
                      int((time.monotonic() - started) * 1000))
@@ -215,6 +255,8 @@ def housekeeping() -> None:
         for job in old:
             job.result, job.result_purged = None, True
             storage.delete(job.id)
+    with session_scope() as db:
+        db.execute(delete(Seen).where(Seen.at < utcnow() - timedelta(days=max(get_settings().duplicate_days, 1))))
 
 
 def _keep_house() -> None:

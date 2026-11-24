@@ -40,6 +40,10 @@
   .notice { border:1px solid var(--line); border-left:4px solid var(--accent); border-radius:8px; padding:12px; margin-bottom:12px; }
   .notice code { word-break:break-all; white-space:normal; }
   td.clip { max-width:220px; overflow:hidden; text-overflow:ellipsis; }
+  #try-view { position:relative; display:inline-block; max-width:100%; margin:12px 0; line-height:0; }
+  #try-view img { max-width:100%; max-height:80vh; border:1px solid var(--line); border-radius:8px; }
+  #try-view .mark { position:absolute; border:2px solid var(--accent); background:rgba(40,120,220,.12); border-radius:2px; }
+  #try-view .mark.on { border-color:var(--bad); background:rgba(220,60,60,.25); }
   .notice.bad { border-left-color:var(--bad); } .notice.ok { border-left-color:var(--ok); }
   .tag { font-size:12px; padding:2px 8px; border-radius:99px; border:1px solid var(--line); }
   .tag.ok { color:var(--ok); } .tag.bad { color:var(--bad); } .tag.warn { color:var(--warn); }
@@ -95,6 +99,9 @@
           <tbody id="clients"></tbody>
         </table></div>
         <p id="clients-empty" class="muted" hidden>No clients yet. Create one above to get an API key.</p>
+        <details style="margin-top:14px"><summary class="muted small">Activity in this console</summary>
+          <div class="scroll"><table><thead><tr><th>When</th><th>What</th><th>Client</th><th>From</th></tr></thead><tbody id="audit"></tbody></table></div>
+        </details>
       </div>
     </section>
 
@@ -128,6 +135,8 @@
         <div id="try-fields" hidden>
           <div id="try-checks"></div>
           <div class="scroll"><table><tbody id="try-kv"></tbody></table></div>
+          <p class="muted small" id="try-view-note" hidden>Each value found on the page is outlined. Point at a field above to see where it was read.</p>
+          <div id="try-view" hidden></div>
           <h2 style="margin-top:14px" id="try-rows-title"></h2>
           <div class="scroll"><table><thead id="try-rows-head"></thead><tbody id="try-rows"></tbody></table></div>
         </div>
@@ -229,6 +238,8 @@ async function loadClients() {
     tr.append(act); tb.append(tr);
   }
   $("#clients-empty").hidden = list.clients.length > 0;
+  api("/audit?limit=50").then((a) => { const tb = $("#audit"); tb.replaceChildren();
+    for (const e of a.events) { const tr = el("tr"); tr.append(el("td", when(e.at)), el("td", e.action), el("td", e.target || ""), el("td", e.origin || "")); tb.append(tr); } }).catch(() => {});
 }
 function showSecrets(title, pairs) {
   const box = $("#new-key"); box.replaceChildren(el("strong", title));
@@ -301,6 +312,31 @@ $("#try-form").addEventListener("submit", async (ev) => {
   finally { clearInterval(tick); go.disabled = false; go.textContent = "Read"; }
 });
 
+// The uploaded picture with a box around every value that was found on it, to check the reading by eye.
+function showMarks(r, kv) {
+  const view = $("#try-view"); view.replaceChildren(); view.hidden = true; $("#try-view-note").hidden = true;
+  const file = $("#t-file").files[0]; const page = (r.pages || [])[0];
+  if (!file || !file.type.startsWith("image/") || !page || page.rotated || !r.sources) return;
+  const img = el("img"); img.src = URL.createObjectURL(file); img.alt = "the uploaded document"; view.append(img);
+  const marks = {};
+  const add = (key, s) => {
+    if (!s || !s.box || s.page !== page.page) return;
+    const xs = s.box.map((p) => p[0]), ys = s.box.map((p) => p[1]);
+    const m = el("div", null, "mark"); m.title = key.replace(/_/g, " ") + (s.confidence ? " · reader " + Math.round(s.confidence * 100) + "% sure" : "");
+    m.style.left = 100 * Math.min(...xs) / page.width + "%"; m.style.top = 100 * Math.min(...ys) / page.height + "%";
+    m.style.width = 100 * (Math.max(...xs) - Math.min(...xs)) / page.width + "%"; m.style.height = 100 * (Math.max(...ys) - Math.min(...ys)) / page.height + "%";
+    view.append(m); (marks[key] = marks[key] || []).push(m);
+  };
+  for (const [key, s] of Object.entries(r.sources)) Array.isArray(s) ? s.forEach((one) => add(key, one)) : add(key, s);
+  if (!Object.keys(marks).length) return;
+  view.hidden = false; $("#try-view-note").hidden = false;
+  for (const tr of kv.children) {
+    const mine = marks[tr.dataset.field] || [];
+    tr.addEventListener("mouseenter", () => mine.forEach((m) => m.classList.add("on")));
+    tr.addEventListener("mouseleave", () => mine.forEach((m) => m.classList.remove("on")));
+  }
+}
+
 function showFields(r) {
   const docs = r.documents;
   if (docs) r = docs.find((d) => d.fields) || {};  // several documents: the first is shown, all are in the JSON
@@ -320,8 +356,9 @@ function showFields(r) {
   const kv = $("#try-kv"); kv.replaceChildren();
   for (const [k, v] of Object.entries(r.fields)) {
     if (k === listKey) continue;
-    const tr = el("tr"); tr.append(el("th", k.replace(/_/g, " ")), el("td", v === null ? "–" : typeof v === "object" ? JSON.stringify(v) : String(v))); kv.append(tr);
+    const tr = el("tr"); tr.dataset.field = k; tr.append(el("th", k.replace(/_/g, " ")), el("td", v === null ? "–" : typeof v === "object" ? JSON.stringify(v) : String(v))); kv.append(tr);
   }
+  showMarks(r, kv);
   const rows = r.fields[listKey] || [];
   $("#try-rows-title").textContent = listKey ? listKey.replace("_", " ") + " (" + rows.length + ")" : "";
   const th = $("#try-rows-head"); th.replaceChildren(); const tb = $("#try-rows"); tb.replaceChildren();

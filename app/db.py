@@ -92,6 +92,27 @@ class Usage(Base):
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class Seen(Base):
+    """A document that has come in before, remembered as a hash only: of the file,
+    or of what identifies its content (issuer, number, total). No text is kept."""
+    __tablename__ = "seen"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    client_id: Mapped[str] = mapped_column(ForeignKey("api_clients.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(10))  # file | content
+    digest: Mapped[str] = mapped_column(String(64), index=True)
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+class Audit(Base):
+    """What was done in the console and when. Names and ids only, never keys or document content."""
+    __tablename__ = "audit"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    action: Mapped[str] = mapped_column(String(40))
+    target: Mapped[Optional[str]] = mapped_column(String(160))
+    origin: Mapped[Optional[str]] = mapped_column(String(60))  # the address the request came from
+
+
 _engine = None
 _Session: Optional[sessionmaker] = None
 

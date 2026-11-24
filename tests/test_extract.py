@@ -92,7 +92,8 @@ def test_values_are_looked_up_in_the_text():
               "tax": 75.0, "date": "2026-04-03", "line_items": [{"description": "Widget", "amount": 1250.8}]}
     missing, sources = extract.ground(fields, "line_items", pages)
     assert missing == ["document_number", "tax", "line_items[0].description"]  # transposed digits, invented tax
-    assert sources["total"] == {"page": 1, "box": [[1, 5], [9, 5], [9, 6], [1, 6]]} and "supplier_name" in sources
+    assert sources["total"]["box"] == [[1, 5], [9, 5], [9, 6], [1, 6]] and sources["total"]["page"] == 1
+    assert "supplier_name" in sources and "confidence" in sources["total"]
     assert not extract._number_in(250.8, "Total 1,250.80") and extract._number_in(5, "Qty 5 pcs")
 
 
@@ -614,3 +615,30 @@ def test_what_is_sent_to_the_model_server_for_a_picture(monkeypatch):
     msg = sent["body"]["messages"][0]
     assert sent["url"].endswith("/api/chat") and sent["body"]["model"] == "glm-ocr" and sent["body"]["stream"] is False
     assert msg["content"] == "Text Recognition:" and msg["images"] == ["/9j/YWJj"] and msg["role"] == "user"
+
+
+# --- duplicates of a document, CSV, where rows are ---------------------------------------------
+def test_the_same_invoice_in_another_file_is_reported(client, api_key, need_engine, fake_model):
+    answers, _ = fake_model
+    mine = {**INVOICE, "document_number": "INV-2026-00999"}
+    lines = [ln.replace("INV-2026-00417", "INV-2026-00999") for ln in INVOICE_LINES]
+    answers += [mine, mine]
+    first = client.post("/v1/extract", files={"file": ("i1.png", synth.image_bytes(lines), "image/png")},
+                        headers=api_key).json()
+    other_scan = synth.image_bytes(lines + ["(second copy)"])
+    again = client.post("/v1/extract", files={"file": ("i2.png", other_scan, "image/png")}, headers=api_key).json()
+    assert first["duplicate"]["same_document_first_seen"] is None
+    assert again["duplicate"]["same_document_first_seen"].endswith("Z") and again["duplicate_file_first_seen"] is None
+
+
+def test_rows_as_csv_and_where_they_are(client, api_key, need_engine, fake_model):
+    answers, _ = fake_model
+    answers += [INVOICE, INVOICE]
+    body = post_invoice(client, api_key).json()
+    at = body["sources"]["line_items"]
+    assert len(at) == 2 and at[0]["page"] == 1 and len(at[0]["box"]) == 4 and 0 < at[0]["confidence"] <= 1
+    assert 0 < body["sources"]["document_number"]["confidence"] <= 1
+    r = client.post("/v1/extract", files={"file": ("i.png", synth.image_bytes(INVOICE_LINES), "image/png")},
+                    headers={**api_key, "Accept": "text/csv"})
+    assert r.headers["content-type"].startswith("text/csv")
+    assert r.text.splitlines() == ["description,quantity,unit_price,amount", "Widget,2.0,50.0,100.0", "Gasket,1.0,25.5,25.5"]

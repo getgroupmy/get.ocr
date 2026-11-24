@@ -133,7 +133,38 @@ instead, `docker compose --profile tunnel up -d` starts a tunnel of its own (`TU
 `scripts/install_service.sh` is adapted from get.ekyc's script. **It has not been run on a Mac
 yet**: this repository was built and tested on Linux.
 
+## Running it
+
+On the Mac mini, from `~/get.ocr`:
+
+| Task | Command |
+|---|---|
+| Update to the latest `main` and restart | `./scripts/update.sh` |
+| Back up the database (to `./backups`, or a folder you name) | `./scripts/backup.sh /Volumes/NAS/ocr` |
+| Replace the admin token | `./scripts/rotate_admin_token.sh` |
+| Measure accuracy on your own documents | `.venv/bin/python scripts/evaluate.py eval` (see `eval/README.md`) |
+
+- **Backups** hold the encrypted database and queued files. They are useless without
+  `OCR_STORAGE_KEY`: keep that key in a password manager, never beside the backups. To run the
+  backup nightly: `crontab -e`, then `15 2 * * * cd ~/get.ocr && ./scripts/backup.sh /path >> backup.log 2>&1`.
+- **Accuracy.** `scripts/evaluate.py` runs every document in a folder against its expected answer and
+  prints, per kind, how many fields were right, how often the checks passed and the time per
+  document. `--models a,b` compares installed models; `--engine glm` reads with the vision model.
+  Real documents in `eval/` are kept out of git.
+- **Limits per app.** One API key may make `OCR_RATE_PER_MINUTE` requests a minute (429
+  `rate_limited` beyond that).
+- **Activity log.** Creating, revoking and changing clients is recorded with the time and the
+  address it came from, shown under "Activity in this console" and at `GET /admin/api/audit`.
+- **Watching it.** `GET /health` needs no key and reports `status`, `ocr`, `extraction`,
+  `vision_reader`, `queue` and `disk_free_gb`; point any uptime checker at it. Nothing in the
+  service sends alerts by itself.
+- **Tests on GitHub.** `.github/workflows/tests.yml` runs the tests on Python 3.9 and 3.12 for every
+  pull request and push to `main`.
+
 ## Integrating (get-ride or any app)
+
+`examples/client.py` is a small Python client (read, extract, queue, wait, list the kinds, check a
+webhook's signature) to copy into a backend.
 
 Call the API **from your backend**, never from a mobile or web app: the key must stay server-side.
 
@@ -377,6 +408,24 @@ last page of a PDF with a text layer; `codes` lists what it found with the page 
 one is an LHDN MyInvois link, `einvoice` gives its `uuid` and `url`. The link is only decoded, not
 checked with LHDN. For plain reading, send `codes=true` to `POST /v1/ocr`.
 
+**The same document twice.** Every answer says whether this client has sent the same file before
+(`duplicate_file_first_seen`), and a sales document says whether the same issuer, number and total
+came in before in another file (`duplicate.same_document_first_seen`). Only hashes are kept, for
+`OCR_DUPLICATE_DAYS`. This catches a resubmitted invoice; it does not detect an edited picture.
+
+**How sure, and where.** `sources` gives for each top-level value the page, the box of the line it
+was read from and the reader's `confidence` in that line (`null` for a PDF's own text, which is
+exact). Under the name of the list (`line_items`, `transactions`, …) it gives the same for each row.
+This is the reader's confidence in the printed line, not the model's confidence in the field: use it
+together with the checks and `not_found_in_text`.
+
+**Rows for a spreadsheet.** Send `Accept: text/csv` to `POST /v1/extract` to get the list of lines
+as CSV.
+
+**Pages on their side.** A page photographed or scanned sideways is turned upright before reading;
+the page then carries `rotated` (90 or 270) and its positions are on the upright page. An
+upside-down page is read, but its lines come out in reverse order.
+
 **Picture quality.** Every page that was read from a picture carries `quality`: `sharpness`,
 `brightness` and `issues` (`blurry`, `dark`, `low_resolution`). Use it to ask for a better photo
 before trusting the answer. The thresholds are first guesses.
@@ -521,7 +570,12 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
   setting for small lone characters were tuned on a single photo of an order list, where they
   recovered a quantity that was missed in the shadow. Other photos are untested.
 - **Order lists** are read by the model and have only been run against a stand-in, not the real model.
-- **Not built.** Handwriting; Jawi, Tamil and Thai; whether a tick box is ticked; whether a signature or
+- **The review view is a viewer.** In Try it, a picture is shown with every found value outlined. It
+  does not save corrections, does not work for PDFs or turned pages, and nothing learns from it.
+- **Not built.** Matching one document against another (an invoice against its purchase order, a
+  payment against a statement line); detecting an edited picture; export to an accounting system;
+  searchable PDF; users and roles for the console (there is one admin token); alerts.
+- **Also not built.** Handwriting; Jawi, Tamil and Thai; whether a tick box is ticked; whether a signature or
   a stamp is present; identity documents (get.ekyc does those). 1D barcodes go through OpenCV's
   reader but were not tested; only QR codes were.
 - **Statement layouts.** The table reader was checked against one real 20-page Hong Leong Bank

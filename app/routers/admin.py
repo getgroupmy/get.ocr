@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from .. import crypto, extract, service
 from ..auth import new_api_key, require_admin
 from ..config import get_settings
-from ..db import ApiClient, Job, Usage, get_db
+from ..db import ApiClient, Audit, Job, Usage, get_db
 from ..errors import ApiError
 from .ocr import job_out, read_input
 
@@ -43,6 +43,11 @@ def _client_out(c: ApiClient, usage: Optional[dict] = None) -> dict:
             "last_used_at": u.get("last_used_at")}
 
 
+def _audit(db: Session, request: Request, action: str, target: Optional[str] = None) -> None:
+    origin = request.headers.get("cf-connecting-ip") or (request.client.host if request.client else None)
+    db.add(Audit(action=action, target=(target or "")[:160] or None, origin=(origin or "")[:60] or None))
+
+
 def _client(db: Session, cid: str) -> ApiClient:
     c = db.get(ApiClient, cid)
     if c is None:
@@ -51,13 +56,14 @@ def _client(db: Session, cid: str) -> ApiClient:
 
 
 @router.post("/clients", status_code=201)
-def create_client(body: CreateClient, db: Session = Depends(get_db)):
+def create_client(body: CreateClient, request: Request, db: Session = Depends(get_db)):
     key = new_api_key()
     url = _check_url(body.webhook_url)
     secret = secrets.token_urlsafe(32) if url else None
     c = ApiClient(id="cli_" + secrets.token_hex(8), name=body.name.strip(), key_hash=crypto.sha256_hex(key),
                   key_prefix=key[:9], webhook_url=url, webhook_secret=secret.encode() if secret else None)
     db.add(c)
+    _audit(db, request, "client.created", f"{c.id} {c.name}")
     db.flush()
     # The key and the webhook secret are shown this once; only a hash of the key is kept.
     return {**_client_out(c), "api_key": key, "webhook_secret": secret}
@@ -74,20 +80,31 @@ def list_clients(db: Session = Depends(get_db)):
 
 
 @router.put("/clients/{cid}/webhook")
-def set_webhook(cid: str, body: WebhookChange, db: Session = Depends(get_db)):
+def set_webhook(cid: str, body: WebhookChange, request: Request, db: Session = Depends(get_db)):
     """Set or clear the webhook. Setting it makes a new signing secret, shown once."""
     c = _client(db, cid)
     url = _check_url(body.webhook_url)
     secret = secrets.token_urlsafe(32) if url else None
     c.webhook_url, c.webhook_secret = url, secret.encode() if secret else None
+    _audit(db, request, "client.webhook_set" if url else "client.webhook_cleared", f"{c.id} {c.name}")
     return {**_client_out(c), "webhook_secret": secret}
 
 
 @router.delete("/clients/{cid}", status_code=204)
-def revoke_client(cid: str, db: Session = Depends(get_db)):
+def revoke_client(cid: str, request: Request, db: Session = Depends(get_db)):
     """The key stops working at once. Usage history is kept."""
-    _client(db, cid).active = False
+    c = _client(db, cid)
+    c.active = False
+    _audit(db, request, "client.revoked", f"{c.id} {c.name}")
     return Response(status_code=204)
+
+
+@router.get("/audit")
+def audit(limit: int = 100, db: Session = Depends(get_db)):
+    """What was done in the console, newest first."""
+    rows = db.scalars(select(Audit).order_by(Audit.at.desc()).limit(max(1, min(limit, 500))))
+    return {"events": [{"at": a.at.isoformat() + "Z", "action": a.action, "target": a.target, "origin": a.origin}
+                       for a in rows]}
 
 
 @router.get("/stats")
@@ -117,5 +134,8 @@ def list_jobs(limit: int = 100, db: Session = Depends(get_db)):
 async def try_it(request: Request):
     """Read a file from the console. Not stored and not counted as usage."""
     data, options, _ = await read_input(request)
+    if request.headers.get("content-type", "").lower().startswith("multipart/"):
+        from .. import llm
+        llm.use_model((await request.form()).get("model"))  # try another installed model for this one reading
     # the console is the administrator's own: whole documents, as a job would take them
     return await run_in_threadpool(service.run, data, options, get_settings().max_pages)
