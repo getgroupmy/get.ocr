@@ -18,7 +18,7 @@ webhooks, and data encrypted at rest.
 | **Queue** | `POST /v1/jobs` for long PDFs. Answers at once with a job id; the result comes by signed webhook or by polling |
 | **Output** | Plain text in reading order, and every line with its position and the model's confidence |
 | **PDF text layer** | A PDF page that already carries text is read from that text (exact and fast). Scanned pages are read as pictures. `force_ocr` reads everything as pictures |
-| **Fields** | `POST /v1/extract` turns an invoice, receipt, bank statement or order list into fields and lines, checks the arithmetic, and flags values that are not in the text. Needs a language model installed on the same machine (see below) |
+| **Fields** | `POST /v1/extract` turns a document into fields and lines (invoices and other sales documents, bank statements, payslips, utility bills, order lists, or your own list of fields), checks the arithmetic, and flags values that are not in the text. Needs a language model installed on the same machine (see below) |
 | **Engine** | PP-OCR (PaddleOCR models through RapidOCR), on the CPU. Latin script (English, Malay) and Chinese |
 
 ## Quick start (Docker)
@@ -205,7 +205,7 @@ The shape of the answer (shortened):
 }
 ```
 
-Send `type` (`auto`, `invoice`, `receipt`, `bank_statement`, `order`; default `auto`) to say what the document
+Send `type` (default `auto`; the kinds are listed below) to say what the document
 is, and `include_text=true` to also get the full text. `pages` and `force_ocr` work as for `/v1/ocr`.
 For long documents queue it instead: `POST /v1/jobs` with a `type` field gives the same answer as the
 job's `result`.
@@ -213,6 +213,90 @@ job's `result`.
 A bank statement gives `bank_name`, `account_holder`, `account_number`, `currency`, `period_start`,
 `period_end`, `opening_balance`, `closing_balance` and `transactions` (each with `date`,
 `description`, `reference`, `debit`, `credit`, `balance`).
+
+| `type` | Document | Checks |
+|---|---|---|
+| `invoice`, `receipt`, `credit_note`, `debit_note`, `quotation`, `purchase_order`, `delivery_order` | Sales documents; all give the invoice fields | `line_amounts`, `line_items_sum`, `total` |
+| `bank_statement`, `card_statement`, `ewallet_statement` | Bank, credit card and e-wallet statements, read as a table. On a card statement the balance is what is owed, so spending raises it | `running_balances`, `balance_reconciles`, `printed_totals` |
+| `payslip` | Salary slip | `earnings_sum`, `deductions_sum`, `net_pay` |
+| `utility_bill` | Electricity, water, internet, phone bill | `total_due` |
+| `order` | Kitchen or counter order list | `item_quantities` |
+| `custom` | Anything else: you name the fields | none |
+
+`auto` recognises bank statements, order lists, payslips, utility bills and most of the catalogue
+below by their wording, and treats everything else as a sales document. It never picks `custom`,
+`card_statement` or `ewallet_statement`: name those yourself.
+
+`GET /v1/types` lists every kind with its fields, the name of its list of lines and its checks.
+
+**The catalogue.** These kinds are each read by the model in one pass. The fields are named in
+`GET /v1/types`; the checks compare what the document itself prints (lines against a total, parts
+against an amount due, one date against another, an amount in words against the figure, the shape
+of a number).
+
+| `type` | Document | Checks |
+|---|---|---|
+| `vehicle_registration` | Vehicle registration card (VOC, geran) | `chassis_number` |
+| `road_tax` | Road tax (motor vehicle licence) | `period` |
+| `motor_insurance` | Motor insurance cover note or schedule | `period`, `total_payable` |
+| `vehicle_inspection` | Vehicle inspection report | none |
+| `driver_permit` | E-hailing permit or PSV licence | `validity` |
+| `traffic_summons` | Traffic summons or compound | `dates` |
+| `vehicle_agreement` | Vehicle rental or hire-purchase agreement | `term` |
+| `vehicle_handover` | Vehicle handover or condition checklist | none |
+| `supplier_statement` | Supplier statement of account | `total_due` |
+| `payment_voucher` | Payment voucher | `amount_in_words` |
+| `official_receipt` | Official receipt | `amount_in_words` |
+| `remittance_advice` | Bank transfer slip or remittance advice | none |
+| `cheque` | Cheque | `amount_in_words` |
+| `loan_statement` | Loan or financing statement | `closing_balance` |
+| `expense_claim` | Expense or petty cash claim | `lines_sum` |
+| `ea_form` | EA form (annual pay statement) | none |
+| `contribution_statement` | EPF, SOCSO or EIS contribution statement | `employer_sum`, `employee_sum`, `total_amount` |
+| `pcb_statement` | PCB / CP39 statement | `pcb_sum`, `total_amount` |
+| `sst_return` | SST return or payment receipt | `period`, `total_payable` |
+| `tax_notice` | Tax assessment notice | `dates` |
+| `company_profile` | Company profile (SSM) | `registration_number` |
+| `business_licence` | Business licence | `validity` |
+| `contract` | Contract or agreement | `term` |
+| `tenancy_agreement` | Tenancy agreement | `term` |
+| `employment_letter` | Letter of offer or employment letter | none |
+| `goods_received_note` | Goods received note | none |
+| `consignment_note` | Consignment note or airway bill | none |
+| `bill_of_lading` | Bill of lading | none |
+| `packing_list` | Packing list | `cartons_sum`, `gross_weight_sum` |
+| `customs_declaration` | Customs declaration (K1, K2) | `value_sum`, `duty_sum`, `total_payable` |
+| `medical_bill` | Medical bill | `lines_sum` |
+| `medical_certificate` | Medical certificate (MC) | `leave`, `days` |
+| `insurance_claim` | Insurance claim form | `dates` |
+| `business_card` | Business card | `email` |
+| `property_tax_bill` | Assessment or quit rent bill | `total_due` |
+| `timesheet` | Timesheet or attendance sheet | `hours_sum`, `overtime_sum` |
+
+A new kind is one entry in `app/doctypes.py`: its fields, its table of lines, its checks and the
+words `auto` knows it by.
+
+A payslip gives `employer_name`, `employee_name`, `employee_id`, `id_number`, `position`, `pay_period`,
+`pay_date`, `currency`, `gross_pay`, `total_deductions`, `net_pay` and `lines` (each with `kind`:
+`earning`, `deduction` or `employer`, a `description` and an `amount`). Employer contributions are
+listed but not taken off the pay in the checks.
+
+A utility bill gives `provider_name`, `customer_name`, `account_number`, `bill_number`, `bill_date`,
+`due_date`, `period_start`, `period_end`, `currency`, `usage`, `usage_unit`, `previous_balance`,
+`payments_received`, `current_charges`, `tax`, `rounding` and `total_due`.
+
+**Your own fields.** For any other document, send `type=custom` and `fields`: the values to find.
+
+```bash
+curl -s -X POST $BASE/v1/extract -H "X-API-Key: $KEY" -F file=@cover-note.pdf -F type=custom \
+  -F 'fields={"policy_number": "string", "expiry": "date", "sum_insured": {"type": "number", "description": "amount covered"}}'
+```
+
+`fields` is JSON as above (types `string`, `number`, `date`; a `description` helps the model), or
+just names separated by commas (`policy_number,expiry_date`; a name containing `date` is a date).
+Names are lower case letters, digits and `_`, at most 40 fields. There is nothing to add up, so
+`checks` is empty and `checks_passed` is `null`; `not_found_in_text` still lists values the model
+gave that are not printed.
 
 An order list (the slip a restaurant prints for the kitchen: items and quantities, no prices) gives
 `title`, `order_number`, `table`, `guests`, `date`, `time`, `staff`, `service_type` and `items` (each
@@ -345,9 +429,12 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
   statement (192 transactions, equal to the totals the bank prints) and made-up ones. It expects a
   date at the start of each transaction and right-aligned amount columns. Other banks' layouts are
   untested; the three checks say when a reading does not add up.
-- **Three document kinds.** Invoices, receipts and bank statements. `auto` tells a statement from the
-  rest by its wording. Other documents are not extracted. For identity documents use get.ekyc, which
-  validates what it reads.
+- **Which kinds were tried for real.** Only bank statements have run on real documents with the real
+  model. Every other kind, including the whole catalogue, was built from general knowledge of what
+  such a document prints, without a sample, and run only against a stand-in model. Expect field
+  names that do not fit a real layout and values the 7B model gets wrong; try each kind you need on
+  your own documents first. Long free-text documents (contracts, agreements) have nothing to add up,
+  so a wrong value there cannot be caught. For identity documents use get.ekyc, which validates what it reads.
 - **Extraction reads the OCR text, not the picture.** What the OCR cannot read (handwriting, Jawi,
   Tamil, Thai) cannot be extracted either. A statement transaction whose description continues on
   the next page loses those lines.
@@ -375,6 +462,7 @@ app/routers/ocr.py       /v1/ocr and /v1/jobs
 app/routers/admin.py     /admin/api: clients, usage, try it
 app/service.py           reading a document, the job queue, retention
 app/documents.py         images and PDFs into pages
+app/doctypes.py          the catalogue of other documents: fields, checks, words to recognise them
 app/statement.py         the transaction table of a bank statement, read by position
 app/engine.py            PP-OCR through RapidOCR
 app/extract.py           fields, arithmetic checks, lookup of values in the text

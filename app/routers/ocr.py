@@ -11,7 +11,7 @@ from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import service, storage
+from .. import extract, service, storage
 from ..auth import require_client
 from ..config import get_settings
 from ..db import ApiClient, Job, get_db
@@ -28,9 +28,12 @@ _FILE_BODY = {
                        "description": "'lines' adds every line with its position and confidence"},
             "force_ocr": {"type": "boolean", "default": False,
                           "description": "Read PDF pages as pictures even when they carry a text layer"},
-            "type": {"type": "string", "enum": ["auto", "invoice", "receipt", "bank_statement", "order"],
+            "type": {"type": "string", "enum": list(extract.TYPES),
                      "description": "/v1/extract: what the document is (default auto). "
                                     "/v1/jobs: send it to get fields instead of plain text"},
+            "fields": {"type": "string",
+                       "description": "With type=custom: the values to find. Names separated by commas, or JSON "
+                                      '{"name": "string|number|date"} or {"name": {"type": ..., "description": ...}}'},
             "include_text": {"type": "boolean", "default": False,
                              "description": "Extraction only: also return the full text that was read"},
             "external_ref": {"type": "string", "description": "Jobs only: your own id for this document"},
@@ -88,7 +91,8 @@ async def read_input(request: Request) -> tuple[bytes, dict, Optional[str]]:
     if not data:
         raise ApiError(422, "bad_request", "the file is empty")
     options = service.clean_options(fields.get("pages"), fields.get("detail"), _truthy(fields.get("force_ocr", False)),
-                                    fields.get("type"), _truthy(fields.get("include_text", False)))
+                                    fields.get("type"), _truthy(fields.get("include_text", False)),
+                                    fields.get("fields"))
     ref = fields.get("external_ref")
     return data, options, (str(ref)[:200] if ref else None)
 
@@ -111,6 +115,12 @@ async def _now(db: Session, client: ApiClient, data: bytes, options: dict, kind:
         raise
     service.record_usage(db, client.id, kind, True, len(result["pages"]), len(data), result["duration_ms"])
     return result
+
+
+@router.get("/types", summary="The kinds of document /v1/extract understands")
+def types(client: ApiClient = Depends(require_client)):
+    """Each kind with its fields, the name of its list of lines, and its checks."""
+    return {"types": extract.catalogue()}
 
 
 @router.post("/extract", openapi_extra=_FILE_BODY, summary="Read a file and extract its fields")

@@ -23,8 +23,8 @@ _NAMED_DATE = re.compile(r"^(\d{1,2})[-/ ]?([A-Za-z]{3,9})[-/ ,]*(\d{2,4})?$")
 _YEAR = re.compile(r"\b\d{1,2}[-/.](?:\d{1,2}|[A-Za-z]{3,9})[-/.]((?:19|20)?\d{2})\b|\b[A-Za-z]{3,9} ((?:19|20)\d{2})\b")
 
 _OPENING = re.compile(r"balance from previous|previous statement|opening balance|beginning balance|balance b/?f\b|"
-                      r"brought forward|baki awal|baki bawa|baki mula|baki permulaan|baki penyata lepas", re.I)
-_CLOSING = re.compile(r"closing balance|ending balance|balance c/?f\b|carried forward|baki akhir|baki penutup|"
+                      r"brought forward|previous balance|baki terdahulu|baki lepas|baki awal|baki bawa|baki mula|baki permulaan|baki penyata lepas", re.I)
+_CLOSING = re.compile(r"closing balance|ending balance|balance c/?f\b|carried forward|new balance|statement balance|current balance|baki semasa|baki baru|baki akhir|baki penutup|"
                       r"baki hantar", re.I)
 _SUMMARY = re.compile(r"\btotal\b|\bjumlah\b|\bsubtotal\b|end of statement|penyata tamat|\bpage\b|muka ?surat", re.I)
 _HEAD = {"debit": ("withdrawal", "withdrawals", "debit", "debits", "dr", "pengeluaran", "keluar", "payments"),
