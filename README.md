@@ -454,6 +454,14 @@ together with the checks and `not_found_in_text`.
 **Rows for a spreadsheet.** Send `Accept: text/csv` to `POST /v1/extract` to get the list of lines
 as CSV.
 
+**Transactions for an accounting system.** For a statement, add a profile to the same header:
+`Accept: text/csv; profile=quickbooks-3` (Date, Description, Amount, money out negative),
+`profile=quickbooks-4` (Date, Description, Credit, Debit) or `profile=generic` (Date, Description,
+Reference, Money out, Money in, Balance). The two QuickBooks layouts follow QuickBooks Online's
+published format: dates as dd/mm/yyyy, empty cells in place of zeros, no thousands separators.
+Xero, AutoCount and Bukku publish their column headers only inside a signed-in account, and SQL
+Account maps columns by hand, so for those use `generic` and map the columns at import.
+
 **Turned pages.** A page that is sideways or upside down is turned upright before reading; the page
 then carries `rotated` (90, 180 or 270) and its positions are on the upright page.
 
@@ -650,8 +658,20 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
   - *Barcodes:* on ZXing's own test images, 6/6 Code 128, 4/4 Code 39, 5/5 ITF, 6/6 EAN-13, 5/5 QR;
     UPC-A codes are reported as the equivalent EAN-13 with a leading 0. OpenCV's readers, used
     before, read none of the Code 128, Code 39 or ITF and 2 of the 5 QR codes.
-  - *Not measured:* tick boxes (14 were reported on the 50 forms; nobody checked them), bundle
-    splitting, and the statement and table readers on other banks' layouts, for want of public samples.
+  - *Statements from other banks:* 14 public sample statements (Singapore, Hong Kong, India, the
+    US, the Netherlands, Canada, three made-up banks and a UOB Malaysia card statement image). At
+    first 4 passed their checks, 1 crashed the reader and 5 gave no transactions. After the fixes:
+    4 pass (single-account statements with a running balance); 2 are read (161 and 162
+    transactions) and fail the balance check because the documents' own printed balances do not
+    follow, which is what the check is for; 2 card statements are read (19 and 30 transactions):
+    nobody verified those rows against the pages, and the 30-row one fails its opening-to-closing
+    check for a reason not looked into; 2 hold several
+    accounts and are read as one list, now reported by a failing `one_account` check; 1 scanned
+    copy finds 147 of 162 rows; 3 give nothing (Dutch and French layouts with European numbers or
+    the date inside the description, and a one-row example). No Malaysian bank account statement
+    other than Hong Leong was found to test.
+  - *Not measured:* tick boxes (14 were reported on the 50 forms; nobody checked them) and bundle
+    splitting.
 - **Not built.** Detecting an edited picture from its pixels (only the file's own metadata is
   reported); signatures; export to an accounting system; tables with merged cells; Jawi;
   the model's own confidence in a field.

@@ -592,8 +592,13 @@ def _statement(pages: list[dict], texts: list[str], kind: str = "bank_statement"
     fields = {**head, "opening_balance": table["opening_balance"], "closing_balance": table["closing_balance"],
               "transactions": table["transactions"]}
     repaired = repair_balances(fields["transactions"], fields["opening_balance"], owed)
+    checks = statement_checks(fields, table["printed"], owed=owed)
+    if table.get("accounts", 1) > 1:
+        # several accounts in one statement are read as one list, so their balances cannot follow each other
+        checks.append(_check("one_account", False, f"the statement prints {table['accounts']} opening balances: it holds "
+                             "several accounts, read here as one list. Send each account's pages on their own."))
     return {"document_type": kind, "fields": fields,
-            "checks": statement_checks(fields, table["printed"], owed=owed), "attempts": 1,
+            "checks": checks, "attempts": 1,
             "bad_dates": bad_dates, "truncated": False, "list_key": "transactions", "repaired": repaired,
             "method": "table"}
 
