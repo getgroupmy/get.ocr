@@ -121,3 +121,38 @@ def test_credit_card_statement_adds_spending_to_what_is_owed():
     checks = {c["name"]: c["passed"] for c in extract.statement_checks({**got}, owed=True)}
     assert checks["balance_reconciles"] is True
     assert {c["name"]: c["passed"] for c in extract.statement_checks({**got})}["balance_reconciles"] is False
+
+
+# --- any table, read by position ---------------------------------------------------------
+def settlement_table():
+    return table_page([
+        [("SETTLEMENT REPORT", 30)],
+        [("Date", 30), ("Reference", 110), ("Method", 250), ("Gross", 400, True), ("Fee", 480, True), ("Net", 560, True)],
+        [("02/01/2026", 30), ("TXN-0001", 110), ("FPX", 250), ("1,200.00", 400, True), ("12.00", 480, True), ("1,188.00", 560, True)],
+        [("03/01/2026", 30), ("TXN-0002", 110), ("Card", 250), ("300.50", 400, True), ("6.01", 480, True), ("294.49", 560, True)],
+        [("second line", 110)],
+        [("Total", 30), ("1,500.50", 400, True), ("18.01", 480, True), ("1,482.49", 560, True)],
+    ])
+
+
+def test_any_table_is_read_by_position():
+    from app import tables
+    got = tables.parse([settlement_table()])
+    assert got["columns"] == ["date", "reference", "method", "gross", "fee", "net"] and len(got["rows"]) == 2
+    assert got["rows"][0] == {"date": "02/01/2026", "reference": "TXN-0001", "method": "FPX", "gross": 1200.0,
+                              "fee": 12.0, "net": 1188.0}
+    assert got["rows"][1]["reference"] == "TXN-0002 second line" and got["totals"] == {"gross": 1500.5, "fee": 18.01, "net": 1482.49}
+    assert tables.checks(got)[0]["passed"] is True
+    got["rows"][0]["fee"] = 21.0  # a misread cell shows against the printed total
+    assert tables.checks(got)[0]["passed"] is False and "fee adds up to 27.01" in tables.checks(got)[0]["detail"]
+    assert tables.parse([table_page([[("Just a letter with no table.", 30)]])])["rows"] == []
+
+
+def test_table_needs_no_model(client, api_key, need_engine):
+    lines = ["Item      Qty      Amount", "Widget      2      100.00", "Gasket      1      25.50", "Total      3      125.50"]
+    r = client.post("/v1/extract", files={"file": ("t.png", synth.image_bytes(lines), "image/png")},
+                    data={"type": "table"}, headers=api_key)  # the model server is not running in the tests
+    if r.status_code == 422:  # the reader gave each row as one piece: nothing to place in columns
+        assert r.json()["error"] == "no_table"
+    else:
+        assert r.status_code == 200 and r.json()["read_by"] == "table" and r.json()["model_calls"] == 0

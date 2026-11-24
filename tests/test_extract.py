@@ -479,3 +479,58 @@ def test_custom_fields_are_validated(client, api_key, need_engine, fake_model):
         r = extract_image(client, api_key, INVOICE_LINES, type="custom", fields=bad)
         assert r.status_code == 422 and r.json()["error"] == "bad_fields", bad
     assert prompts == []
+
+
+# --- QR codes ---------------------------------------------------------------------------
+def test_qr_codes_are_read_when_asked(client, api_key, need_engine):
+    png = synth.qr_page("TRACK-99812", ["Consignment", "Parcel 1 of 1"])
+    plain = client.post("/v1/ocr", files={"file": ("q.png", png, "image/png")}, headers=api_key).json()
+    assert "codes" not in plain["pages"][0]
+    r = client.post("/v1/ocr", files={"file": ("q.png", png, "image/png")}, data={"codes": "true"}, headers=api_key)
+    code = r.json()["pages"][0]["codes"][0]
+    assert code["kind"] == "qr" and code["text"] == "TRACK-99812" and len(code["box"]) == 4
+
+
+def test_extraction_reports_the_einvoice_link(client, api_key, need_engine, fake_model):
+    answers, _ = fake_model
+    answers.append(INVOICE)
+    link = "https://myinvois.hasil.gov.my/8A1B2C3D4E5F6G7H8J9K0M1N2P/share/ABCDEF123456"
+    png = synth.qr_page(link, INVOICE_LINES)
+    body = client.post("/v1/extract", files={"file": ("i.png", png, "image/png")}, headers=api_key).json()
+    assert body["codes"][0]["text"] == link and body["codes"][0]["page"] == 1
+    assert body["einvoice"] == {"uuid": "8A1B2C3D4E5F6G7H8J9K0M1N2P", "url": link, "page": 1}
+    assert body["fields"]["total"] == 135.54
+
+
+# --- several documents in one file, and how good the picture is ---------------------------
+def test_pages_are_split_into_documents():
+    inv = "\n".join(INVOICE_LINES)
+    assert extract.split_pages([inv, inv]) == [[0], [1]]  # the first one printed its total
+    assert extract.split_pages(["Invoice INV-1\nPage 1 of 2\nWidget 2 50.00", "Page 2 of 2\nTotal 100.00",
+                                "Page 1 of 1\nReceipt\nTotal 5.00"]) == [[0, 1], [2]]
+    assert extract.split_pages([inv, "", "\n".join(ORDER_LINES)]) == [[0, 1], [2]]  # a blank back page, then another kind
+    assert extract.split_pages(["Dear Sir, we refer to the above.", "Yours faithfully"]) == [[0, 1]]
+
+
+def test_a_bundle_is_extracted_document_by_document(client, api_key, need_engine, fake_model):
+    answers, prompts = fake_model
+    answers += [INVOICE, ORDER]
+    pdf = synth.scanned_pdf([INVOICE_LINES, ORDER_LINES])
+    r = client.post("/v1/extract", files={"file": ("b.pdf", pdf, "application/pdf")}, data={"split": "true"},
+                    headers=api_key)
+    assert r.status_code == 200, r.text
+    docs = r.json()["documents"]
+    assert [(d["pages"], d["document_type"]) for d in docs] == [([1], "invoice"), ([2], "order")]
+    assert docs[0]["fields"]["total"] == 135.54 and docs[1]["fields"]["table"] == "01" and len(prompts) == 2
+    assert r.json()["page_count"] == 2 and "fields" not in r.json()
+
+
+def test_picture_quality_is_reported(client, api_key, need_engine):
+    import numpy as np
+    page = client.post("/v1/ocr", files={"file": ("a.png", synth.image_bytes(INVOICE_LINES), "image/png")},
+                       headers=api_key).json()["pages"][0]
+    assert page["quality"]["sharpness"] > 100 and "blurry" not in page["quality"]["issues"]
+    sharp = np.ascontiguousarray(np.asarray(synth.page_image(INVOICE_LINES))[:, :, ::-1])
+    import cv2
+    assert "blurry" in engine.quality(cv2.GaussianBlur(sharp, (0, 0), 6))["issues"]
+    assert "dark" in engine.quality((sharp * 0.15).astype("uint8"))["issues"]

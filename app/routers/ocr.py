@@ -34,6 +34,11 @@ _FILE_BODY = {
             "fields": {"type": "string",
                        "description": "With type=custom: the values to find. Names separated by commas, or JSON "
                                       '{"name": "string|number|date"} or {"name": {"type": ..., "description": ...}}'},
+            "split": {"type": "boolean", "default": False,
+                      "description": "Extraction only: the file holds several documents scanned together; "
+                                     "answer with one entry per document under 'documents'"},
+            "codes": {"type": "boolean", "default": False,
+                      "description": "Also read QR codes and barcodes on every page (extraction always looks for them)"},
             "include_text": {"type": "boolean", "default": False,
                              "description": "Extraction only: also return the full text that was read"},
             "external_ref": {"type": "string", "description": "Jobs only: your own id for this document"},
@@ -77,7 +82,7 @@ async def read_input(request: Request) -> tuple[bytes, dict, Optional[str]]:
             raise ApiError(422, "bad_request", 'send JSON like {"file": "<base64>"}') from exc
     elif ctype.startswith("multipart/form-data"):
         try:
-            fields = await request.form(max_files=1, max_fields=10)
+            fields = await request.form(max_files=1, max_fields=20)
         except Exception as exc:  # noqa: BLE001
             raise ApiError(422, "bad_request", "the form could not be read") from exc
         upload = fields.get("file")
@@ -92,7 +97,8 @@ async def read_input(request: Request) -> tuple[bytes, dict, Optional[str]]:
         raise ApiError(422, "bad_request", "the file is empty")
     options = service.clean_options(fields.get("pages"), fields.get("detail"), _truthy(fields.get("force_ocr", False)),
                                     fields.get("type"), _truthy(fields.get("include_text", False)),
-                                    fields.get("fields"))
+                                    fields.get("fields"), _truthy(fields.get("codes", False)),
+                                    _truthy(fields.get("split", False)))
     ref = fields.get("external_ref")
     return data, options, (str(ref)[:200] if ref else None)
 
