@@ -107,11 +107,7 @@
           <input type="file" id="t-file" accept="image/*,application/pdf" required>
           <div class="row">
             <div><label for="t-type">Result</label><select id="t-type">
-              <option value="">Text only</option><option value="auto">Fields: detect the document</option>
-              <option value="invoice">Fields: invoice or receipt</option><option value="bank_statement">Fields: bank statement</option>
-              <option value="order">Fields: order list</option>
-              <option value="payslip">Fields: payslip</option><option value="utility_bill">Fields: utility bill</option>
-              <option value="custom">Fields: my own list</option>
+              <option value="">Text only</option>
             </select></div>
             <div id="t-fields-box" hidden><label for="t-fields">Fields to find</label><input type="text" id="t-fields" placeholder="policy_number, expiry_date, sum_insured"></div>
             <div><label for="t-pages">PDF pages (optional)</label><input type="text" id="t-pages" placeholder="1-3"></div>
@@ -204,6 +200,8 @@ document.querySelectorAll("nav button").forEach((b) => b.addEventListener("click
 
 async function loadClients() {
   const [list, s] = await Promise.all([api("/clients"), api("/stats")]);
+  const sel = $("#t-type");
+  if (sel.options.length === 1) for (const t of s.types) sel.append(new Option("Fields: " + t.label.charAt(0).toLowerCase() + t.label.slice(1), t.type));
   const stats = $("#stats"); stats.replaceChildren();
   const add = (v, label) => { const d = el("div", null, "stat"); d.append(el("b", String(v)), el("span", label)); stats.append(d); };
   add(s.requests, "readings"); add(s.pages, "pages read"); add(s.failed, "failed");

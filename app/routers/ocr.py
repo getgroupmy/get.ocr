@@ -117,6 +117,12 @@ async def _now(db: Session, client: ApiClient, data: bytes, options: dict, kind:
     return result
 
 
+@router.get("/types", summary="The kinds of document /v1/extract understands")
+def types(client: ApiClient = Depends(require_client)):
+    """Each kind with its fields, the name of its list of lines, and its checks."""
+    return {"types": extract.catalogue()}
+
+
 @router.post("/extract", openapi_extra=_FILE_BODY, summary="Read a file and extract its fields")
 async def extract_now(request: Request, client: ApiClient = Depends(require_client), db: Session = Depends(get_db)):
     """Reads an invoice, receipt, bank statement or order list and answers with

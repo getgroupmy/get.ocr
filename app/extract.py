@@ -11,12 +11,13 @@ import json
 import re
 from datetime import date
 
-from . import llm, statement
+from . import doctypes, llm, statement
 from .config import get_settings
 from .errors import ApiError
 
 SALE_TYPES = ("invoice", "receipt", "credit_note", "debit_note", "quotation", "purchase_order", "delivery_order")
-TYPES = ("auto", *SALE_TYPES, "bank_statement", "order", "payslip", "utility_bill", "custom")
+STATEMENT_TYPES = ("bank_statement", "card_statement", "ewallet_statement")
+TYPES = ("auto", *SALE_TYPES, *STATEMENT_TYPES, "order", "payslip", "utility_bill", *doctypes.DOCS, "custom")
 TOLERANCE = 0.05  # receipts round to 5 sen
 
 _NUM = {"type": ["number", "null"]}
@@ -151,6 +152,8 @@ def guess_type(text: str) -> str:
         return "payslip"
     if len(set(m.lower() for m in _BILL_WORDS.findall(text))) >= 3:
         return "utility_bill"
+    if doctypes.guess(text):
+        return doctypes.guess(text)
     return "invoice"
 
 
@@ -278,7 +281,8 @@ def broken_balances(txns: list[dict], start: Optional[float]) -> list[int]:
     return bad
 
 
-def statement_checks(f: dict, printed: Optional[dict] = None) -> list[dict]:
+def statement_checks(f: dict, printed: Optional[dict] = None, owed: bool = False) -> list[dict]:
+    """owed: the balance is what the holder owes (a credit card), so spending raises it and payments lower it."""
     txns, opening, closing = f["transactions"], f["opening_balance"], f["closing_balance"]
     out = []
     with_balance = sum(1 for t in txns if t["balance"] is not None)
@@ -292,10 +296,10 @@ def statement_checks(f: dict, printed: Optional[dict] = None) -> list[dict]:
     if opening is None or closing is None:
         out.append(_check("balance_reconciles", None, "opening or closing balance is not printed"))
     else:
-        got = round(opening + credits - debits, 2)
-        out.append(_check("balance_reconciles", _near(got, closing),
-                          f"opening {opening:.2f} + credits {credits:.2f} − debits {debits:.2f} = {got:.2f}; "
-                          f"closing is {closing:.2f}"))
+        got = round(opening + debits - credits if owed else opening + credits - debits, 2)
+        how = (f"previous balance {opening:.2f} + charges {debits:.2f} − payments {credits:.2f}" if owed else
+               f"opening {opening:.2f} + credits {credits:.2f} − debits {debits:.2f}")
+        out.append(_check("balance_reconciles", _near(got, closing), f"{how} = {got:.2f}; closing is {closing:.2f}"))
     printed = printed or {}
     if printed.get("total_debits") is not None or printed.get("total_credits") is not None:
         n_debit, n_credit = sum(t["debit"] is not None for t in txns), sum(t["credit"] is not None for t in txns)
@@ -365,7 +369,7 @@ def ground(fields: dict, list_key: Optional[str], pages: list[dict], check_rows:
             sources[key] = where
     for i, row in enumerate(fields[list_key] if check_rows and list_key else []):
         for key, value in row.items():
-            if value is None or key in ("date", "kind"):
+            if value is None or key in ("kind", "role") or "date" in key:
                 continue
             if not _found(value, whole):
                 missing.append(f"{list_key}[{i}].{key}")
@@ -513,20 +517,53 @@ def _simple(kind: str, rules: str, schema: dict, checks, list_key: Optional[str]
             "dates": tuple(k for k, v in schema["properties"].items() if v is _DATE)}
 
 
-def _statement(pages: list[dict], texts: list[str]) -> dict:
+def catalogue_schema(kind: str) -> dict:
+    kinds = {"string": _STR, "number": _NUM, "date": _DATE}
+    d = doctypes.DOCS[kind]
+    props = {name: kinds[t] for name, t in d["fields"].items()}
+    if d["rows"]:
+        props[d["rows"][0]] = {"type": "array", "items": _obj({name: kinds[t] for name, t in d["rows"][1].items()})}
+    return _obj(props)
+
+
+def catalogue() -> list[dict]:
+    """Every kind `type` accepts, for the API and the console."""
+    sale = [n for n, s in SALE_SCHEMA["properties"].items() if n not in ("document_type", "line_items")]
+    out = [{"type": "auto", "label": "Detect the document", "fields": [], "rows": None, "checks": []}]
+    out += [{"type": t, "label": t.replace("_", " ").capitalize(), "fields": sale, "rows": "line_items",
+             "checks": ["line_amounts", "line_items_sum", "total"]} for t in SALE_TYPES]
+    statement_fields = [n for n in STATEMENT_SCHEMA["properties"] if n != "transactions"]
+    out += [{"type": t, "label": label, "fields": statement_fields, "rows": "transactions",
+             "checks": ["running_balances", "balance_reconciles", "printed_totals"]}
+            for t, label in zip(STATEMENT_TYPES, ("Bank statement", "Credit card statement", "E-wallet statement"))]
+    for t, label, schema, rows, checks in (
+            ("order", "Order list", ORDER_SCHEMA, "items", ["item_quantities"]),
+            ("payslip", "Payslip", PAYSLIP_SCHEMA, "lines", ["earnings_sum", "deductions_sum", "net_pay"]),
+            ("utility_bill", "Utility bill", BILL_SCHEMA, None, ["total_due"])):
+        out.append({"type": t, "label": label, "fields": [n for n in schema["properties"] if n != rows], "rows": rows,
+                    "checks": checks})
+    out += [{"type": t, "label": d["label"], "fields": list(d["fields"]), "rows": d["rows"][0] if d["rows"] else None,
+             "checks": [c[1] for c in d["checks"]]} for t, d in doctypes.DOCS.items()]
+    out.append({"type": "custom", "label": "My own list of fields", "fields": [], "rows": None, "checks": []})
+    return out
+
+
+def _statement(pages: list[dict], texts: list[str], kind: str = "bank_statement") -> dict:
     """The transactions are read from the table by position (no model, exact
     and fast); the model only names the account details at the top of the first
     page. A statement that is not laid out as a table goes to the model whole."""
     table = statement.parse(pages, get_settings().date_order)
+    owed = kind == "card_statement"
     if not table["transactions"]:
-        return _statement_by_model(pages, texts)
+        r = _statement_by_model(pages, texts)
+        return {**r, "document_type": kind, "checks": statement_checks(r["fields"], owed=owed)}
     first = next(t for t in texts if t.strip())
     head, bad_dates = _ask(_HEADER, HEADER_SCHEMA, "\n".join(first.splitlines()[:40])[:4000])
     fields = {**head, "opening_balance": table["opening_balance"], "closing_balance": table["closing_balance"],
               "transactions": table["transactions"]}
     repaired = repair_balances(fields["transactions"], fields["opening_balance"])
-    return {"document_type": "bank_statement", "fields": fields,
-            "checks": statement_checks(fields, table["printed"]), "attempts": 1,
+    return {"document_type": kind, "fields": fields,
+            "checks": statement_checks(fields, table["printed"], owed=owed), "attempts": 1,
             "bad_dates": bad_dates, "truncated": False, "list_key": "transactions", "repaired": repaired,
             "method": "table"}
 
@@ -581,8 +618,12 @@ def run(pages: list[dict], texts: list[str], wanted: str, custom: Optional[dict]
     if not any(t.strip() for t in texts):
         raise ApiError(422, "no_text", "no text was found in the document, so there is nothing to extract")
     kind = wanted if wanted != "auto" else guess_type("\n".join(texts))
-    if kind == "bank_statement":
-        r = _statement(pages, texts)
+    if kind in STATEMENT_TYPES:
+        r = _statement(pages, texts, kind)
+    elif kind in doctypes.DOCS:
+        d = doctypes.DOCS[kind]
+        r = _simple(kind, doctypes.prompt(kind), catalogue_schema(kind), lambda f: doctypes.run_checks(kind, f),
+                    d["rows"][0] if d["rows"] else None, pages, texts)
     elif kind == "order":
         r = _order(pages, texts)
     elif kind == "payslip":

@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
-from .. import crypto, service
+from .. import crypto, extract, service
 from ..auth import new_api_key, require_admin
 from ..config import get_settings
 from ..db import ApiClient, Job, Usage, get_db
@@ -100,6 +100,7 @@ def stats(db: Session = Depends(get_db)):
     return {"requests": total, "failed": total - ok, "pages": pages,
             "seconds_per_page": round(ms / 1000 / pages, 2) if pages else None,
             "jobs": by_status, "queue": service.queue_length(),
+            "types": [{"type": t["type"], "label": t["label"]} for t in extract.catalogue()],
             "limits": {"max_upload_mb": s.max_upload_mb, "sync_max_pages": s.sync_max_pages, "max_pages": s.max_pages,
                        "retention_days": s.retention_days}}
 
