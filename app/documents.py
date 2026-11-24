@@ -25,6 +25,46 @@ class Page:
     width: int
     height: int
     text_layer: Optional[str] = None
+    text_lines: Optional[list] = None  # the text layer as positioned pieces, in the shape engine.read gives
+
+
+def _layer_lines(tp, height: float) -> list[dict]:  # noqa: ANN001
+    """The pieces of text in a PDF's text layer with their place on the page
+    (points, from the top left). Words that follow each other closely are one
+    piece; a wider gap, as between the columns of a table, starts a new one."""
+    n = tp.count_chars()
+    whole = tp.get_text_range()
+    if len(whole) != n:
+        whole = None
+    pieces: list[list] = []  # [text, left, bottom, right, top]
+    cur: Optional[list] = None
+    spaced = False
+    for i in range(n):
+        ch = whole[i] if whole is not None else tp.get_text_range(i, 1)
+        if not ch or ch.isspace() or ch in "\x00\ufffe\uffff":
+            spaced = True
+            continue
+        left, bottom, right, top = tp.get_charbox(i)
+        if right <= left and top <= bottom:
+            continue
+        if cur is not None:
+            line_h = max(cur[4] - cur[2], top - bottom, 1.0)
+            same_line = bottom < cur[4] and top > cur[2]
+            gap = left - cur[3]
+            if same_line and -0.5 * line_h <= gap < 0.9 * line_h:
+                cur[0] += (" " if spaced else "") + ch
+                cur[1:] = [min(cur[1], left), min(cur[2], bottom), max(cur[3], right), max(cur[4], top)]
+                spaced = False
+                continue
+        cur = [ch, left, bottom, right, top]
+        pieces.append(cur)
+        spaced = False
+    out = []
+    for text, left, bottom, right, top in pieces:
+        y0, y1 = round(height - top, 1), round(height - bottom, 1)
+        x0, x1 = round(left, 1), round(right, 1)
+        out.append({"text": text, "confidence": None, "box": [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]})
+    return out
 
 
 def _bgr(im: Image.Image) -> np.ndarray:
@@ -96,7 +136,7 @@ class Document:
                            "(JPEG, PNG, WEBP, TIFF, BMP, GIF, PDF)") from exc
         self.page_count = len(self._frames)
 
-    def page(self, number: int, use_text_layer: bool = True) -> Page:
+    def page(self, number: int, use_text_layer: bool = True, with_lines: bool = False) -> Page:
         if self.kind == "image":
             img = _bgr(self._frames[number - 1])
             return Page(number, img, img.shape[1], img.shape[0])
@@ -109,11 +149,13 @@ class Document:
                     tp = p.get_textpage()
                     try:
                         text = tp.get_text_range().replace("\r\n", "\n").replace("\r", "\n").strip()
+                        real = len(re.sub(r"\s", "", text)) >= 20
+                        lines = _layer_lines(tp, h) if real and with_lines else None
                     finally:
                         tp.close()
                     # A real text layer: use it. A few stray characters on a scan: read the picture.
-                    if len(re.sub(r"\s", "", text)) >= 20:
-                        return Page(number, None, round(w), round(h), text)
+                    if real:
+                        return Page(number, None, round(w), round(h), text, lines)
                 scale = min(s.pdf_dpi / 72, s.max_image_side / max(w, h, 1))
                 img = _bgr(p.render(scale=scale).to_pil())
             finally:
