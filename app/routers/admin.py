@@ -115,4 +115,4 @@ def list_jobs(limit: int = 100, db: Session = Depends(get_db)):
 async def try_it(request: Request):
     """Read a file from the console. Not stored and not counted as usage."""
     data, options, _ = await read_input(request)
-    return await run_in_threadpool(service.recognise, data, options, get_settings().sync_max_pages)
+    return await run_in_threadpool(service.run, data, options, get_settings().sync_max_pages)

@@ -106,6 +106,10 @@
           <label for="t-file">Image or PDF</label>
           <input type="file" id="t-file" accept="image/*,application/pdf" required>
           <div class="row">
+            <div><label for="t-type">Result</label><select id="t-type">
+              <option value="">Text only</option><option value="auto">Fields: detect the document</option>
+              <option value="invoice">Fields: invoice or receipt</option><option value="bank_statement">Fields: bank statement</option>
+            </select></div>
             <div><label for="t-pages">PDF pages (optional)</label><input type="text" id="t-pages" placeholder="1-3"></div>
             <div><label for="t-force"><input type="checkbox" id="t-force"> Ignore the PDF's text layer</label></div>
             <button class="primary" type="submit" id="t-go">Read</button>
@@ -115,6 +119,12 @@
       <div class="card" id="try-out" hidden>
         <h2 id="try-title">Result</h2>
         <p class="muted small" id="try-meta"></p>
+        <div id="try-fields" hidden>
+          <div id="try-checks"></div>
+          <div class="scroll"><table><tbody id="try-kv"></tbody></table></div>
+          <h2 style="margin-top:14px" id="try-rows-title"></h2>
+          <div class="scroll"><table><thead id="try-rows-head"></thead><tbody id="try-rows"></tbody></table></div>
+        </div>
         <pre id="try-text"></pre>
         <details><summary class="muted small">Full JSON answer</summary><pre id="try-json"></pre></details>
       </div>
@@ -138,6 +148,8 @@
         <p>Call it from your backend with the client's key in <code>X-API-Key</code>. Do not ship the key inside a mobile or web app. Full reference: <a href="/docs">/docs</a>.</p>
         <label>Read a file now (images, PDFs up to <span data-limit="sync_max_pages">5</span> pages)</label>
         <pre data-snippet>curl -s -X POST {BASE}/v1/ocr -H "X-API-Key: $KEY" -F file=@receipt.jpg</pre>
+        <label>Fields from an invoice, receipt or bank statement</label>
+        <pre data-snippet>curl -s -X POST {BASE}/v1/extract -H "X-API-Key: $KEY" -F file=@invoice.pdf</pre>
         <label>Queue a long PDF (up to <span data-limit="max_pages">100</span> pages), then fetch the result</label>
         <pre data-snippet>curl -s -X POST {BASE}/v1/jobs -H "X-API-Key: $KEY" -F file=@contract.pdf -F external_ref=doc-1042</pre>
         <pre data-snippet>curl -s {BASE}/v1/jobs/$JOB_ID -H "X-API-Key: $KEY"</pre>
@@ -260,21 +272,49 @@ $("#try-form").addEventListener("submit", async (ev) => {
   const fd = new FormData(); fd.append("file", f);
   if ($("#t-pages").value.trim()) fd.append("pages", $("#t-pages").value.trim());
   if ($("#t-force").checked) fd.append("force_ocr", "true");
+  if ($("#t-type").value) { fd.append("type", $("#t-type").value); fd.append("include_text", "true"); }
   const go = $("#t-go"); go.disabled = true; go.textContent = "Reading…";
   try {
     const r = await api("/try", { method: "POST", body: fd });
     $("#try-out").hidden = false;
     $("#try-meta").textContent = r.pages.length + " of " + r.page_count + " page(s) in " + (r.duration_ms / 1000).toFixed(2) + " s";
     $("#try-text").textContent = r.text || "(no text found)";
+    showFields(r);
     $("#try-json").textContent = JSON.stringify(r, null, 2);
   } catch (e) { $("#try-out").hidden = true; showError(e.message); }
   finally { go.disabled = false; go.textContent = "Read"; }
 });
 
+function showFields(r) {
+  const box = $("#try-fields"); box.hidden = !r.fields; if (!r.fields) return;
+  const checks = $("#try-checks"); checks.replaceChildren();
+  const head = el("p"); head.append(el("strong", r.document_type.replace("_", " ")), document.createTextNode(" · model " + r.model + " · " + r.model_calls + " call(s)"));
+  checks.append(head);
+  for (const c of r.checks) {
+    const p = el("p", null, "small"); p.append(el("span", c.passed === null ? "not checked" : c.passed ? "passed" : "failed",
+      "tag " + (c.passed === null ? "" : c.passed ? "ok" : "bad")), document.createTextNode(" " + c.name + ": " + c.detail)); checks.append(p);
+  }
+  if (r.not_found_in_text.length) checks.append(el("p", "Not found in the text, check by hand: " + r.not_found_in_text.join(", "), "notice bad small"));
+  if (r.truncated) checks.append(el("p", "The document was longer than the model can take; the end was left out.", "notice bad small"));
+  const listKey = r.fields.transactions ? "transactions" : "line_items";
+  const kv = $("#try-kv"); kv.replaceChildren();
+  for (const [k, v] of Object.entries(r.fields)) {
+    if (k === listKey) continue;
+    const tr = el("tr"); tr.append(el("th", k.replace(/_/g, " ")), el("td", v === null ? "–" : String(v))); kv.append(tr);
+  }
+  const rows = r.fields[listKey] || [];
+  $("#try-rows-title").textContent = listKey.replace("_", " ") + " (" + rows.length + ")";
+  const th = $("#try-rows-head"); th.replaceChildren(); const tb = $("#try-rows"); tb.replaceChildren();
+  if (rows.length) {
+    const cols = Object.keys(rows[0]); const hr = el("tr"); cols.forEach((c) => hr.append(el("th", c.replace(/_/g, " ")))); th.append(hr);
+    for (const row of rows) { const tr = el("tr"); cols.forEach((c) => tr.append(el("td", row[c] === null ? "" : String(row[c])))); tb.append(tr); }
+  }
+}
+
 document.querySelectorAll("[data-snippet]").forEach((p) => { p.textContent = p.textContent.replace("{BASE}", location.origin); });
 fetch("/health").then((r) => r.json()).then((h) => {
   $("#health").replaceChildren(el("span", null, "dot " + (h.status === "ok" ? "ok" : "bad")),
-    document.createTextNode(h.status === "ok" ? "engine ready" : "engine not loaded"));
+    document.createTextNode((h.status === "ok" ? "engine ready" : "engine not loaded") + (h.extraction ? " · extraction ready" : " · extraction off")));
 }).catch(() => { $("#health").textContent = "server unreachable"; });
 if (token) enter().then((ok) => { if (!ok) signOut(); }); else $("#signin").hidden = false;
 </script>

@@ -9,6 +9,7 @@ os.environ.update({
     "OCR_DATA_DIR": _tmp,
     "OCR_SYNC_MAX_PAGES": "2",
     "OCR_MAX_PAGES": "3",
+    "OCR_LLM_URL": "http://127.0.0.1:9",  # nothing listens here: extraction is off unless a test fakes the model
 })
 
 import pytest  # noqa: E402

@@ -18,6 +18,7 @@ webhooks, and data encrypted at rest.
 | **Queue** | `POST /v1/jobs` for long PDFs. Answers at once with a job id; the result comes by signed webhook or by polling |
 | **Output** | Plain text in reading order, and every line with its position and the model's confidence |
 | **PDF text layer** | A PDF page that already carries text is read from that text (exact and fast). Scanned pages are read as pictures. `force_ocr` reads everything as pictures |
+| **Fields** | `POST /v1/extract` turns an invoice, receipt or bank statement into fields and lines, checks the arithmetic, and flags values that are not in the text. Needs a language model installed on the same machine (see below) |
 | **Engine** | PP-OCR (PaddleOCR models through RapidOCR), on the CPU. Latin script (English, Malay) and Chinese |
 
 ## Quick start (Docker)
@@ -78,6 +79,24 @@ listens on `127.0.0.1:8090`.
 - Log: `~/get.ocr/server.log`
 - Remove: `./scripts/install_service.sh --uninstall`
 - To try it without installing: `.venv/bin/uvicorn app.main:app --port 8090`
+
+### The model for field extraction
+
+`/v1/extract` needs a language model running on the same Mac. Nothing is sent off the machine: the
+server refuses to start if `OCR_LLM_URL` points anywhere but this machine or the local network.
+Install [Ollama](https://ollama.com/download) (it uses the Mac's GPU and starts at login), then fetch
+the model once (a download of several GB):
+
+```bash
+ollama pull qwen2.5:7b
+```
+
+Then `curl -s localhost:8090/health` should show `"extraction": true`. To use another model, set
+`OCR_LLM_MODEL`. Ollama starts when you log in, not at boot: after a restart, extraction is off until
+someone logs in to the Mac, unless you set the Mac to log in automatically.
+
+With Docker the container reaches Ollama on the host at `host.docker.internal:11434`; that works with
+Docker Desktop on a Mac. On Linux, Ollama must listen on an address the container can reach.
 
 **Public address.** If get.ekyc's Cloudflare tunnel already runs on that Mac, add a second public
 hostname to the same tunnel in Cloudflare Zero Trust (for example `ocr.getride.my`) with service
@@ -154,6 +173,62 @@ r = httpx.post(f"{BASE}/v1/ocr", headers={"X-API-Key": KEY}, files={"file": open
 text = r.json()["text"]
 ```
 
+### Fields from an invoice, receipt or bank statement
+
+```bash
+curl -s -X POST $BASE/v1/extract -H "X-API-Key: $KEY" -F file=@invoice.pdf
+```
+
+The shape of the answer (shortened):
+
+```json
+{
+  "document_type": "invoice",
+  "fields": {
+    "supplier_name": "ACME SUPPLIES SDN BHD", "supplier_tax_id": null, "customer_name": null,
+    "document_number": "INV-2026-00417", "date": "2026-04-03", "due_date": null, "currency": "MYR",
+    "line_items": [{"description": "Widget", "quantity": 2, "unit_price": 50.0, "amount": 100.0},
+                   {"description": "Gasket", "quantity": 1, "unit_price": 25.5, "amount": 25.5}],
+    "subtotal": 125.5, "discount": null, "service_charge": null, "tax": 10.04, "rounding": null,
+    "total": 135.54, "payment_method": null
+  },
+  "checks": [
+    {"name": "line_amounts", "passed": true, "detail": "quantity × unit price equals the amount on 2 line(s)"},
+    {"name": "line_items_sum", "passed": true, "detail": "lines add up to 125.50, the subtotal"},
+    {"name": "total", "passed": true, "detail": "subtotal, charges and tax come to 135.54; total is 135.54"}
+  ],
+  "checks_passed": true,
+  "not_found_in_text": [],
+  "sources": {"total": {"page": 1, "box": [[50, 610], [330, 610], [330, 650], [50, 650]]}},
+  "model": "qwen2.5:7b", "model_calls": 1, "page_count": 1
+}
+```
+
+Send `type` (`auto`, `invoice`, `receipt`, `bank_statement`; default `auto`) to say what the document
+is, and `include_text=true` to also get the full text. `pages` and `force_ocr` work as for `/v1/ocr`.
+For long documents queue it instead: `POST /v1/jobs` with a `type` field gives the same answer as the
+job's `result`.
+
+A bank statement gives `bank_name`, `account_holder`, `account_number`, `currency`, `period_start`,
+`period_end`, `opening_balance`, `closing_balance` and `transactions` (each with `date`,
+`description`, `reference`, `debit`, `credit`, `balance`).
+
+**How to use the answer.** A local model misreads more often than a cloud one, so the answer tells
+you how far to trust it:
+
+| Field | Meaning |
+|---|---|
+| `checks` | Arithmetic on what was extracted. Invoices and receipts: quantity × unit price against each amount, the lines against the subtotal, and subtotal + charges + tax against the total. Statements: every running balance, and opening + credits − debits against closing. `passed` is `null` when the document does not print what the check needs |
+| `checks_passed` | `true` only when every check that could run passed. Treat `false` or `null` as "a person should look" |
+| `not_found_in_text` | Values the model gave that are not printed in the text, so it invented or altered them. Dates are not looked up, because they are rewritten to `YYYY-MM-DD` |
+| `sources` | For each top-level value, the page and the box of the line it was found on |
+| `model_calls` | 1 per invoice or statement page, plus 1 for each re-reading. A failed check triggers one re-reading; it is kept only if fewer checks fail |
+| `balance_columns_swapped` | Statement lines where debit and credit were exchanged because only that fits the printed balance |
+| `truncated` | `true` when the text was longer than the model can take and the end was left out |
+
+`GET /health` shows `"extraction": true` when the model server answers and the model is installed.
+Without it `/v1/extract` answers 503 `extraction_unavailable`; plain reading keeps working.
+
 ### Queue a long PDF
 
 ```bash
@@ -205,7 +280,10 @@ Every error is `{"error": "<code>", "message": "<text>"}`.
 | 422 | `too_many_pages` | More pages than the limit; use `pages` or `/v1/jobs` |
 | 422 | `bad_pages`, `bad_detail`, `bad_request` | A field is wrong |
 | 429 | `queue_full` | Too many jobs waiting |
+| 422 | `bad_type`, `no_text` | Unknown `type`, or a document with no readable text to extract from |
+| 502, 504 | `extraction_failed`, `extraction_timeout` | The model gave no usable answer, or took too long |
 | 503 | `engine_unavailable` | The OCR engine did not load on the server |
+| 503 | `extraction_unavailable` | The model server is not running, or the model is not installed |
 
 `GET /health` needs no key. Send `X-API-Key` with it to check that a key works (401 if not).
 
@@ -214,10 +292,12 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
 
 ## Security and privacy
 
-- `POST /v1/ocr` stores nothing: the file and the text exist only in memory during the request.
+- `POST /v1/ocr` and `POST /v1/extract` store nothing: the file and the text exist only in memory during the request.
 - A queued file is encrypted on disk (AES-256-GCM) and deleted as soon as it has been read. Job
   results are encrypted in the database and deleted after `OCR_RETENTION_DAYS` (default 7), or
   at once with `DELETE /v1/jobs/{id}`.
+- Field extraction uses a model on the same machine. `OCR_LLM_ALLOW_REMOTE=false` (the default) stops the
+  server from starting if the model address is not local.
 - **Back up `OCR_STORAGE_KEY` separately from the data folder.** Without it stored results are unreadable.
 - API keys are stored hashed and shown once. A client sees only its own jobs.
 - The console and `/admin/api` show usage counts and job status, never the text of a client's job.
@@ -232,9 +312,18 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
   not read; RapidOCR has models for other scripts, but none is wired in here.
 - **Rotated pages.** On a page that is upside down or on its side the lines are still read, but
   they come out in the wrong order (bottom line first, or all on one row). Rotate it upright before sending.
-- **Plain text only.** No tables, form fields or key-value extraction. It gives you lines and
-  where they are; picking "total" or "IC number" out of them is the calling app's work.
-  For identity documents use get.ekyc, which validates what it reads.
+- **Field extraction has not been run with a real model.** It was built and tested against a
+  stand-in that returns prepared answers, so everything around the model is tested (what it is sent,
+  the checks, the lookups, the re-reading) but how well `qwen2.5:7b` reads real invoices and
+  statements, and how long it takes on the Mac mini, is unknown. Try it on your own documents and
+  compare with the originals before relying on it. The checks catch wrong amounts; they cannot catch
+  a wrong supplier name or date that is printed somewhere on the page.
+- **Three document kinds.** Invoices, receipts and bank statements. `auto` tells a statement from the
+  rest by its wording. Other documents are not extracted. For identity documents use get.ekyc, which
+  validates what it reads.
+- **Extraction reads the OCR text, not the picture.** What the OCR cannot read (handwriting, Jawi,
+  Tamil, Thai) cannot be extracted either. Statements are read one page at a time; a transaction
+  split across two pages can be misread.
 - **One page at a time.** Each reading already uses every core; requests queue behind each other.
 - **One admin token.** There are no console users or roles, and no audit trail, unlike get.ekyc.
 - **No per-client rate limit.** A client can fill the queue up to `OCR_MAX_QUEUE`.
@@ -260,6 +349,8 @@ app/routers/admin.py     /admin/api: clients, usage, try it
 app/service.py           reading a document, the job queue, retention
 app/documents.py         images and PDFs into pages
 app/engine.py            PP-OCR through RapidOCR
+app/extract.py           fields, arithmetic checks, lookup of values in the text
+app/llm.py               the local model server (Ollama or OpenAI-compatible)
 app/webhooks.py          signed webhook delivery
 app/static/admin.html    console
 ```

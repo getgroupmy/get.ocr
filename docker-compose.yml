@@ -8,6 +8,10 @@ services:
     environment:
       # Inside the container the data folder is always the mounted volume.
       - OCR_DATA_DIR=/data
+      # Field extraction: the model server (Ollama) runs on the host, outside the container.
+      - OCR_LLM_URL=${OCR_LLM_URL:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     mem_limit: 2g
     ports:
       # Published on localhost only: the Cloudflare tunnel below reaches the

@@ -27,12 +27,18 @@ _FILE_BODY = {
                        "description": "'lines' adds every line with its position and confidence"},
             "force_ocr": {"type": "boolean", "default": False,
                           "description": "Read PDF pages as pictures even when they carry a text layer"},
+            "type": {"type": "string", "enum": ["auto", "invoice", "receipt", "bank_statement"],
+                     "description": "/v1/extract: what the document is (default auto). "
+                                    "/v1/jobs: send it to get fields instead of plain text"},
+            "include_text": {"type": "boolean", "default": False,
+                             "description": "Extraction only: also return the full text that was read"},
             "external_ref": {"type": "string", "description": "Jobs only: your own id for this document"},
         }}},
         "application/json": {"schema": {"type": "object", "required": ["file"], "properties": {
             "file": {"type": "string", "description": "The file, base64 encoded"},
             "pages": {"type": "string"}, "detail": {"type": "string", "enum": ["lines", "text"]},
-            "force_ocr": {"type": "boolean"}, "external_ref": {"type": "string"},
+            "force_ocr": {"type": "boolean"}, "type": {"type": "string"}, "include_text": {"type": "boolean"},
+            "external_ref": {"type": "string"},
         }}},
     }},
 }
@@ -80,7 +86,8 @@ async def read_input(request: Request) -> tuple[bytes, dict, str | None]:
         raise too_large
     if not data:
         raise ApiError(422, "bad_request", "the file is empty")
-    options = service.clean_options(fields.get("pages"), fields.get("detail"), _truthy(fields.get("force_ocr", False)))
+    options = service.clean_options(fields.get("pages"), fields.get("detail"), _truthy(fields.get("force_ocr", False)),
+                                    fields.get("type"), _truthy(fields.get("include_text", False)))
     ref = fields.get("external_ref")
     return data, options, (str(ref)[:200] if ref else None)
 
@@ -90,14 +97,30 @@ async def ocr_now(request: Request, client: ApiClient = Depends(require_client),
     """Reads an image or a short PDF and answers with the text. Nothing is stored:
     the file and the text exist only in memory for the length of the request."""
     data, options, _ = await read_input(request)
+    options["extract"] = None  # plain reading here; fields come from /v1/extract
+    return await _now(db, client, data, options, "sync")
+
+
+async def _now(db: Session, client: ApiClient, data: bytes, options: dict, kind: str) -> dict:
     try:
-        result = await run_in_threadpool(service.recognise, data, options, get_settings().sync_max_pages)
+        result = await run_in_threadpool(service.run, data, options, get_settings().sync_max_pages)
     except ApiError:
-        service.record_usage(db, client.id, "sync", False, 0, len(data), 0)
+        service.record_usage(db, client.id, kind, False, 0, len(data), 0)
         db.commit()
         raise
-    service.record_usage(db, client.id, "sync", True, len(result["pages"]), len(data), result["duration_ms"])
+    service.record_usage(db, client.id, kind, True, len(result["pages"]), len(data), result["duration_ms"])
     return result
+
+
+@router.post("/extract", openapi_extra=_FILE_BODY, summary="Read a file and extract its fields")
+async def extract_now(request: Request, client: ApiClient = Depends(require_client), db: Session = Depends(get_db)):
+    """Reads an invoice, receipt or bank statement and answers with its fields,
+    its lines, and arithmetic checks on them. The text is turned into fields by
+    a language model running on this server; nothing is sent elsewhere and
+    nothing is stored."""
+    data, options, _ = await read_input(request)
+    options["extract"] = options["extract"] or "auto"
+    return await _now(db, client, data, options, "extract")
 
 
 def job_out(job: Job, with_result: bool = True) -> dict:
