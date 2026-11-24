@@ -199,3 +199,42 @@ def test_the_console_gets_a_picture_of_each_page_to_review(client, need_engine):
     pdf = synth.scanned_pdf([INVOICE_LINES, LINES])
     r = client.post("/admin/api/try", files={"file": ("a.pdf", pdf, "application/pdf")}, headers=ADMIN).json()
     assert all(p["preview"].startswith("data:image/jpeg;base64,") for p in r["pages"])
+
+
+def test_a_scan_becomes_a_searchable_pdf(client, api_key, need_engine):
+    from app.documents import Document
+    scan = synth.scanned_pdf([INVOICE_LINES, LINES])
+    r = client.post("/v1/searchable", files={"file": ("s.pdf", scan, "application/pdf")}, headers=api_key)
+    assert r.status_code == 200 and r.headers["content-type"] == "application/pdf" and r.content[:5] == b"%PDF-"
+    with Document(r.content) as doc:
+        assert doc.page_count == 2
+        first, second = doc.page(1, with_lines=True), doc.page(2)
+        assert "INV-2026-00417" in first.text_layer and "Total RM 135.54" in first.text_layer
+        assert "Jumlah perlu dibayar" in second.text_layer
+        tops = {ln["text"]: ln["box"][0][1] for ln in first.text_lines}
+        assert tops["ACME SUPPLIES SDN BHD"] < tops["Subtotal 125.50"] < tops["Total RM 135.54"]  # each line where it is printed
+    # a PDF that already carries its text comes back as it was
+    text_pdf = synth.text_pdf("Perjanjian sewa kenderaan 2026")
+    same = client.post("/v1/searchable", files={"file": ("t.pdf", text_pdf, "application/pdf")}, headers=api_key)
+    assert same.content == text_pdf
+    photo = client.post("/v1/searchable", files={"file": ("p.png", synth.image_bytes(LINES), "image/png")}, headers=api_key)
+    with Document(photo.content) as doc:
+        assert "INV-2026-00417" in doc.page(1).text_layer
+
+
+def test_barcodes_of_several_kinds_are_read():
+    import numpy as np
+    import zxingcpp
+    from app import codes
+    for kind, text in ((zxingcpp.BarcodeFormat.Code128, "TRACK-99812"), (zxingcpp.BarcodeFormat.QRCode, "https://example.com/a?b=1"),
+                       (zxingcpp.BarcodeFormat.EAN13, "9556001234568")):
+        try:
+            img = np.array(zxingcpp.write_barcode(kind, text, width=400, height=160))
+        except AttributeError:  # an older ZXing without write_barcode
+            return
+        img = img if img.ndim == 2 else img[:, :, 0]
+        page = np.full((img.shape[0] + 120, img.shape[1] + 120, 3), 255, np.uint8)
+        page[60:60 + img.shape[0], 60:60 + img.shape[1]] = img[:, :, None]
+        found = codes.find(page)
+        assert [c["text"] for c in found] == [text], kind
+        assert len(found[0]["box"]) == 4 and found[0]["kind"]

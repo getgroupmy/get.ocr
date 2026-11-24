@@ -136,6 +136,23 @@ async def _now(db: Session, client: ApiClient, data: bytes, options: dict, kind:
     return result
 
 
+@router.post("/searchable", openapi_extra=_FILE_BODY, summary="Turn a scan into a searchable PDF")
+async def searchable_pdf(request: Request, client: ApiClient = Depends(require_client), db: Session = Depends(get_db)):
+    """Answers with a PDF of the same pages with the text that was read laid invisibly over each line,
+    so it can be searched and copied. A PDF that already carries text is returned unchanged. Latin
+    script only. Nothing is stored."""
+    from .. import searchable
+    data, options, _ = await read_input(request)
+    try:
+        pdf, pages = await run_in_threadpool(searchable.build, data, options.get("pages"), get_settings().sync_max_pages)
+    except ApiError:
+        service.record_usage(db, client.id, "sync", False, 0, len(data), 0)
+        db.commit()
+        raise
+    service.record_usage(db, client.id, "sync", True, pages, len(data), 0)
+    return Response(pdf, media_type="application/pdf", headers={"Content-Disposition": 'attachment; filename="searchable.pdf"'})
+
+
 @router.get("/types", summary="The kinds of document /v1/extract understands")
 def types(client: ApiClient = Depends(require_client)):
     """Each kind with its fields, the name of its list of lines, and its checks."""

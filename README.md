@@ -161,8 +161,8 @@ On the Mac mini, from `~/get.ocr`:
 - **Console users.** The owner's token (`OCR_ADMIN_TOKEN`) can give other people a sign-in of their
   own: `POST /admin/api/users` with `{"name": "Aina", "role": "viewer"}` answers with their token
   once. A `viewer` may look and try documents; an `admin` may also create and revoke clients. Only
-  the owner manages users. The activity log names who did what. There is no screen for this yet:
-  use the API.
+  the owner manages users. The activity log names who did what. The console's People tab does this for the
+  owner.
 - **Routing by kind.** `PUT /admin/api/clients/{id}/routes` with `{"routes": {"invoice": "https://…"}}`
   sends that client's finished jobs of that kind to their own address, signed with the client's
   webhook secret.
@@ -425,7 +425,17 @@ fields and checks. A page starts a new document when it says it is page 1, when 
 kind of document from the page before, or when the page before printed a total. These are rules of
 thumb: check the page ranges.
 
-**QR codes and barcodes.** Extraction looks for codes on every picture, and on the first two and the
+**A searchable PDF from a scan.** `POST /v1/searchable` answers with a PDF of the same pages with
+the text that was read laid invisibly over each line, so it can be searched and copied in any
+viewer. A PDF that already carries text comes back unchanged. Latin script only (the invisible text
+uses a standard PDF font), and pages are limited to `OCR_SYNC_MAX_PAGES`.
+
+```bash
+curl -s -X POST $BASE/v1/searchable -H "X-API-Key: $KEY" -F file=@scan.pdf -o searchable.pdf
+```
+
+**QR codes and barcodes.** Codes are read by ZXing: QR, Data Matrix, PDF417, Aztec, Code 128, Code
+39, ITF, EAN and UPC. Extraction looks for codes on every picture, and on the first two and the
 last page of a PDF with a text layer; `codes` lists what it found with the page and position. When
 one is an LHDN MyInvois link, `einvoice` gives its `uuid` and `url`. The link is only decoded, not
 checked with LHDN. For plain reading, send `codes=true` to `POST /v1/ocr`.
@@ -631,12 +641,22 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
 - **Order lists** are read by the model and have only been run against a stand-in, not the real model.
 - **The review view is a viewer.** In Try it, the first three pages are shown as they were read, with
   every found value outlined. Corrections are made through the API, not in this view.
+- **What was measured on public documents** (not on yours, and none of it involves the model):
+  - *Text reading:* on the 50 test forms of the FUNSD set (real, noisy scanned forms, some
+    handwriting) 91.8% of the ground-truth words of three letters or more were found, at about
+    1.4 s a page on a Linux CPU.
+  - *Turned pages:* each of those 50 forms in all four orientations: 199 of 200 put upright, no
+    upright page turned by mistake. An earlier version turned one upright form upside down.
+  - *Barcodes:* on ZXing's own test images, 6/6 Code 128, 4/4 Code 39, 5/5 ITF, 6/6 EAN-13, 5/5 QR;
+    UPC-A codes are reported as the equivalent EAN-13 with a leading 0. OpenCV's readers, used
+    before, read none of the Code 128, Code 39 or ITF and 2 of the 5 QR codes.
+  - *Not measured:* tick boxes (14 were reported on the 50 forms; nobody checked them), bundle
+    splitting, and the statement and table readers on other banks' layouts, for want of public samples.
 - **Not built.** Detecting an edited picture from its pixels (only the file's own metadata is
-  reported); signatures; export to an accounting system; searchable PDF; tables with merged cells;
+  reported); signatures; export to an accounting system; tables with merged cells; Jawi;
   the model's own confidence in a field.
 - **Also not built.** Handwriting; Jawi, Tamil and Thai; whether a tick box is ticked; whether a signature or
-  a stamp is present; identity documents (get.ekyc does those). 1D barcodes go through OpenCV's
-  reader but were not tested; only QR codes were.
+  a stamp is present; identity documents (get.ekyc does those). 
 - **Statement layouts.** The table reader was checked against one real 20-page Hong Leong Bank
   statement (192 transactions, equal to the totals the bank prints) and made-up ones. It expects a
   date at the start of each transaction and right-aligned amount columns. Other banks' layouts are
@@ -675,6 +695,7 @@ app/routers/admin.py     /admin/api: clients, usage, try it
 app/service.py           reading a document, the job queue, retention
 app/documents.py         images and PDFs into pages
 app/doctypes.py          the catalogue of other documents: fields, checks, words to recognise them
+app/searchable.py        a searchable PDF from a scan
 app/match.py             one document against another: compare, reconcile
 app/marks.py             tick boxes and stamps (experimental)
 app/tables.py            any table, read by position
