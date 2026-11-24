@@ -331,3 +331,52 @@ def test_text_without_a_table_gives_no_transactions():
     from app import statement
     page = table_page([[("Dear customer, your balance on 01/04/2026 is fine.", 30)], [("Thank you.", 30)]])
     assert statement.parse([page])["transactions"] == []
+
+
+# --- order lists and photos -----------------------------------------------------------
+ORDER_LINES = ["** Order List **", "### BBV01/16541", "Table No: 01", "Guest : 2", "Date : 24/11/2026 9:04 PM",
+               "Waiter : Aina", "** Dine In - New **", "1 *51.THAI FRAGRANT STEAMED RICE", "51.STEAMED RICE",
+               "2 *THAI ICED TEA", "NO SUGAR"]
+ORDER = {"title": "Order List", "order_number": "BBV01/16541", "table": "01", "guests": 2, "date": "2026-11-24",
+         "time": "9:04 PM", "staff": "Aina", "service_type": "Dine In",
+         "items": [{"quantity": 1, "name": "51.THAI FRAGRANT STEAMED RICE", "short_name": "51.STEAMED RICE", "notes": None},
+                   {"quantity": 2, "name": "THAI ICED TEA", "short_name": None, "notes": "NO SUGAR"}]}
+
+
+def test_order_list_is_told_from_a_receipt():
+    assert extract.guess_type("\n".join(ORDER_LINES)) == "order"
+    assert extract.guess_type("Table No: 01\nDine In\nNasi Lemak 12.50\nTotal 12.50") == "invoice"  # a bill has prices
+    assert extract.guess_type("\n".join(INVOICE_LINES)) == "invoice"
+
+
+def test_extracts_an_order_list(client, api_key, need_engine, fake_model):
+    answers, prompts = fake_model
+    answers.append(ORDER)
+    r = client.post("/v1/extract", files={"file": ("o.png", synth.image_bytes(ORDER_LINES), "image/png")}, headers=api_key)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["document_type"] == "order" and body["model_calls"] == 1 and "order list" in prompts[0][1]
+    assert body["fields"]["items"][1] == {"quantity": 2.0, "name": "THAI ICED TEA", "short_name": None, "notes": "NO SUGAR"}
+    assert body["fields"]["date"] == "2026-11-24" and body["fields"]["table"] == "01"
+    assert body["checks"] == [{"name": "item_quantities", "passed": True, "detail": "all 2 item(s) have a quantity"}]
+    assert body["checks_passed"] is True and body["not_found_in_text"] == []
+    assert body["sources"]["order_number"]["box"]
+
+
+def test_order_items_without_a_quantity_fail_the_check():
+    fields = {"items": [{"quantity": 1.0, "name": "A"}, {"quantity": None, "name": "B"}]}
+    assert extract.order_checks(fields)[0]["passed"] is False and "[2]" in extract.order_checks(fields)[0]["detail"]
+    assert extract.order_checks({"items": []})[0]["passed"] is None
+
+
+def test_a_shadow_is_evened_out_and_a_clean_page_is_left_alone():
+    import numpy as np
+    page = np.asarray(synth.page_image(["Order 1", "Table 2", "1 *THAI ICED TEA", "2 *PLAIN WATER"]))[:, :, ::-1]
+    assert engine.even_lighting(np.ascontiguousarray(page)) is None
+    shaded = page.astype(float)
+    shaded[page.shape[0] // 2:] *= 0.45  # a shadow over the lower half
+    shaded = np.ascontiguousarray(shaded.astype("uint8"))
+    evened = engine.even_lighting(shaded)
+    assert evened is not None and evened.shape == shaded.shape
+    paper = lambda img: float(np.percentile(img[page.shape[0] // 2 + 60:, :, 0], 90))  # noqa: E731
+    assert paper(shaded) < 130 and paper(evened) > 200

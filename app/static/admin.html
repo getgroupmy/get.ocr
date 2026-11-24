@@ -109,6 +109,7 @@
             <div><label for="t-type">Result</label><select id="t-type">
               <option value="">Text only</option><option value="auto">Fields: detect the document</option>
               <option value="invoice">Fields: invoice or receipt</option><option value="bank_statement">Fields: bank statement</option>
+              <option value="order">Fields: order list</option>
             </select></div>
             <div><label for="t-pages">PDF pages (optional)</label><input type="text" id="t-pages" placeholder="1-3"></div>
             <div><label for="t-force"><input type="checkbox" id="t-force"> Ignore the PDF's text layer</label></div>
@@ -299,7 +300,7 @@ function showFields(r) {
   }
   if (r.not_found_in_text.length) checks.append(el("p", "Not found in the text, check by hand: " + r.not_found_in_text.join(", "), "notice bad small"));
   if (r.truncated) checks.append(el("p", "The document was longer than the model can take; the end was left out.", "notice bad small"));
-  const listKey = r.fields.transactions ? "transactions" : "line_items";
+  const listKey = r.fields.transactions ? "transactions" : r.fields.items ? "items" : "line_items";
   const kv = $("#try-kv"); kv.replaceChildren();
   for (const [k, v] of Object.entries(r.fields)) {
     if (k === listKey) continue;

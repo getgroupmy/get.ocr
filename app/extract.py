@@ -14,7 +14,7 @@ from . import llm, statement
 from .config import get_settings
 from .errors import ApiError
 
-TYPES = ("auto", "invoice", "receipt", "bank_statement")
+TYPES = ("auto", "invoice", "receipt", "bank_statement", "order")
 TOLERANCE = 0.05  # receipts round to 5 sen
 
 _NUM = {"type": ["number", "null"]}
@@ -41,6 +41,11 @@ STATEMENT_SCHEMA = _obj({
                                                      "debit": _NUM, "credit": _NUM, "balance": _NUM})},
 })
 
+ORDER_SCHEMA = _obj({
+    "title": _STR, "order_number": _STR, "table": _STR, "guests": _NUM, "date": _STR, "time": _STR, "staff": _STR,
+    "service_type": _STR,
+    "items": {"type": "array", "items": _obj({"quantity": _NUM, "name": _STR, "short_name": _STR, "notes": _STR})},
+})
 HEADER_SCHEMA = _obj({k: STATEMENT_SCHEMA["properties"][k] for k in
                       ("bank_name", "account_holder", "account_number", "currency", "period_start", "period_end")})
 
@@ -68,6 +73,18 @@ Each transaction has one of the two, as a positive number; the other is null.
 them. A line that only states an opening, brought-forward or closing balance is not a transaction.
 - The account details are usually on the first page; use null on pages that do not show them."""
 
+_ORDER = """This is an order list: the slip a restaurant or shop prints for the kitchen or the counter. It lists what \
+was ordered and has no prices.
+- title is the heading as printed (for example "Order List"); order_number is the order, bill or check number.
+- table is the table number or name as printed; guests is the number of guests.
+- time is the time of day as printed (for example "9:04 PM"); it is not part of date.
+- staff is the waiter, cashier or server named on the slip.
+- service_type is how the order is served, as printed (for example "Dine In", "Take Away").
+- items: one entry per ordered item, in order. quantity is the number printed in front of it. name is the item as \
+printed, without the quantity and without a leading "*". When a second line repeats the item under a shorter \
+name, that line is short_name; put a short name that runs over two lines together. notes are the remarks printed \
+under the item (for example "RED", "NO SUGAR"), several joined with a space.
+- Rows of *, =, - and empty tick boxes such as [ ] are decoration: leave them out."""
 _HEADER = """This is the top of the first page of a bank or card statement. Give only the account details.
 - bank_name is the bank that issued the statement.
 - account_holder is the customer the statement is addressed to: the person or company whose name stands above the \
@@ -77,13 +94,21 @@ not the bank.
 - period_start and period_end are the first and last day the statement covers. When only a statement date is \
 printed, that is period_end and period_start is null."""
 
+_ORDER_WORDS = re.compile(r"order list|order slip|kitchen order|\bk\.?o\.?t\b|table no|dine[ -]?in|take[ -]?away|"
+                          r"tapau|bungkus|waiter|\bpax\b|\bguests?\b", re.I)
+_PRICE = re.compile(r"\d[.,]\d{2}(?!\d)")
 _BANK_WORDS = re.compile(r"statement of account|account statement|bank statement|penyata akaun|penyata bank|"
                          r"opening balance|closing balance|balance b/?f|brought forward|baki awal|baki akhir|"
                          r"beginning balance|ending balance", re.I)
 
 
 def guess_type(text: str) -> str:
-    return "bank_statement" if len(set(m.lower() for m in _BANK_WORDS.findall(text))) >= 2 else "invoice"
+    if len(set(m.lower() for m in _BANK_WORDS.findall(text))) >= 2:
+        return "bank_statement"
+    # an order list names a table or how it is served, and prints no prices
+    if len(set(m.lower() for m in _ORDER_WORDS.findall(text))) >= 2 and not _PRICE.search(text):
+        return "order"
+    return "invoice"
 
 
 # --- cleaning what the model answered ----------------------------------------
@@ -338,6 +363,23 @@ def _sale(pages: list[dict], texts: list[str], wanted: str) -> dict:
             "bad_dates": bad_dates, "truncated": truncated, "list_key": "line_items", "repaired": 0}
 
 
+def order_checks(f: dict) -> list[dict]:
+    """An order list has no amounts to add up; what can be checked is that every item has a quantity."""
+    without = [i + 1 for i, it in enumerate(f["items"]) if it["quantity"] is None]
+    return [_check("item_quantities", None if not f["items"] else not without,
+                   "no items were found" if not f["items"] else
+                   f"no quantity on item(s) {without}" if without else
+                   f"all {len(f['items'])} item(s) have a quantity")]
+
+
+def _order(pages: list[dict], texts: list[str]) -> dict:
+    limit = get_settings().llm_context * 2
+    text = "\n\n".join(f"--- page {p['page']} ---\n{t}" for p, t in zip(pages, texts))
+    fields, bad_dates = _ask(_ORDER, ORDER_SCHEMA, text[:limit])
+    return {"document_type": "order", "fields": fields, "checks": order_checks(fields), "attempts": 1,
+            "bad_dates": bad_dates, "truncated": len(text) > limit, "list_key": "items", "repaired": 0}
+
+
 def _statement(pages: list[dict], texts: list[str]) -> dict:
     """The transactions are read from the table by position (no model, exact
     and fast); the model only names the account details at the top of the first
@@ -406,7 +448,8 @@ def run(pages: list[dict], texts: list[str], wanted: str) -> dict:
     if not any(t.strip() for t in texts):
         raise ApiError(422, "no_text", "no text was found in the document, so there is nothing to extract")
     kind = wanted if wanted != "auto" else guess_type("\n".join(texts))
-    r = _statement(pages, texts) if kind == "bank_statement" else _sale(pages, texts, wanted)
+    r = (_statement(pages, texts) if kind == "bank_statement" else _order(pages, texts) if kind == "order"
+         else _sale(pages, texts, wanted))
     # rows read from the table by position are the printed text already; only the model's values are looked up
     missing, sources = ground(r["fields"], r["list_key"], pages, check_rows=r.get("method") != "table")
     done = [c for c in r["checks"] if c["passed"] is not None]

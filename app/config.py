@@ -36,6 +36,7 @@ class Settings(BaseSettings):
 
     # --- engine -----------------------------------------------------------
     engine: str = "onnxruntime"  # onnxruntime | openvino (CPU without AVX) | off
+    even_lighting: bool = True  # photos with a shadow or uneven light are evened out before reading
     min_confidence: float = 0.5  # lines the model is less sure of than this are dropped
     pdf_dpi: int = 200  # resolution PDF pages are rendered at before reading
     max_image_side: int = 3000  # larger images and pages are scaled down to this

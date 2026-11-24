@@ -18,7 +18,7 @@ webhooks, and data encrypted at rest.
 | **Queue** | `POST /v1/jobs` for long PDFs. Answers at once with a job id; the result comes by signed webhook or by polling |
 | **Output** | Plain text in reading order, and every line with its position and the model's confidence |
 | **PDF text layer** | A PDF page that already carries text is read from that text (exact and fast). Scanned pages are read as pictures. `force_ocr` reads everything as pictures |
-| **Fields** | `POST /v1/extract` turns an invoice, receipt or bank statement into fields and lines, checks the arithmetic, and flags values that are not in the text. Needs a language model installed on the same machine (see below) |
+| **Fields** | `POST /v1/extract` turns an invoice, receipt, bank statement or order list into fields and lines, checks the arithmetic, and flags values that are not in the text. Needs a language model installed on the same machine (see below) |
 | **Engine** | PP-OCR (PaddleOCR models through RapidOCR), on the CPU. Latin script (English, Malay) and Chinese |
 
 ## Quick start (Docker)
@@ -205,7 +205,7 @@ The shape of the answer (shortened):
 }
 ```
 
-Send `type` (`auto`, `invoice`, `receipt`, `bank_statement`; default `auto`) to say what the document
+Send `type` (`auto`, `invoice`, `receipt`, `bank_statement`, `order`; default `auto`) to say what the document
 is, and `include_text=true` to also get the full text. `pages` and `force_ocr` work as for `/v1/ocr`.
 For long documents queue it instead: `POST /v1/jobs` with a `type` field gives the same answer as the
 job's `result`.
@@ -213,6 +213,12 @@ job's `result`.
 A bank statement gives `bank_name`, `account_holder`, `account_number`, `currency`, `period_start`,
 `period_end`, `opening_balance`, `closing_balance` and `transactions` (each with `date`,
 `description`, `reference`, `debit`, `credit`, `balance`).
+
+An order list (the slip a restaurant prints for the kitchen: items and quantities, no prices) gives
+`title`, `order_number`, `table`, `guests`, `date`, `time`, `staff`, `service_type` and `items` (each
+with `quantity`, `name`, `short_name`, `notes`). `auto` takes a document for an order list when it
+names a table or how it is served and prints no prices. Its one check, `item_quantities`, says
+whether every item has a quantity; there are no amounts to add up.
 
 **Statements are read as a table, not by the model.** The transactions are taken from where the words
 sit on the page: a row starts with a date, its amounts are placed in the deposit, withdrawal or
@@ -330,6 +336,11 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
   are now read as a table by code. Invoices and receipts are still read by the model and have not
   been tried on real documents: compare with the originals before relying on it. The checks catch
   wrong amounts; they cannot catch a wrong supplier name or date that is printed somewhere on the page.
+- **Photos.** A photo with a shadow or uneven light is evened out before reading (`OCR_EVEN_LIGHTING`,
+  on by default; evenly lit pictures and scans are left as they are). This and the detection
+  setting for small lone characters were tuned on a single photo of an order list, where they
+  recovered a quantity that was missed in the shadow. Other photos are untested.
+- **Order lists** are read by the model and have only been run against a stand-in, not the real model.
 - **Statement layouts.** The table reader was checked against one real 20-page Hong Leong Bank
   statement (192 transactions, equal to the totals the bank prints) and made-up ones. It expects a
   date at the start of each transaction and right-aligned amount columns. Other banks' layouts are
