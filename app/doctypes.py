@@ -291,6 +291,343 @@ DOCS: dict[str, dict] = {
         checks=(("sum", "hours_sum", "lines.hours", "total_hours"),
                 ("sum", "overtime_sum", "lines.overtime_hours", "total_overtime_hours")),
         words=r"timesheet|time sheet|attendance|kehadiran|time in|time out|masa masuk|masa keluar|clock in|overtime"),
+
+    # --- vehicles: claims, purchase and running costs -----------------------------------
+    "driving_licence": _doc(
+        "Driving licence", "a driving licence",
+        "holder_name, id_number, licence_number, nationality, classes, licence_type, issue_date:d, expiry_date:d, address",
+        checks=(("order", "validity", "issue_date", "expiry_date"),),
+        words=r"lesen memandu|driving licen[cs]e|kelas|tempoh sah|\bcdl\b|\bgdl\b|\bpdl\b",
+        hints="classes are the vehicle classes as printed (for example \"B2 D\"); licence_type is CDL, PDL, LDL, GDL or PSV."),
+    "accident_report": _doc(
+        "Accident or police report", "a police report or accident report",
+        "station_name, report_number, report_date:d, report_time, reporter_name, id_number, phone, incident_date:d, "
+        "incident_time, location, plate_number, other_plate_number, summary",
+        checks=(("order", "dates", "incident_date", "report_date"),),
+        words=r"laporan polis|police report|no\.? repot|report no|balai polis|pengadu|kemalangan|accident",
+        hints="summary is one or two sentences on what happened, in the document's own words."),
+    "repair_estimate": _doc(
+        "Repair estimate or workshop quotation", "a workshop repair estimate or quotation for a vehicle",
+        "workshop_name, estimate_number, date:d, customer_name, plate_number, vehicle, mileage_km:n, parts_total:n, "
+        "labour_total:n, subtotal:n, tax:n, total:n, currency",
+        rows=("lines", "description, kind, quantity:n, unit_price:n, amount:n"),
+        checks=(("sum", "lines_sum", "lines.amount", ("subtotal", "total")),
+                ("add", "total", ["+subtotal", "+tax"], "total")),
+        words=r"repair estimate|anggaran pembaikan|workshop|bengkel|labour|upah|spare parts|alat ganti|estimate no",
+        hints="kind is \"part\" or \"labour\" for each line."),
+    "adjuster_report": _doc(
+        "Insurance adjuster's report", "a loss adjuster's report on a motor insurance claim",
+        "adjuster_name, report_number, report_date:d, insurer_name, claim_number, policy_number, insured_name, "
+        "plate_number, incident_date:d, workshop_name, estimated_cost:n, approved_cost:n, excess:n, betterment:n, "
+        "net_payable:n, recommendation, currency",
+        checks=(("add", "net_payable", ["+approved_cost", "-excess", "-betterment"], "net_payable"),),
+        words=r"adjuster|laporan pelaras|loss adjust|approved (?:cost|amount)|betterment|excess|claim no"),
+    "ownership_transfer": _doc(
+        "Vehicle ownership transfer form", "a vehicle ownership transfer form (JPJ K3, K8) or transfer confirmation",
+        "form_type, plate_number, chassis_number, engine_number, make_model, seller_name, seller_id_number, buyer_name, "
+        "buyer_id_number, transfer_date:d, reference",
+        checks=(("format", "chassis_number", "chassis_number", r"[A-Z0-9]{8,17}", "8 to 17 letters and digits"),),
+        words=r"tukar milik|transfer of ownership|jpj ?k ?[38]\b|pemunya berdaftar|pemilik baru|registered owner"),
+    "loan_release_letter": _doc(
+        "Loan settlement or release letter", "a letter confirming a loan is settled or releasing the lender's claim",
+        "lender_name, borrower_name, account_number, plate_number, letter_date:d, settlement_date:d, settlement_amount:n, "
+        "reference, currency",
+        words=r"release letter|surat pelepasan|full settlement|penyelesaian penuh|batal tuntutan|no further claim|"
+              r"settlement amount"),
+    "insurance_endorsement": _doc(
+        "Insurance endorsement", "an endorsement changing an existing insurance policy",
+        "insurer_name, policy_number, endorsement_number, insured_name, plate_number, effective_date:d, change, "
+        "additional_premium:n, refund_premium:n, service_tax:n, stamp_duty:n, total_payable:n, currency",
+        checks=(("add", "total_payable", ["+additional_premium", "+service_tax", "+stamp_duty"], "total_payable"),),
+        words=r"endorsement|endorsemen|pengendorsan|additional premium|premium tambahan|windscreen|cermin",
+        hints="change is a short phrase saying what the endorsement changes."),
+    "insurance_policy": _doc(
+        "Insurance policy schedule (non-motor)", "an insurance or takaful policy schedule other than motor: fire, "
+        "liability, workmen's compensation, medical, life",
+        "insurer_name, policy_number, policy_type, insured_name, id_number, insured_item, period_start:d, period_end:d, "
+        "sum_insured:n, premium:n, service_tax:n, stamp_duty:n, total_payable:n, currency",
+        checks=(("order", "period", "period_start", "period_end"),
+                ("add", "total_payable", ["+premium", "+service_tax", "+stamp_duty"], "total_payable")),
+        words=r"policy schedule|jadual polisi|fire insurance|public liability|workmen|houseowner|householder|"
+              r"sum insured|certificate of takaful"),
+    "vehicle_sales_order": _doc(
+        "Vehicle sales order or booking form", "a vehicle sales order, booking form or purchase invoice from a dealer",
+        "dealer_name, order_number, date:d, buyer_name, buyer_id_number, make_model, variant, colour, chassis_number, "
+        "engine_number, selling_price:n, accessories:n, registration_fee:n, road_tax:n, insurance:n, discount:n, "
+        "on_the_road_price:n, booking_fee:n, loan_amount:n, currency",
+        checks=(("add", "on_the_road_price", ["+selling_price", "+accessories", "+registration_fee", "+road_tax",
+                                               "+insurance", "-discount"], "on_the_road_price"),),
+        words=r"vehicle sales order|booking form|borang tempahan|on the road|atas jalan|harga jualan|selling price|"
+              r"booking fee"),
+    "instalment_schedule": _doc(
+        "Instalment or repayment schedule", "a loan or hire-purchase repayment schedule",
+        "lender_name, borrower_name, account_number, loan_amount:n, interest_rate_percent:n, term_months:n, "
+        "instalment_amount:n, start_date:d, end_date:d, total_repayment:n, currency",
+        rows=("lines", "number:n, due_date:d, instalment:n, principal:n, interest:n, balance:n"),
+        checks=(("order", "term", "start_date", "end_date"),
+                ("sum", "instalments_sum", "lines.instalment", "total_repayment")),
+        words=r"repayment schedule|jadual bayaran balik|amortis|instalment schedule|jadual ansuran"),
+    "fleet_card_statement": _doc(
+        "Fuel or toll card statement", "a fleet fuel card, toll or parking account statement",
+        "provider_name, customer_name, account_number, statement_date:d, period_start:d, period_end:d, total_amount:n, "
+        "total_litres:n, currency",
+        rows=("lines", "date:d, time, plate_number, location, product, litres:n, amount:n"),
+        checks=(("sum", "amount_sum", "lines.amount", "total_amount"), ("sum", "litres_sum", "lines.litres", "total_litres")),
+        words=r"fleet card|kad armada|fuel card|smarttag|\bplus\b|toll|tol\b|litres?|liter|petrol|diesel|\bron ?9[57]\b"),
+    # --- finance and banking ---------------------------------------------------------------
+    "bank_letter": _doc(
+        "Bank confirmation letter", "a letter from a bank confirming an account or its details",
+        "bank_name, branch, letter_date:d, account_holder, account_number, account_type, date_opened:d, reference, purpose",
+        words=r"bank confirmation|pengesahan akaun|to whom it may concern|kepada sesiapa|account holder|maintains? an account"),
+    "bank_guarantee": _doc(
+        "Bank guarantee", "a bank guarantee",
+        "bank_name, guarantee_number, applicant_name, beneficiary_name, amount:n, amount_in_words, currency, issue_date:d, "
+        "expiry_date:d, claim_period_end:d, purpose",
+        checks=(("order", "validity", "issue_date", "expiry_date"),
+                ("words", "amount_in_words", "amount_in_words", "amount")),
+        words=r"bank guarantee|jaminan bank|beneficiary|benefisiari|guarantor|penjamin|irrevocabl"),
+    "fixed_deposit_advice": _doc(
+        "Fixed deposit advice", "a fixed deposit receipt, placement advice or interest certificate",
+        "bank_name, account_holder, account_number, certificate_number, principal:n, interest_rate_percent:n, "
+        "tenure_months:n, placement_date:d, maturity_date:d, interest_amount:n, maturity_amount:n, currency",
+        checks=(("order", "tenure", "placement_date", "maturity_date"),
+                ("add", "maturity_amount", ["+principal", "+interest_amount"], "maturity_amount")),
+        words=r"fixed deposit|simpanan tetap|deposit bertempoh|term deposit|maturity|matang|placement|tenure|tempoh"),
+    "bank_advice": _doc(
+        "Bank debit or credit advice", "a debit advice or credit advice from a bank",
+        "bank_name, advice_type, reference_number, date:d, account_holder, account_number, counterparty, description, "
+        "amount:n, charges:n, net_amount:n, currency",
+        words=r"debit advice|credit advice|nasihat debit|nasihat kredit|we have (?:debited|credited)|telah (?:mendebit|mengkredit)",
+        hints="advice_type is \"debit\" or \"credit\"."),
+    "deposit_slip": _doc(
+        "Cash or cheque deposit slip", "a bank deposit slip or cash deposit machine receipt",
+        "bank_name, date:d, time, account_holder, account_number, depositor_name, cash_amount:n, cheque_amount:n, "
+        "total_amount:n, reference, currency",
+        checks=(("add", "total_amount", ["+cash_amount", "+cheque_amount"], "total_amount"),),
+        words=r"deposit slip|slip deposit|cash deposit|deposit tunai|\bcdm\b|bank[- ]in|credited to"),
+    "aging_report": _doc(
+        "Aging report", "a debtors or creditors aging report",
+        "company_name, report_type, as_at_date:d, currency, total_current:n, total_30:n, total_60:n, total_90:n, "
+        "total_over_90:n, grand_total:n",
+        rows=("lines", "name, account_number, current:n, days_30:n, days_60:n, days_90:n, over_90:n, total:n"),
+        checks=(("sum", "totals_sum", "lines.total", "grand_total"),
+                ("add", "grand_total", ["+total_current", "+total_30", "+total_60", "+total_90", "+total_over_90"],
+                 "grand_total")),
+        words=r"aging|ageing|pengumuran|debtors?|creditors?|penghutang|pemiutang|\b30 days\b|\b60 days\b|\b90 days\b",
+        hints="report_type is \"debtors\" or \"creditors\"."),
+    "trial_balance": _doc(
+        "Trial balance", "a trial balance",
+        "company_name, as_at_date:d, currency, total_debit:n, total_credit:n",
+        rows=("lines", "account_code, account_name, debit:n, credit:n"),
+        checks=(("sum", "debit_sum", "lines.debit", "total_debit"), ("sum", "credit_sum", "lines.credit", "total_credit"),
+                ("add", "balanced", ["+total_debit"], "total_credit")),
+        words=r"trial balance|imbangan duga"),
+    "ledger": _doc(
+        "Ledger or account printout", "a general ledger or account transaction listing",
+        "company_name, account_code, account_name, period_start:d, period_end:d, opening_balance:n, closing_balance:n, "
+        "currency",
+        rows=("lines", "date:d, reference, description, debit:n, credit:n, balance:n"),
+        checks=(("ledger", "closing_balance", "opening_balance", "lines.debit", "lines.credit", "closing_balance"),),
+        words=r"general ledger|lejar|ledger|account listing|transaction listing"),
+    "settlement_report": _doc(
+        "Payment gateway settlement report", "a settlement or payout report from a payment gateway, card acquirer or "
+        "e-wallet",
+        "provider_name, merchant_name, merchant_id, settlement_date:d, period_start:d, period_end:d, gross_amount:n, "
+        "fees:n, tax:n, refunds:n, net_amount:n, reference, currency",
+        rows=("lines", "date:d, reference, method, gross:n, fee:n, net:n"),
+        checks=(("sum", "gross_sum", "lines.gross", "gross_amount"), ("sum", "net_sum", "lines.net", "net_amount"),
+                ("add", "net_amount", ["+gross_amount", "-fees", "-tax", "-refunds"], "net_amount")),
+        words=r"settlement|penyelesaian|payout|merchant id|\bmid\b|\bfpx\b|\bmdr\b|gross amount|net amount|acquirer"),
+    "earnings_statement": _doc(
+        "Driver or commission earnings statement", "an earnings, commission or payout statement for a driver, rider or agent",
+        "company_name, payee_name, payee_id, plate_number, period_start:d, period_end:d, trips:n, gross_earnings:n, "
+        "commission:n, incentives:n, deductions:n, net_payout:n, payment_date:d, currency",
+        rows=("lines", "date:d, description, trips:n, amount:n"),
+        checks=(("add", "net_payout", ["+gross_earnings", "+incentives", "-commission", "-deductions"], "net_payout"),),
+        words=r"earnings|pendapatan|payout|commission|komisen|incentive|insentif|trips?|perjalanan|driver|pemandu|rider"),
+    # --- payroll and people -----------------------------------------------------------------
+    "hr_letter": _doc(
+        "Staff letter (resignation, termination, warning, confirmation)", "a staff letter: a resignation, termination, "
+        "warning, confirmation, promotion or increment letter",
+        "letter_type, employer_name, employee_name, id_number, position, letter_date:d, effective_date:d, last_working_date:d, "
+        "notice_period, new_salary:n, reason, signed_by",
+        checks=(("order", "dates", "letter_date", "effective_date"),),
+        words=r"resignation|perletakan jawatan|termination|penamatan|warning letter|surat amaran|confirmation of employment|"
+              r"pengesahan jawatan|increment|kenaikan gaji|last working day",
+        hints="letter_type is one of: resignation, termination, warning, confirmation, promotion, increment, other."),
+    "leave_form": _doc(
+        "Leave application form", "a leave application form",
+        "employee_name, employee_id, department, leave_type, application_date:d, start_date:d, end_date:d, days:n, reason, "
+        "approved_by, status",
+        checks=(("order", "leave", "start_date", "end_date"),),
+        words=r"leave application|permohonan cuti|annual leave|cuti tahunan|leave type|jenis cuti|days applied|baki cuti"),
+    "borang_e": _doc(
+        "Borang E (employer's return)", "a Borang E: the employer's yearly return of remuneration",
+        "employer_name, employer_number, year:n, number_of_employees:n, total_remuneration:n, total_pcb:n, "
+        "submission_date:d, reference",
+        words=r"borang e\b|form e\b|penyata oleh majikan|return form of employer|bilangan pekerja"),
+    "employee_tax_form": _doc(
+        "CP22 / CP22A (joiner or leaver tax notice)", "a CP22 notice of a new employee or CP22A notice of cessation",
+        "form_type, employer_name, employer_number, employee_name, id_number, tax_number, position, start_date:d, "
+        "cessation_date:d, monthly_remuneration:n, reason",
+        words=r"\bc\.?p\.? ?22a?\b|pemberitahuan pekerja baru|notification of new employee|berhenti kerja|cessation"),
+    "payment_receipt_statutory": _doc(
+        "Statutory payment receipt", "a payment receipt from a government body: tax, EPF, SOCSO, EIS, HRDF, customs",
+        "authority_name, payer_name, payer_number, receipt_number, payment_date:d, payment_for, period, amount:n, "
+        "payment_method, reference, currency",
+        words=r"resit rasmi|resit bayaran|payment receipt|lembaga hasil|kwsp|perkeso|hrd ?corp|\bpsmb\b|bayaran diterima"),
+    "work_permit": _doc(
+        "Foreign worker permit or levy receipt", "a foreign worker's permit (PLKS), work pass or levy receipt",
+        "holder_name, passport_number, nationality, employer_name, permit_number, sector, issue_date:d, expiry_date:d, "
+        "levy_amount:n, currency",
+        checks=(("order", "validity", "issue_date", "expiry_date"),),
+        words=r"\bplks\b|pas lawatan kerja sementara|work permit|permit kerja|levi|levy|pekerja asing|foreign worker|imigresen"),
+    # --- company, legal and compliance ------------------------------------------------------
+    "ssm_certificate": _doc(
+        "SSM certificate or form", "a companies registry certificate or form: incorporation (Form 9, Section 17), "
+        "allotment (Form 24), directors (Form 49), registered address (Form 44), business registration (Form D)",
+        "form_type, company_name, registration_number, old_registration_number, date:d, registered_address, "
+        "nature_of_business, expiry_date:d",
+        rows=("people", "name, id_number, role, shares:n, date:d"),
+        checks=(("format", "registration_number", "registration_number", r"\d{12}|\d{5,7}-?[A-Z]|[A-Z]{2}\d{7}-?[A-Z]",
+                 "a company or business registration number"),),
+        words=r"perakuan pemerbadanan|certificate of incorporation|borang (?:9|24|44|49|d)\b|form (?:9|24|44|49|d)\b|"
+              r"seksyen 1[57]|section 1[57]|perakuan pendaftaran|suruhanjaya syarikat"),
+    "resolution": _doc(
+        "Board or members' resolution", "a directors' or members' resolution",
+        "company_name, registration_number, resolution_type, date:d, subject, resolved, signatories",
+        words=r"resolution|resolusi|resolved that|diputuskan bahawa|board of directors|lembaga pengarah|circular",
+        hints="resolved is a one- or two-sentence summary of what was resolved; signatories are the names, separated by commas."),
+    "power_of_attorney": _doc(
+        "Power of attorney", "a power of attorney",
+        "donor_name, donor_id_number, attorney_name, attorney_id_number, date:d, registration_number, powers, expiry_date:d",
+        words=r"power of attorney|surat kuasa wakil|the donor|pemberi kuasa|the attorney|penerima kuasa|donee"),
+    "statutory_declaration": _doc(
+        "Statutory declaration", "a statutory declaration",
+        "declarant_name, id_number, address, date:d, place, declaration, commissioner_name",
+        words=r"statutory declaration|akuan berkanun|solemnly and sincerely|sesungguhnya dan sebenarnya|pesuruhjaya sumpah|"
+              r"commissioner for oaths",
+        hints="declaration is a one- or two-sentence summary of what is declared."),
+    "stamp_certificate": _doc(
+        "Stamp duty certificate", "a stamp duty certificate or receipt",
+        "certificate_number, adjudication_number, instrument_type, instrument_date:d, first_party, second_party, "
+        "consideration:n, duty:n, penalty:n, total_paid:n, payment_date:d, currency",
+        checks=(("add", "total_paid", ["+duty", "+penalty"], "total_paid"),),
+        words=r"sijil setem|stamp certificate|duti setem|stamp duty|no\.? adjudikasi|adjudication|surat cara|instrument"),
+    "court_document": _doc(
+        "Court document", "a court document: a writ, summons, statement of claim, order or judgment",
+        "court_name, case_number, document_type, date:d, plaintiff, defendant, claim_amount:n, hearing_date:d, "
+        "order_summary, currency",
+        words=r"mahkamah|court|plaintif|defendan|plaintiff|defendant|writ|saman|penghakiman|judgment|guaman|suit no"),
+    "letter_of_demand": _doc(
+        "Letter of demand", "a letter of demand",
+        "sender_name, law_firm, recipient_name, letter_date:d, reference, amount_demanded:n, deadline_date:d, "
+        "deadline_days:n, reason, currency",
+        checks=(("order", "dates", "letter_date", "deadline_date"),),
+        words=r"letter of demand|notis tuntutan|we act for|kami bertindak|our client|anak guam|within \w+ \(?\d+\)? days|"
+              r"legal proceedings|tindakan undang-undang"),
+    "reference_letter": _doc(
+        "Reference or clearance letter", "a bank reference, trade reference or tax clearance letter",
+        "issuer_name, subject_name, subject_number, letter_type, letter_date:d, reference, statement, valid_until:d",
+        words=r"reference letter|surat rujukan|tax clearance|surat penyelesaian cukai|trade reference|good standing"),
+    # --- customers and your own paperwork ---------------------------------------------------
+    "booking_confirmation": _doc(
+        "Booking or reservation confirmation", "a booking or reservation confirmation",
+        "provider_name, booking_number, customer_name, phone, email, booking_date:d, start_date:d, start_time, end_date:d, "
+        "end_time, pickup_location, return_location, item, plate_number, rate:n, deposit:n, total:n, amount_paid:n, "
+        "balance_due:n, currency",
+        checks=(("order", "period", "start_date", "end_date"),
+                ("add", "balance_due", ["+total", "-amount_paid"], "balance_due")),
+        words=r"booking (?:confirmation|no|ref)|pengesahan tempahan|reservation|tempahan|pick-?up|check-?in|pulang|return"),
+    "refund_form": _doc(
+        "Deposit refund or refund form", "a refund request or deposit refund form",
+        "form_number, date:d, customer_name, id_number, original_reference, original_amount:n, deductions:n, "
+        "refund_amount:n, reason, bank_name, account_number, approved_by, currency",
+        checks=(("add", "refund_amount", ["+original_amount", "-deductions"], "refund_amount"),),
+        words=r"refund|bayaran balik|pemulangan deposit|deposit refund|refund amount|jumlah dikembalikan"),
+    "civil_certificate": _doc(
+        "Birth, marriage or death certificate", "a birth, marriage or death certificate",
+        "certificate_type, certificate_number, person_name, id_number, event_date:d, place, second_person_name, "
+        "father_name, mother_name, registration_date:d",
+        words=r"sijil kelahiran|birth certificate|sijil perkahwinan|marriage certificate|sijil kematian|death certificate|"
+              r"jabatan pendaftaran negara",
+        hints="certificate_type is birth, marriage or death; second_person_name is the spouse on a marriage certificate."),
+    "id_card_other": _doc(
+        "Student, staff or OKU card", "a student card, staff card, membership card or disability (OKU) card",
+        "card_type, issuer_name, holder_name, id_number, card_number, category, issue_date:d, expiry_date:d",
+        words=r"kad pelajar|student (?:card|id)|kad oku|orang kurang upaya|staff (?:card|id)|kad pekerja|matric|member(?:ship)? (?:card|no)"),
+    # --- property and premises --------------------------------------------------------------
+    "sale_purchase_agreement": _doc(
+        "Sale and purchase agreement", "a sale and purchase agreement for a property, vehicle or business",
+        "vendor_name, vendor_id_number, purchaser_name, purchaser_id_number, subject, agreement_date:d, purchase_price:n, "
+        "deposit_paid:n, balance:n, loan_amount:n, completion_date:d, currency",
+        checks=(("add", "balance", ["+purchase_price", "-deposit_paid"], "balance"),
+                ("order", "dates", "agreement_date", "completion_date")),
+        words=r"sale and purchase|jual beli|the vendor|penjual|the purchaser|pembeli|purchase price|harga belian"),
+    "land_title": _doc(
+        "Land title", "a land title or strata title",
+        "title_type, title_number, lot_number, mukim, district, state, area, tenure, lease_expiry_date:d, land_use, "
+        "owner_name, owner_id_number, encumbrances, registration_date:d",
+        words=r"hakmilik|geran|pajakan|no\.? lot|mukim|daerah|strata|pegangan|kategori kegunaan tanah|pejabat tanah"),
+    "premises_certificate": _doc(
+        "Premises certificate (fire, occupancy, signboard)", "a fire certificate (Bomba), certificate of completion "
+        "(CCC, CF) or signboard licence",
+        "authority_name, certificate_type, certificate_number, holder_name, premises_address, issue_date:d, expiry_date:d",
+        checks=(("order", "validity", "issue_date", "expiry_date"),),
+        words=r"perakuan bomba|fire certificate|bomba dan penyelamat|perakuan siap|\bccc\b|certificate of fitness|"
+              r"lesen iklan|papan tanda|signboard"),
+    "maintenance_bill": _doc(
+        "Maintenance fee or sinking fund bill", "a building maintenance fee, service charge or sinking fund bill",
+        "management_name, owner_name, unit_number, bill_number, bill_date:d, due_date:d, period, arrears:n, "
+        "maintenance_fee:n, sinking_fund:n, other_charges:n, late_interest:n, total_due:n, currency",
+        checks=(("add", "total_due", ["+arrears", "+maintenance_fee", "+sinking_fund", "+other_charges", "+late_interest"],
+                 "total_due"),),
+        words=r"maintenance fee|caj penyelenggaraan|sinking fund|kumpulan wang penjelas|service charge|\bjmb\b|\bmc\b|"
+              r"badan pengurusan|unit no|no\.? unit"),
+    # --- logistics and trade ----------------------------------------------------------------
+    "commercial_invoice": _doc(
+        "Commercial invoice (export or import)", "a commercial invoice for goods shipped across a border",
+        "seller_name, buyer_name, invoice_number, date:d, incoterms, country_of_origin, port_of_loading, port_of_discharge, "
+        "currency, subtotal:n, freight:n, insurance:n, total:n",
+        rows=("items", "description, hs_code, quantity:n, unit, unit_price:n, amount:n"),
+        checks=(("sum", "items_sum", "items.amount", ("subtotal", "total")),
+                ("add", "total", ["+subtotal", "+freight", "+insurance"], "total")),
+        words=r"commercial invoice|incoterms?|\bfob\b|\bcif\b|\bexw\b|country of origin|hs code|port of loading"),
+    "certificate_of_origin": _doc(
+        "Certificate of origin", "a certificate of origin",
+        "certificate_number, form_type, exporter, consignee, country_of_origin, destination_country, date:d, "
+        "invoice_number, description_of_goods, issuing_body",
+        words=r"certificate of origin|sijil tempasal|form [ade]\b|country of origin|origin criteri"),
+    "letter_of_credit": _doc(
+        "Letter of credit", "a documentary letter of credit",
+        "issuing_bank, lc_number, applicant, beneficiary, amount:n, currency, issue_date:d, expiry_date:d, "
+        "latest_shipment_date:d, port_of_loading, port_of_discharge, description_of_goods",
+        checks=(("order", "validity", "issue_date", "expiry_date"),
+                ("order", "shipment", "latest_shipment_date", "expiry_date")),
+        words=r"letter of credit|documentary credit|surat kredit|\bl/c\b|issuing bank|applicant|beneficiary|latest (?:date of )?shipment"),
+    "proof_of_delivery": _doc(
+        "Proof of delivery", "a proof of delivery or signed delivery note",
+        "carrier_name, tracking_number, do_number, sender_name, receiver_name, delivery_address, delivery_date:d, "
+        "delivery_time, received_by, pieces:n, remarks",
+        words=r"proof of delivery|\bpod\b|bukti penghantaran|received by|diterima oleh|received in good (?:order|condition)|"
+              r"delivered"),
+    "weighbridge_ticket": _doc(
+        "Weighbridge ticket", "a weighbridge ticket",
+        "site_name, ticket_number, date:d, time_in, time_out, plate_number, driver_name, customer_name, product, "
+        "gross_weight_kg:n, tare_weight_kg:n, net_weight_kg:n",
+        checks=(("add", "net_weight", ["+gross_weight_kg", "-tare_weight_kg"], "net_weight_kg"),),
+        words=r"weighbridge|jambatan timbang|timbang|gross weight|berat kasar|tare|net weight|berat bersih"),
+    "gate_pass": _doc(
+        "Gate pass", "a gate pass for goods or a vehicle leaving or entering a site",
+        "site_name, pass_number, date:d, time, direction, plate_number, driver_name, company_name, reference, authorised_by",
+        rows=("items", "description, quantity:n, unit"),
+        words=r"gate pass|pas keluar|pas masuk|security|pengawal|authori[sz]ed by|dibenarkan"),
+    "stock_count_sheet": _doc(
+        "Stock count sheet", "a stock count or stock take sheet",
+        "company_name, location, count_date:d, counted_by, checked_by, total_quantity:n",
+        rows=("items", "code, description, unit, system_quantity:n, counted_quantity:n, variance:n"),
+        checks=(("sum", "quantity_sum", "items.counted_quantity", "total_quantity"),),
+        words=r"stock (?:count|take)|kiraan stok|stok fizikal|physical count|variance|perbezaan|counted by|dikira oleh"),
 }
 
 

@@ -14,6 +14,7 @@ import numpy as np
 from .config import get_settings
 
 NAME = "pp-ocr"
+BLURRY, DARK = 40.0, 50.0  # below these a picture is reported as blurry or dark; first guesses, not tuned
 LONE_CHARACTER = 0.75  # a line of one character is kept only when the model is this sure of it
 _rapid = None
 _failed = False
@@ -69,6 +70,21 @@ def even_lighting(img: np.ndarray) -> Optional[np.ndarray]:
     paper = cv2.resize(paper, (w, h), interpolation=cv2.INTER_LINEAR).astype(np.float32)
     flat = np.clip(gray.astype(np.float32) / np.maximum(paper, 60) * 230, 0, 255).astype(np.uint8)
     return cv2.cvtColor(flat, cv2.COLOR_GRAY2BGR)
+
+
+def quality(img: np.ndarray) -> dict:
+    """How fit a picture is for reading: its sharpness (variance of the edges,
+    higher is sharper), its brightness (0 to 255) and what is wrong with it."""
+    import cv2
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape
+    scale = 1000 / max(h, w)
+    small = cv2.resize(gray, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA) if scale < 1 else gray
+    sharpness = float(cv2.Laplacian(small, cv2.CV_64F).var())
+    brightness = float(small.mean())
+    issues = [name for name, bad in (("blurry", sharpness < BLURRY), ("dark", brightness < DARK),
+                                     ("low_resolution", min(h, w) < 500)) if bad]
+    return {"sharpness": round(sharpness, 1), "brightness": round(brightness, 1), "issues": issues}
 
 
 def read(img: np.ndarray) -> list[dict]:

@@ -111,7 +111,8 @@
             </select></div>
             <div id="t-fields-box" hidden><label for="t-fields">Fields to find</label><input type="text" id="t-fields" placeholder="policy_number, expiry_date, sum_insured"></div>
             <div><label for="t-pages">PDF pages (optional)</label><input type="text" id="t-pages" placeholder="1-3"></div>
-            <div><label for="t-force"><input type="checkbox" id="t-force"> Ignore the PDF's text layer</label></div>
+            <div><label for="t-force"><input type="checkbox" id="t-force"> Ignore the PDF's text layer</label>
+              <label for="t-split"><input type="checkbox" id="t-split"> Several documents in one file</label></div>
             <button class="primary" type="submit" id="t-go">Read</button>
           </div>
         </form>
@@ -277,6 +278,7 @@ $("#try-form").addEventListener("submit", async (ev) => {
   if ($("#t-force").checked) fd.append("force_ocr", "true");
   if ($("#t-type").value) { fd.append("type", $("#t-type").value); fd.append("include_text", "true"); }
   if ($("#t-type").value === "custom") fd.append("fields", $("#t-fields").value);
+  if ($("#t-type").value && $("#t-split").checked) fd.append("split", "true");
   const go = $("#t-go"); go.disabled = true; go.textContent = "Reading…";
   const began = Date.now();  // a model can take minutes: show that it is still working
   const tick = setInterval(() => { go.textContent = "Reading… " + Math.round((Date.now() - began) / 1000) + " s"; }, 1000);
@@ -293,8 +295,12 @@ $("#try-form").addEventListener("submit", async (ev) => {
 });
 
 function showFields(r) {
+  const docs = r.documents;
+  if (docs) r = docs.find((d) => d.fields) || {};  // several documents: the first is shown, all are in the JSON
   const box = $("#try-fields"); box.hidden = !r.fields; if (!r.fields) return;
   const checks = $("#try-checks"); checks.replaceChildren();
+  if (docs) checks.append(el("p", docs.length + " document(s) found, on pages " + docs.map((d) => d.pages.join("-")).join(", ") + ". The first is shown; all are in the full JSON answer.", "notice small"));
+  if (r.einvoice) checks.append(el("p", "e-invoice QR code: " + r.einvoice.uuid, "small"));
   const head = el("p"); head.append(el("strong", r.document_type.replace("_", " ")), document.createTextNode((r.read_by === "table" ? " · rows read from the table · header by " : " · read by ") + "model " + r.model + " · " + r.model_calls + " call(s)"));
   checks.append(head);
   for (const c of r.checks) {
@@ -303,11 +309,11 @@ function showFields(r) {
   }
   if (r.not_found_in_text.length) checks.append(el("p", "Not found in the text, check by hand: " + r.not_found_in_text.join(", "), "notice bad small"));
   if (r.truncated) checks.append(el("p", "The document was longer than the model can take; the end was left out.", "notice bad small"));
-  const listKey = ["transactions", "items", "line_items", "lines"].find((k) => Array.isArray(r.fields[k])) || "";
+  const listKey = ["transactions", "items", "line_items", "lines", "people", "rows"].find((k) => Array.isArray(r.fields[k])) || "";
   const kv = $("#try-kv"); kv.replaceChildren();
   for (const [k, v] of Object.entries(r.fields)) {
     if (k === listKey) continue;
-    const tr = el("tr"); tr.append(el("th", k.replace(/_/g, " ")), el("td", v === null ? "–" : String(v))); kv.append(tr);
+    const tr = el("tr"); tr.append(el("th", k.replace(/_/g, " ")), el("td", v === null ? "–" : typeof v === "object" ? JSON.stringify(v) : String(v))); kv.append(tr);
   }
   const rows = r.fields[listKey] || [];
   $("#try-rows-title").textContent = listKey ? listKey.replace("_", " ") + " (" + rows.length + ")" : "";

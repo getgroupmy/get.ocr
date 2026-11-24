@@ -11,7 +11,7 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import engine, extract, storage, webhooks
+from . import codes, engine, extract, storage, webhooks
 from .config import get_settings
 from .db import ApiClient, Job, Usage, session_scope, utcnow
 from .documents import Document, parse_pages
@@ -22,7 +22,7 @@ DETAILS = ("lines", "text")
 
 
 def clean_options(pages: Optional[str], detail: Optional[str], force_ocr: bool, extract_type: Optional[str] = None,
-                  include_text: bool = False, fields=None) -> dict:  # noqa: ANN001
+                  include_text: bool = False, fields=None, codes: bool = False, split: bool = False) -> dict:  # noqa: ANN001
     detail = (detail or "lines").lower()
     if detail not in DETAILS:
         raise ApiError(422, "bad_detail", "detail must be 'lines' or 'text'")
@@ -33,7 +33,8 @@ def clean_options(pages: Optional[str], detail: Optional[str], force_ocr: bool, 
     if extract_type == "custom" and not wanted:
         raise ApiError(422, "bad_fields", "type=custom needs 'fields': the values to find in the document")
     return {"pages": (pages or "").strip()[:200] or None, "detail": detail, "force_ocr": bool(force_ocr),
-            "extract": extract_type, "include_text": bool(include_text), "fields": wanted}
+            "extract": extract_type, "include_text": bool(include_text), "fields": wanted, "codes": bool(codes),
+            "split": bool(split)}
 
 
 def recognise(data: bytes, options: dict, max_pages: int) -> dict:
@@ -57,9 +58,18 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
             else:
                 lines = engine.read(page.image)
                 conf = round(sum(ln["confidence"] for ln in lines) / len(lines), 4) if lines else None
-                out.update(source="ocr", text=engine.layout_text(lines), confidence=conf)
+                out.update(source="ocr", text=engine.layout_text(lines), confidence=conf,
+                           quality=engine.quality(page.image))
             if options.get("detail", "lines") == "lines":
                 out["lines"] = lines
+            want_codes = options.get("codes")
+            if want_codes == "some":  # extraction: every picture, and where a text PDF usually carries its code
+                want_codes = page.image is not None or n in numbers[:2] or n == numbers[-1]
+            if want_codes:
+                image = page.image if page.image is not None else doc.page(n, use_text_layer=False).image
+                scale = page.width / image.shape[1]  # a text page is measured in points, its picture in pixels
+                out["codes"] = [{**c, "box": [[round(x * scale, 1), round(y * scale, 1)] for x, y in c["box"]]}
+                                for c in codes.find(image)]
             pages.append(out)
         return {
             "engine": engine.NAME,
@@ -74,16 +84,31 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
 def extract_fields(data: bytes, options: dict, max_pages: int) -> dict:
     """Read the document, then have the local model turn the text into fields."""
     from . import llm
-    if not llm.ready():
+    if options.get("extract") != "table" and not llm.ready():  # a table is read by position, without the model
         raise ApiError(503, "extraction_unavailable",
                        "field extraction is not available: the model server on this machine is not answering, "
                        "or the model is not installed")
     started = time.monotonic()
-    ocr = recognise(data, {**options, "detail": "lines", "layer_lines": True}, max_pages)
+    ocr = recognise(data, {**options, "detail": "lines", "layer_lines": True, "codes": "some"}, max_pages)
     texts = [engine.layout_columns(p["lines"]) if p["lines"] else p["text"] for p in ocr["pages"]]
-    out = extract.run(ocr["pages"], texts, options.get("extract") or "auto", options.get("fields"))
+    kind = options.get("extract") or "auto"
+    if options.get("split"):
+        documents = []
+        for group in extract.split_pages(texts):
+            numbers = [ocr["pages"][i]["page"] for i in group]
+            try:
+                one = extract.run([ocr["pages"][i] for i in group], [texts[i] for i in group], kind, options.get("fields"))
+            except ApiError as exc:  # one unreadable document does not lose the others
+                one = {"error": exc.code, "message": exc.message}
+            documents.append({"pages": numbers, **one})
+        out = {"documents": documents}
+    else:
+        out = extract.run(ocr["pages"], texts, kind, options.get("fields"))
     out.update(engine=ocr["engine"], kind=ocr["kind"], page_count=ocr["page_count"],
-               pages=[{k: p[k] for k in ("page", "width", "height", "source", "confidence")} for p in ocr["pages"]])
+               pages=[{k: p.get(k) for k in ("page", "width", "height", "source", "confidence", "quality")}
+                      for p in ocr["pages"]])
+    out["codes"] = [{"page": p["page"], **c} for p in ocr["pages"] for c in p.get("codes") or []]
+    out["einvoice"] = codes.einvoice(out["codes"])
     if options.get("include_text"):
         out["text"] = ocr["text"]
     out["duration_ms"] = int((time.monotonic() - started) * 1000)

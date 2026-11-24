@@ -11,13 +11,13 @@ import json
 import re
 from datetime import date
 
-from . import doctypes, llm, statement
+from . import doctypes, llm, statement, tables
 from .config import get_settings
 from .errors import ApiError
 
 SALE_TYPES = ("invoice", "receipt", "credit_note", "debit_note", "quotation", "purchase_order", "delivery_order")
 STATEMENT_TYPES = ("bank_statement", "card_statement", "ewallet_statement")
-TYPES = ("auto", *SALE_TYPES, *STATEMENT_TYPES, "order", "payslip", "utility_bill", *doctypes.DOCS, "custom")
+TYPES = ("auto", *SALE_TYPES, *STATEMENT_TYPES, "order", "payslip", "utility_bill", *doctypes.DOCS, "table", "custom")
 TOLERANCE = 0.05  # receipts round to 5 sen
 
 _NUM = {"type": ["number", "null"]}
@@ -544,6 +544,8 @@ def catalogue() -> list[dict]:
                     "checks": checks})
     out += [{"type": t, "label": d["label"], "fields": list(d["fields"]), "rows": d["rows"][0] if d["rows"] else None,
              "checks": [c[1] for c in d["checks"]]} for t, d in doctypes.DOCS.items()]
+    out.append({"type": "table", "label": "Any table (read by position, no model)", "fields": ["columns", "totals"],
+                "rows": "rows", "checks": ["column_totals"]})
     out.append({"type": "custom", "label": "My own list of fields", "fields": [], "rows": None, "checks": []})
     return out
 
@@ -612,13 +614,52 @@ def _statement_by_model(pages: list[dict], texts: list[str]) -> dict:
             "repaired": repaired}
 
 
+_PAGE_OF = re.compile(r"(?:page|muka ?surat|m/s|halaman)\s*(?:no\.?)?(?:\s*/\s*no\.? ?mukasurat)?\s*[:.]?\s*(\d{1,3})\s*"
+                      r"(?:of|/|drp|daripada|dari)\s*(\d{1,3})", re.I)
+_ENDS = re.compile(r"\b(?:grand total|total|jumlah besar|jumlah|amount due|net pay|closing balance|baki akhir)\b", re.I)
+
+
+def split_pages(texts: list[str]) -> list[list[int]]:
+    """A file of several documents scanned together -> the positions of the pages of each.
+    A page starts a new document when it says it is page 1, when it is a different
+    kind of document from the one before, or when the page before printed a total."""
+    groups: list[list[int]] = []
+    kind = None
+    for i, text in enumerate(texts):
+        marker = _PAGE_OF.search(text)
+        this = guess_type(text) if text.strip() else kind
+        if not groups:
+            new = True
+        elif marker:
+            new = int(marker.group(1)) == 1
+        elif not text.strip():
+            new = False  # a blank page (the back of a sheet) stays with what came before
+        else:
+            new = this != kind or bool(_ENDS.search(texts[i - 1]))
+        if new:
+            groups.append([i])
+            kind = this
+        else:
+            groups[-1].append(i)
+    return groups
+
+
 def run(pages: list[dict], texts: list[str], wanted: str, custom: Optional[dict] = None) -> dict:
     """`pages` as service.recognise returns them (with lines); `texts` the
     column-keeping text of each page. Returns the extraction part of the answer."""
     if not any(t.strip() for t in texts):
         raise ApiError(422, "no_text", "no text was found in the document, so there is nothing to extract")
     kind = wanted if wanted != "auto" else guess_type("\n".join(texts))
-    if kind in STATEMENT_TYPES:
+    if kind == "table":
+        table = tables.parse(pages)
+        if not table["rows"]:
+            raise ApiError(422, "no_table", "no table was found: it needs a row of column headings with rows of "
+                                            "values under it")
+        r = {"document_type": "table", "fields": {"columns": table["columns"], "totals": table["totals"],
+                                                  "rows": table["rows"]},
+             "checks": tables.checks(table), "attempts": 0, "bad_dates": [], "truncated": False, "list_key": "rows",
+             "repaired": 0, "method": "table"}
+    elif kind in STATEMENT_TYPES:
         r = _statement(pages, texts, kind)
     elif kind in doctypes.DOCS:
         d = doctypes.DOCS[kind]
@@ -638,8 +679,8 @@ def run(pages: list[dict], texts: list[str], wanted: str, custom: Optional[dict]
     else:
         r = _sale(pages, texts, wanted)
     # rows read from the table by position are the printed text already; only the model's values are looked up
-    missing, sources = ground(r["fields"], r["list_key"], pages, check_rows=r.get("method") != "table",
-                              dates=r.get("dates", ()))
+    missing, sources = ([], {}) if kind == "table" else ground(
+        r["fields"], r["list_key"], pages, check_rows=r.get("method") != "table", dates=r.get("dates", ()))
     done = [c for c in r["checks"] if c["passed"] is not None]
     return {
         "document_type": r["document_type"],

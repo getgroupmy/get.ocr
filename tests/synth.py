@@ -165,3 +165,17 @@ def bank_statement(pages: int = 3, per_page: int = 14, seed: int = 7) -> tuple[b
         put(x_date, "Hong Leong Bank Berhad. Customer service 03-7626 8899. This is a made-up statement for testing.")
         streams.append("\n".join(ops).encode("latin-1"))
     return _pdf(streams), {"opening_balance": opening, "closing_balance": balance, "transactions": txns}
+
+
+def qr_page(text: str, lines: list[str]) -> bytes:
+    """A page picture with some lines of text and a QR code that says `text`."""
+    import cv2
+    import numpy as np
+    im = page_image(lines + ["", "", "", ""])
+    qr = cv2.resize(cv2.QRCodeEncoder.create().encode(text), None, fx=6, fy=6, interpolation=cv2.INTER_NEAREST)
+    arr = np.array(im)
+    y = arr.shape[0] - qr.shape[0] - 20
+    arr[y:y + qr.shape[0], 700:700 + qr.shape[1]] = qr[:, :, None]
+    buf = io.BytesIO()
+    Image.fromarray(arr).save(buf, "PNG")
+    return buf.getvalue()

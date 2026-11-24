@@ -221,6 +221,7 @@ A bank statement gives `bank_name`, `account_holder`, `account_number`, `currenc
 | `payslip` | Salary slip | `earnings_sum`, `deductions_sum`, `net_pay` |
 | `utility_bill` | Electricity, water, internet, phone bill | `total_due` |
 | `order` | Kitchen or counter order list | `item_quantities` |
+| `table` | Any table with a row of column headings, read by position without the model | `column_totals` |
 | `custom` | Anything else: you name the fields | none |
 
 `auto` recognises bank statements, order lists, payslips, utility bills and most of the catalogue
@@ -272,6 +273,56 @@ of a number).
 | `business_card` | Business card | `email` |
 | `property_tax_bill` | Assessment or quit rent bill | `total_due` |
 | `timesheet` | Timesheet or attendance sheet | `hours_sum`, `overtime_sum` |
+| `driving_licence` | Driving licence | `validity` |
+| `accident_report` | Accident or police report | `dates` |
+| `repair_estimate` | Repair estimate or workshop quotation | `lines_sum`, `total` |
+| `adjuster_report` | Insurance adjuster's report | `net_payable` |
+| `ownership_transfer` | Vehicle ownership transfer form | `chassis_number` |
+| `loan_release_letter` | Loan settlement or release letter | none |
+| `insurance_endorsement` | Insurance endorsement | `total_payable` |
+| `insurance_policy` | Insurance policy schedule (non-motor) | `period`, `total_payable` |
+| `vehicle_sales_order` | Vehicle sales order or booking form | `on_the_road_price` |
+| `instalment_schedule` | Instalment or repayment schedule | `term`, `instalments_sum` |
+| `fleet_card_statement` | Fuel or toll card statement | `amount_sum`, `litres_sum` |
+| `bank_letter` | Bank confirmation letter | none |
+| `bank_guarantee` | Bank guarantee | `validity`, `amount_in_words` |
+| `fixed_deposit_advice` | Fixed deposit advice | `tenure`, `maturity_amount` |
+| `bank_advice` | Bank debit or credit advice | none |
+| `deposit_slip` | Cash or cheque deposit slip | `total_amount` |
+| `aging_report` | Aging report | `totals_sum`, `grand_total` |
+| `trial_balance` | Trial balance | `debit_sum`, `credit_sum`, `balanced` |
+| `ledger` | Ledger or account printout | `closing_balance` |
+| `settlement_report` | Payment gateway settlement report | `gross_sum`, `net_sum`, `net_amount` |
+| `earnings_statement` | Driver or commission earnings statement | `net_payout` |
+| `hr_letter` | Staff letter (resignation, termination, warning, confirmation) | `dates` |
+| `leave_form` | Leave application form | `leave` |
+| `borang_e` | Borang E (employer's return) | none |
+| `employee_tax_form` | CP22 / CP22A (joiner or leaver tax notice) | none |
+| `payment_receipt_statutory` | Statutory payment receipt | none |
+| `work_permit` | Foreign worker permit or levy receipt | `validity` |
+| `ssm_certificate` | SSM certificate or form | `registration_number` |
+| `resolution` | Board or members' resolution | none |
+| `power_of_attorney` | Power of attorney | none |
+| `statutory_declaration` | Statutory declaration | none |
+| `stamp_certificate` | Stamp duty certificate | `total_paid` |
+| `court_document` | Court document | none |
+| `letter_of_demand` | Letter of demand | `dates` |
+| `reference_letter` | Reference or clearance letter | none |
+| `booking_confirmation` | Booking or reservation confirmation | `period`, `balance_due` |
+| `refund_form` | Deposit refund or refund form | `refund_amount` |
+| `civil_certificate` | Birth, marriage or death certificate | none |
+| `id_card_other` | Student, staff or OKU card | none |
+| `sale_purchase_agreement` | Sale and purchase agreement | `balance`, `dates` |
+| `land_title` | Land title | none |
+| `premises_certificate` | Premises certificate (fire, occupancy, signboard) | `validity` |
+| `maintenance_bill` | Maintenance fee or sinking fund bill | `total_due` |
+| `commercial_invoice` | Commercial invoice (export or import) | `items_sum`, `total` |
+| `certificate_of_origin` | Certificate of origin | none |
+| `letter_of_credit` | Letter of credit | `validity`, `shipment` |
+| `proof_of_delivery` | Proof of delivery | none |
+| `weighbridge_ticket` | Weighbridge ticket | `net_weight` |
+| `gate_pass` | Gate pass | none |
+| `stock_count_sheet` | Stock count sheet | `quantity_sum` |
 
 A new kind is one entry in `app/doctypes.py`: its fields, its table of lines, its checks and the
 words `auto` knows it by.
@@ -284,6 +335,27 @@ listed but not taken off the pay in the checks.
 A utility bill gives `provider_name`, `customer_name`, `account_number`, `bill_number`, `bill_date`,
 `due_date`, `period_start`, `period_end`, `currency`, `usage`, `usage_unit`, `previous_balance`,
 `payments_received`, `current_charges`, `tax`, `rounding` and `total_due`.
+
+**Any table.** `type=table` reads a table from where the words sit: the row of column headings gives
+the columns, each value goes to the heading it is under, a second line of text joins the row above,
+and a totals row is checked against the sum of each column. It needs no model, so it works with
+extraction turned off and takes no longer than the reading. The answer has `columns`, `rows` (one
+object per row, keyed by column) and `totals`. Only the first table in the document is read.
+
+**Several documents in one file.** Send `split=true` when a PDF holds a stack of documents scanned
+together. The answer then has `documents`, one entry per document with its `pages` and the usual
+fields and checks. A page starts a new document when it says it is page 1, when it is a different
+kind of document from the page before, or when the page before printed a total. These are rules of
+thumb: check the page ranges.
+
+**QR codes and barcodes.** Extraction looks for codes on every picture, and on the first two and the
+last page of a PDF with a text layer; `codes` lists what it found with the page and position. When
+one is an LHDN MyInvois link, `einvoice` gives its `uuid` and `url`. The link is only decoded, not
+checked with LHDN. For plain reading, send `codes=true` to `POST /v1/ocr`.
+
+**Picture quality.** Every page that was read from a picture carries `quality`: `sharpness`,
+`brightness` and `issues` (`blurry`, `dark`, `low_resolution`). Use it to ask for a better photo
+before trusting the answer. The thresholds are first guesses.
 
 **Your own fields.** For any other document, send `type=custom` and `fields`: the values to find.
 
@@ -425,6 +497,9 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
   setting for small lone characters were tuned on a single photo of an order list, where they
   recovered a quantity that was missed in the shadow. Other photos are untested.
 - **Order lists** are read by the model and have only been run against a stand-in, not the real model.
+- **Not built.** Handwriting; Jawi, Tamil and Thai; whether a tick box is ticked; whether a signature or
+  a stamp is present; identity documents (get.ekyc does those). 1D barcodes go through OpenCV's
+  reader but were not tested; only QR codes were.
 - **Statement layouts.** The table reader was checked against one real 20-page Hong Leong Bank
   statement (192 transactions, equal to the totals the bank prints) and made-up ones. It expects a
   date at the start of each transaction and right-aligned amount columns. Other banks' layouts are
@@ -463,6 +538,8 @@ app/routers/admin.py     /admin/api: clients, usage, try it
 app/service.py           reading a document, the job queue, retention
 app/documents.py         images and PDFs into pages
 app/doctypes.py          the catalogue of other documents: fields, checks, words to recognise them
+app/tables.py            any table, read by position
+app/codes.py             QR codes and barcodes
 app/statement.py         the transaction table of a bank statement, read by position
 app/engine.py            PP-OCR through RapidOCR
 app/extract.py           fields, arithmetic checks, lookup of values in the text
