@@ -12,9 +12,9 @@ from datetime import timedelta
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from . import codes, crypto, engine, extract, storage, vision, webhooks
+from . import codes, crypto, engine, extract, marks, storage, vision, webhooks
 from .config import get_settings
-from .db import ApiClient, Job, Seen, Usage, session_scope, utcnow
+from .db import ApiClient, Correction, Job, Route, Seen, Usage, session_scope, utcnow
 from .documents import Document, parse_pages
 from .errors import ApiError
 
@@ -25,7 +25,7 @@ READERS = ("standard", "glm")
 
 def clean_options(pages: Optional[str], detail: Optional[str], force_ocr: bool, extract_type: Optional[str] = None,
                   include_text: bool = False, fields=None, codes: bool = False, split: bool = False,  # noqa: ANN001
-                  reader: Optional[str] = None, task: Optional[str] = None) -> dict:
+                  reader: Optional[str] = None, task: Optional[str] = None, find_marks: bool = False) -> dict:
     reader = (reader or "standard").strip().lower()
     if reader not in READERS:
         raise ApiError(422, "bad_engine", "engine must be 'standard' or 'glm'")
@@ -43,7 +43,7 @@ def clean_options(pages: Optional[str], detail: Optional[str], force_ocr: bool, 
         raise ApiError(422, "bad_fields", "type=custom needs 'fields': the values to find in the document")
     return {"pages": (pages or "").strip()[:200] or None, "detail": detail, "force_ocr": bool(force_ocr),
             "extract": extract_type, "include_text": bool(include_text), "fields": wanted, "codes": bool(codes),
-            "split": bool(split), "engine": reader, "task": task}
+            "split": bool(split), "engine": reader, "task": task, "marks": bool(find_marks)}
 
 
 def recognise(data: bytes, options: dict, max_pages: int) -> dict:
@@ -92,10 +92,29 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
                 scale = page.width / image.shape[1]  # a text page is measured in points, its picture in pixels
                 out["codes"] = [{**c, "box": [[round(x * scale, 1), round(y * scale, 1)] for x, y in c["box"]]}
                                 for c in codes.find(image)]
+            if options.get("marks") or options.get("preview"):
+                image = page.image if page.image is not None else doc.page(n, use_text_layer=False).image
+                scale = out["width"] / image.shape[1]
+
+                def to_page(box: list) -> list:
+                    return [[round(x * scale, 1), round(y * scale, 1)] for x, y in box]
+                if options.get("marks"):
+                    seen_lines = lines if page.image is not None else []  # a text page's lines are in points, not pixels
+                    out["checkboxes"] = [{**c, "box": to_page(c["box"])} for c in marks.checkboxes(image, seen_lines)] \
+                        if page.image is not None else []
+                    out["stamps"] = [{**st, "box": to_page(st["box"])} for st in marks.stamps(image)]
+                if options.get("preview") and len(pages) < 3:  # the console's review view: the page as it was read
+                    import base64
+                    import cv2
+                    side = 1400 / max(image.shape[:2])
+                    small = cv2.resize(image, None, fx=side, fy=side, interpolation=cv2.INTER_AREA) if side < 1 else image
+                    ok, jpeg = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    out["preview"] = "data:image/jpeg;base64," + base64.b64encode(jpeg.tobytes()).decode() if ok else None
             pages.append(out)
         return {
             "engine": vision.NAME if glm else engine.NAME,
             "kind": doc.kind,
+            "file": doc.info(),
             "page_count": doc.page_count,
             "pages": pages,
             "text": "\n\n".join(p["text"] for p in pages),
@@ -126,8 +145,9 @@ def extract_fields(data: bytes, options: dict, max_pages: int) -> dict:
         out = {"documents": documents}
     else:
         out = extract.run(ocr["pages"], texts, kind, options.get("fields"))
-    out.update(engine=ocr["engine"], kind=ocr["kind"], page_count=ocr["page_count"],
-               pages=[{k: p.get(k) for k in ("page", "width", "height", "source", "confidence", "quality")}
+    out.update(engine=ocr["engine"], kind=ocr["kind"], page_count=ocr["page_count"], file=ocr["file"],
+               pages=[{k: p.get(k) for k in ("page", "width", "height", "source", "confidence", "quality", "rotated",
+                                             "checkboxes", "stamps", "preview") if k in p}
                       for p in ocr["pages"]])
     out["codes"] = [{"page": p["page"], **c} for p in ocr["pages"] for c in p.get("codes") or []]
     out["einvoice"] = codes.einvoice(out["codes"])
@@ -173,6 +193,28 @@ def note_duplicates(db: Session, client_id: str, data: bytes, result: dict) -> N
     for doc in documents:
         doc["duplicate"] = {"same_document_first_seen": seen("content", _fingerprint(doc))}
     result["duplicate_file_first_seen"] = file_seen
+
+
+def correction_key(document_type: str, field: str, original) -> str:  # noqa: ANN001
+    return crypto.sha256_hex("|".join((document_type, field, " ".join(str(original).lower().split()))))
+
+
+def apply_corrections(db: Session, client_id: str, result: dict) -> None:
+    """Put right the misreadings this client has corrected before: a text field whose value is one
+    it reported is replaced by what it said the value should be. Numbers and dates are never
+    replaced, since the same wrong number does not mean the same right one."""
+    for doc in result.get("documents") or ([result] if "fields" in result else []):
+        fields, kind, changed = doc.get("fields") or {}, doc.get("document_type") or "", {}
+        for name, value in fields.items():
+            if not isinstance(value, str) or "date" in name:
+                continue
+            row = db.scalar(select(Correction).where(Correction.client_id == client_id,
+                                                     Correction.match == correction_key(kind, name, value))
+                            .order_by(Correction.at.desc()).limit(1))
+            if row is not None and row.detail.get("corrected") != value:
+                changed[name] = {"from": value, "to": row.detail["corrected"]}
+                fields[name] = row.detail["corrected"]
+        doc["corrected_from_memory"] = changed
 
 
 def record_usage(db: Session, client_id: str, kind: str, ok: bool, pages: int, size: int, ms: int) -> None:
@@ -222,6 +264,7 @@ def process(job_id: str) -> None:
             job.status, job.error, job.error_message = "failed", error[0], error[1][:300]
         else:
             if data is not None:
+                apply_corrections(db, client_id, result)
                 note_duplicates(db, client_id, data, result)
             job.status, job.result, job.pages = "completed", result, len(result["pages"])
         record_usage(db, client_id, "job", error is None, job.pages or 0, size,
@@ -230,7 +273,8 @@ def process(job_id: str) -> None:
         client = db.get(ApiClient, client_id)
         db.flush()
         if client is not None:
-            webhooks.notify(job, client)
+            routes = {r.kind: r.url for r in db.scalars(select(Route).where(Route.client_id == client_id))}
+            webhooks.notify(job, client, routes)
 
 
 def _work() -> None:
@@ -277,11 +321,58 @@ def start() -> None:
                              .order_by(Job.created_at)).all()
     for job_id in waiting:
         enqueue(job_id)
-    _worker = threading.Thread(target=_work, daemon=True, name="ocr-worker")
-    _worker.start()
+    for n in range(max(1, get_settings().workers)):
+        _worker = threading.Thread(target=_work, daemon=True, name=f"ocr-worker-{n + 1}")
+        _worker.start()
+    if get_settings().alert_webhook:
+        threading.Thread(target=_watch, daemon=True, name="ocr-alerts").start()
     threading.Thread(target=_keep_house, daemon=True, name="ocr-housekeeping").start()
+
+
+def problems() -> dict:
+    """What is wrong right now, by name. Empty when all is well."""
+    import shutil
+    from . import llm
+    s = get_settings()
+    found = {}
+    if not engine.available():
+        found["reader"] = "the OCR engine is not loaded"
+    if s.llm_url and not llm.ready(max_age=0):
+        found["extraction"] = "the model server is not answering, or the extraction model is not installed"
+    try:
+        free = shutil.disk_usage(s.data_dir).free / 1e9
+        if free < s.alert_disk_gb:
+            found["disk"] = f"only {free:.1f} GB free where the data is kept"
+    except OSError:
+        found["disk"] = "the data folder cannot be read"
+    with session_scope() as db:
+        oldest = db.scalar(select(Job.created_at).where(Job.status.in_(("queued", "processing")))
+                           .order_by(Job.created_at).limit(1))
+    if oldest is not None and utcnow() - oldest > timedelta(hours=1):
+        found["queue"] = "a document has been waiting for more than an hour"
+    return found
+
+
+def _watch() -> None:
+    """Tell the alert address when something stops working and when it works again. The message
+    names the problem only; it never carries document content."""
+    import httpx
+    known: dict = {}
+    while not _stop.wait(60):
+        try:
+            now = problems()
+            for name in set(now) | set(known):
+                if (name in now) != (name in known):
+                    body = {"service": "get.ocr", "problem": name, "state": "failing" if name in now else "recovered",
+                            "detail": now.get(name) or known.get(name),
+                            "text": f"get.ocr: {name} " + ("is failing: " + now[name] if name in now else "has recovered")}
+                    httpx.post(get_settings().alert_webhook, json=body, timeout=10)
+            known = now
+        except Exception:  # noqa: BLE001
+            log.exception("the alert check failed")
 
 
 def stop() -> None:
     _stop.set()
-    _queue.put(None)
+    for _ in range(max(1, get_settings().workers)):
+        _queue.put(None)

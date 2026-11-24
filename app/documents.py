@@ -15,6 +15,9 @@ from .errors import ApiError
 
 IMAGE_FORMATS = {"JPEG", "PNG", "WEBP", "MPO", "TIFF", "BMP", "GIF"}
 Image.MAX_IMAGE_PIXELS = 80_000_000  # a larger picture is refused (decompression bombs)
+_EDITORS = re.compile(r"photoshop|gimp|canva|illustrator|pixelmator|affinity|picsart|snapseed|lightroom|paint\.net|"
+                      r"ilovepdf|smallpdf|sejda|pdfescape|pdf-?xchange|phantompdf|foxit pdf editor|nitro|pdfelement|"
+                      r"inkscape|libreoffice draw", re.I)
 _pdf_lock = threading.Lock()  # pdfium is not thread-safe
 
 
@@ -100,6 +103,7 @@ class Document:
         self.kind = "pdf" if data[:1024].lstrip().startswith(b"%PDF") else "image"
         self._pdf = None
         self._frames: list[Image.Image] = []
+        self._exif: dict = {}
         if self.kind == "pdf":
             self._open_pdf(data)
         else:
@@ -123,6 +127,8 @@ class Document:
             im = Image.open(io.BytesIO(data))
             if im.format not in IMAGE_FORMATS:
                 raise ApiError(415, "unsupported_format", f"unsupported file format {im.format}")
+            self._exif = {k: (v.strip() if isinstance(v, str) else v) for k, v in dict(im.getexif()).items()
+                          if k in (305, 306)}
             n = getattr(im, "n_frames", 1) if im.format == "TIFF" else 1  # multi-page TIFF scans
             for i in range(n):
                 im.seek(i)
@@ -135,6 +141,27 @@ class Document:
             raise ApiError(415, "unsupported_format", "not a readable image or PDF "
                            "(JPEG, PNG, WEBP, TIFF, BMP, GIF, PDF)") from exc
         self.page_count = len(self._frames)
+
+    def info(self) -> dict:
+        """What the file says about how it was made. `edited_with` names an editing program when the
+        file carries one's mark. These are hints: their absence proves nothing, and a scan app or a
+        bank's own system also leaves a name here."""
+        out = {"producer": None, "creator": None, "created": None, "modified": None, "edited_with": None}
+        try:
+            if self._pdf is not None:
+                with _pdf_lock:
+                    meta = self._pdf.get_metadata_dict()
+                out.update(producer=meta.get("Producer") or None, creator=meta.get("Creator") or None,
+                           created=meta.get("CreationDate") or None, modified=meta.get("ModDate") or None)
+            elif self._frames:
+                exif = self._exif or {}
+                out.update(producer=exif.get(305) or None, created=exif.get(306) or None)  # Software, DateTime
+        except Exception:  # noqa: BLE001 - damaged metadata is not worth failing a reading for
+            return out
+        named = " ".join(str(out[k] or "") for k in ("producer", "creator"))
+        hit = _EDITORS.search(named)
+        out["edited_with"] = hit.group(0) if hit else None
+        return out
 
     def page(self, number: int, use_text_layer: bool = True, with_lines: bool = False) -> Page:
         if self.kind == "image":

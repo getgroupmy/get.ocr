@@ -103,6 +103,37 @@ class Seen(Base):
     at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
+class Correction(Base):
+    """A value a person corrected, kept so the same misreading is put right next time. The text is
+    stored encrypted; `match` is a hash of the kind, the field and the misread value."""
+    __tablename__ = "corrections"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    client_id: Mapped[str] = mapped_column(ForeignKey("api_clients.id"), index=True)
+    match: Mapped[str] = mapped_column(String(64), index=True)
+    detail: Mapped[dict] = mapped_column(EncryptedJSON)  # document_type, field, original, corrected
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Route(Base):
+    """Where a client's finished jobs of one kind of document are announced, instead of its usual webhook."""
+    __tablename__ = "routes"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    client_id: Mapped[str] = mapped_column(ForeignKey("api_clients.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(40))
+    url: Mapped[str] = mapped_column(String(500))
+
+
+class AdminUser(Base):
+    """A person who may use the console with a token of their own. role: admin, or viewer (may look and try, not change)."""
+    __tablename__ = "admin_users"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    role: Mapped[str] = mapped_column(String(10), default="viewer")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class Audit(Base):
     """What was done in the console and when. Names and ids only, never keys or document content."""
     __tablename__ = "audit"

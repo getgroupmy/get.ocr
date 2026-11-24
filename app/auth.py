@@ -6,13 +6,13 @@ import time
 import hmac
 import secrets
 
-from fastapi import Depends, Header
+from fastapi import Depends, Header, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import crypto
 from .config import get_settings
-from .db import ApiClient, get_db
+from .db import AdminUser, ApiClient, get_db
 from .errors import ApiError
 
 
@@ -55,7 +55,20 @@ def require_client(x_api_key: str = Header(default=""), db: Session = Depends(ge
     return client
 
 
-def require_admin(x_admin_token: str = Header(default="")) -> str:
+def require_admin(request: Request, x_admin_token: str = Header(default=""), db: Session = Depends(get_db)) -> str:
+    """The owner's token from the configuration, or a console user's own token. A viewer may look
+    and try a document, but not change anything. Returns who it is, for the activity log."""
     if x_admin_token and hmac.compare_digest(x_admin_token.encode(), get_settings().admin_token.encode()):
-        return "admin"
-    raise ApiError(401, "unauthorized", "invalid or missing X-Admin-Token")
+        request.state.admin, request.state.role = "owner", "owner"
+        return "owner"
+    user = db.scalar(select(AdminUser).where(AdminUser.token_hash == crypto.sha256_hex(x_admin_token))) \
+        if x_admin_token else None
+    if user is None or not user.active:
+        raise ApiError(401, "unauthorized", "invalid or missing X-Admin-Token")
+    changing = request.method not in ("GET", "HEAD") and not request.url.path.endswith("/try")
+    if changing and user.role != "admin":
+        raise ApiError(403, "forbidden", "this console user may look, not change")
+    if "/users" in request.url.path:
+        raise ApiError(403, "forbidden", "only the owner's token manages console users")
+    request.state.admin, request.state.role = user.name, user.role
+    return user.name

@@ -5,6 +5,8 @@ The payload says which job finished, never the text: fetch that with the API key
 """
 from __future__ import annotations
 
+from typing import Optional
+
 import hashlib
 import hmac
 import json
@@ -56,8 +58,11 @@ def _deliver(url: str, secret: bytes, payload: dict) -> None:
     log.info("webhook for %s: %s", payload["id"], outcome)
 
 
-def notify(job: Job, client: ApiClient) -> None:
-    if not client.webhook_url or not client.webhook_secret:
+def notify(job: Job, client: ApiClient, routes: Optional[dict] = None) -> None:
+    """Announce a finished job. `routes` maps a kind of document to the address that takes it for
+    this client; a job of another kind, or one that failed, goes to the client's usual webhook."""
+    kind = (job.result or {}).get("document_type") if job.status == "completed" else None
+    url = (routes or {}).get(kind) or client.webhook_url
+    if not url or not client.webhook_secret:
         return
-    threading.Thread(target=_deliver, daemon=True,
-                     args=(client.webhook_url, client.webhook_secret, payload_for(job))).start()
+    threading.Thread(target=_deliver, daemon=True, args=(url, client.webhook_secret, payload_for(job))).start()

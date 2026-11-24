@@ -665,7 +665,7 @@ def run(pages: list[dict], texts: list[str], wanted: str, custom: Optional[dict]
             raise ApiError(422, "no_table", "no table was found: it needs a row of column headings with rows of "
                                             "values under it")
         r = {"document_type": "table", "fields": {"columns": table["columns"], "totals": table["totals"],
-                                                  "rows": table["rows"]},
+                                                  "other_tables": table["more"], "rows": table["rows"]},
              "checks": tables.checks(table), "attempts": 0, "bad_dates": [], "truncated": False, "list_key": "rows",
              "repaired": 0, "method": "table"}
     elif kind in STATEMENT_TYPES:
@@ -691,6 +691,22 @@ def run(pages: list[dict], texts: list[str], wanted: str, custom: Optional[dict]
     missing, sources = ([], {}) if kind == "table" else ground(
         r["fields"], r["list_key"], pages, check_rows=r.get("method") != "table", dates=r.get("dates", ()))
     done = [c for c in r["checks"] if c["passed"] is not None]
+    failed = any(c["passed"] is False for c in done)
+    evidence = {}
+    for key, value in r["fields"].items():
+        if value is None or isinstance(value, (list, dict)):
+            continue
+        at = sources.get(key)
+        if key in missing:
+            level = "low"  # the model gave it, the text does not print it
+        elif at is None:
+            level = "unverified"  # rewritten on purpose (a date, a currency code), so it was not looked up
+        elif (at.get("confidence") is not None and at["confidence"] < 0.9) or \
+                (failed and isinstance(value, (int, float))):
+            level = "medium"  # printed, but the reader was unsure of the line, or the sums do not work out
+        else:
+            level = "high"
+        evidence[key] = level
     return {
         "document_type": r["document_type"],
         "fields": r["fields"],
@@ -700,6 +716,8 @@ def run(pages: list[dict], texts: list[str], wanted: str, custom: Optional[dict]
         "not_found_in_text": missing,
         "unreadable_dates": r["bad_dates"],
         "sources": sources,
+        # how well each top-level value is backed: high, medium, low, or unverified
+        "evidence": evidence,
         "balance_columns_swapped": r["repaired"],
         "truncated": r["truncated"],
         "model": llm.current_model(),

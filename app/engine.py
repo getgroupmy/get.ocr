@@ -83,11 +83,36 @@ def sideways(lines: list[dict]) -> bool:
     return tall >= 1 and tall > 2 * wide
 
 
+def upside_down(img: np.ndarray, lines: list[dict]) -> bool:
+    """Do most lines stand on their head? Asked of the reader's own line classifier, on the longest lines."""
+    eng = _engine()
+    longest = sorted((ln for ln in lines if len(ln["text"]) >= 4), key=lambda ln: -len(ln["text"]))[:12]
+    if eng is None or len(longest) < 2:
+        return False
+    crops = []
+    for ln in longest:
+        xs, ys = [int(p[0]) for p in ln["box"]], [int(p[1]) for p in ln["box"]]
+        crop = img[max(min(ys), 0):max(ys), max(min(xs), 0):max(xs)]
+        if crop.size:
+            crops.append(np.ascontiguousarray(crop))
+    try:
+        with _run_lock:
+            labels = [label for label, _ in eng._load_cls_model()(crops).cls_res]
+    except Exception:  # noqa: BLE001 - an internal of the library: without it, pages are read as they come
+        log.debug("line orientation could not be checked", exc_info=True)
+        return False
+    return sum(label == "180" for label in labels) > len(labels) / 2
+
+
 def read_upright(img: np.ndarray) -> tuple[list[dict], np.ndarray, int]:
     """Read a picture, turning it first when it lies on its side. Returns the lines, the picture
     as it was read, and how far it was turned clockwise (0, 90 or 270 degrees)."""
     lines = read(img)
     if not sideways(lines):
+        # An upside-down page is read line by line all the same, but the lines come out bottom first.
+        if upside_down(img, lines):
+            turned = np.ascontiguousarray(np.rot90(img, 2))
+            return read(turned), turned, 180
         return lines, img, 0
     best = (0.0, lines, img, 0)  # kept only if neither turn reads as an upright page
     for quarter, angle in ((1, 270), (3, 90)):  # np.rot90 turns anticlockwise

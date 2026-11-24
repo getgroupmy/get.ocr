@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from .. import crypto, extract, service
 from ..auth import new_api_key, require_admin
 from ..config import get_settings
-from ..db import ApiClient, Audit, Job, Usage, get_db
+from ..db import AdminUser, ApiClient, Audit, Job, Route, Usage, get_db
 from ..errors import ApiError
 from .ocr import job_out, read_input
 
@@ -45,7 +45,8 @@ def _client_out(c: ApiClient, usage: Optional[dict] = None) -> dict:
 
 def _audit(db: Session, request: Request, action: str, target: Optional[str] = None) -> None:
     origin = request.headers.get("cf-connecting-ip") or (request.client.host if request.client else None)
-    db.add(Audit(action=action, target=(target or "")[:160] or None, origin=(origin or "")[:60] or None))
+    who = getattr(request.state, "admin", "owner")
+    db.add(Audit(action=action, target=((target or "") + f" (by {who})")[:160], origin=(origin or "")[:60] or None))
 
 
 def _client(db: Session, cid: str) -> ApiClient:
@@ -99,6 +100,73 @@ def revoke_client(cid: str, request: Request, db: Session = Depends(get_db)):
     return Response(status_code=204)
 
 
+class RouteChange(BaseModel):
+    routes: dict = Field(default_factory=dict)  # kind of document -> webhook URL
+
+
+@router.put("/clients/{cid}/routes")
+def set_routes(cid: str, body: RouteChange, request: Request, db: Session = Depends(get_db)):
+    """Send finished jobs of some kinds of document to their own address, e.g. {"routes": {"invoice":
+    "https://accounts.example.com/hook"}}. They are signed with the client's webhook secret, so set a
+    webhook first. Sending {} clears them."""
+    c = _client(db, cid)
+    clean = {}
+    for kind, url in body.routes.items():
+        if kind not in extract.TYPES or kind in ("auto", "custom"):
+            raise ApiError(422, "bad_type", f"'{kind}' is not a kind of document")
+        clean[kind] = _check_url(str(url))
+        if not clean[kind]:
+            raise ApiError(422, "bad_webhook_url", "every route needs a URL")
+    if clean and not c.webhook_secret:
+        raise ApiError(422, "no_webhook", "set the client's webhook first: routes are signed with its secret")
+    for old in db.scalars(select(Route).where(Route.client_id == c.id)).all():
+        db.delete(old)
+    db.add_all([Route(client_id=c.id, kind=k, url=u) for k, u in clean.items()])
+    _audit(db, request, "client.routes_set", f"{c.id} {c.name}: {', '.join(sorted(clean)) or 'none'}")
+    return {"id": c.id, "routes": clean}
+
+
+@router.get("/clients/{cid}/routes")
+def get_routes(cid: str, db: Session = Depends(get_db)):
+    c = _client(db, cid)
+    return {"id": c.id, "routes": {r.kind: r.url for r in db.scalars(select(Route).where(Route.client_id == c.id))}}
+
+
+class NewUser(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    role: str = Field(default="viewer", pattern="^(admin|viewer)$")
+
+
+@router.post("/users", status_code=201)
+def create_user(body: NewUser, request: Request, db: Session = Depends(get_db)):
+    """A console sign-in for another person. Their token is shown this once. Only the owner's token
+    (OCR_ADMIN_TOKEN) may manage users. A viewer may look and try a document; an admin may also
+    create and revoke clients."""
+    token = "oa_" + secrets.token_urlsafe(32)
+    u = AdminUser(id="usr_" + secrets.token_hex(8), name=body.name.strip(), token_hash=crypto.sha256_hex(token),
+                  role=body.role)
+    db.add(u)
+    _audit(db, request, "user.created", f"{u.id} {u.name} ({u.role})")
+    return {"id": u.id, "name": u.name, "role": u.role, "token": token}
+
+
+@router.get("/users")
+def list_users(db: Session = Depends(get_db)):
+    return {"users": [{"id": u.id, "name": u.name, "role": u.role, "active": u.active,
+                       "created_at": u.created_at.isoformat() + "Z"}
+                      for u in db.scalars(select(AdminUser).order_by(AdminUser.created_at.desc()))]}
+
+
+@router.delete("/users/{uid}", status_code=204)
+def revoke_user(uid: str, request: Request, db: Session = Depends(get_db)):
+    u = db.get(AdminUser, uid)
+    if u is None:
+        raise ApiError(404, "not_found", "user not found")
+    u.active = False
+    _audit(db, request, "user.revoked", f"{u.id} {u.name}")
+    return Response(status_code=204)
+
+
 @router.get("/audit")
 def audit(limit: int = 100, db: Session = Depends(get_db)):
     """What was done in the console, newest first."""
@@ -137,5 +205,6 @@ async def try_it(request: Request):
     if request.headers.get("content-type", "").lower().startswith("multipart/"):
         from .. import llm
         llm.use_model((await request.form()).get("model"))  # try another installed model for this one reading
+    options["preview"] = True  # the review view shows the page as it was read
     # the console is the administrator's own: whole documents, as a job would take them
     return await run_in_threadpool(service.run, data, options, get_settings().max_pages)
