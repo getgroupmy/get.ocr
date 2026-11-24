@@ -102,8 +102,9 @@ class Document:
     def __init__(self, data: bytes):
         self.kind = "pdf" if data[:1024].lstrip().startswith(b"%PDF") else "image"
         self._pdf = None
-        self._frames: list[Image.Image] = []
         self._exif: dict = {}
+        self._im: Optional[Image.Image] = None  # the open image; frames are decoded one at a time
+        self._im_data = b""  # keeps the buffer the image reads from alive
         if self.kind == "pdf":
             self._open_pdf(data)
         else:
@@ -130,17 +131,28 @@ class Document:
             self._exif = {k: (v.strip() if isinstance(v, str) else v) for k, v in dict(im.getexif()).items()
                           if k in (305, 306)}
             n = getattr(im, "n_frames", 1) if im.format == "TIFF" else 1  # multi-page TIFF scans
-            for i in range(n):
-                im.seek(i)
-                self._frames.append(ImageOps.exif_transpose(im).copy())
         except ApiError:
             raise
-        except Image.DecompressionBombError as exc:
-            raise ApiError(413, "too_large", "the image has too many pixels") from exc
         except Exception as exc:  # noqa: BLE001
             raise ApiError(415, "unsupported_format", "not a readable image or PDF "
                            "(JPEG, PNG, WEBP, TIFF, BMP, GIF, PDF)") from exc
-        self.page_count = len(self._frames)
+        cap = get_settings().max_pages
+        if n > cap:  # refuse before decoding: a tiny many-frame TIFF would otherwise exhaust memory
+            raise ApiError(422, "too_many_pages", f"the document has {n} pages; the limit is {cap}")
+        # Frames are decoded one at a time in page(), not all at once.
+        self._im = im
+        self._im_data = data
+        self.page_count = n
+
+    def _frame(self, number: int) -> np.ndarray:
+        """Decode one image frame (a page of a multi-frame TIFF) to BGR, on demand."""
+        assert self._im is not None
+        try:
+            if self.page_count > 1:
+                self._im.seek(number - 1)
+            return _bgr(ImageOps.exif_transpose(self._im))
+        except Image.DecompressionBombError as exc:
+            raise ApiError(413, "too_large", "the image has too many pixels") from exc
 
     def info(self) -> dict:
         """What the file says about how it was made. `edited_with` names an editing program when the
@@ -153,7 +165,7 @@ class Document:
                     meta = self._pdf.get_metadata_dict()
                 out.update(producer=meta.get("Producer") or None, creator=meta.get("Creator") or None,
                            created=meta.get("CreationDate") or None, modified=meta.get("ModDate") or None)
-            elif self._frames:
+            elif self._im is not None:
                 exif = self._exif or {}
                 out.update(producer=exif.get(305) or None, created=exif.get(306) or None)  # Software, DateTime
         except Exception:  # noqa: BLE001 - damaged metadata is not worth failing a reading for
@@ -165,7 +177,7 @@ class Document:
 
     def page(self, number: int, use_text_layer: bool = True, with_lines: bool = False) -> Page:
         if self.kind == "image":
-            img = _bgr(self._frames[number - 1])
+            img = self._frame(number)
             return Page(number, img, img.shape[1], img.shape[0])
         s = get_settings()
         with _pdf_lock:
@@ -194,7 +206,9 @@ class Document:
             with _pdf_lock:
                 self._pdf.close()
             self._pdf = None
-        self._frames.clear()
+        if self._im is not None:
+            self._im.close()
+            self._im = None
 
     def __enter__(self) -> "Document":
         return self

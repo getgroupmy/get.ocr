@@ -15,7 +15,7 @@ from .. import extract, service, storage
 from ..auth import require_client
 from ..config import get_settings
 from ..db import ApiClient, Correction, Job, get_db
-from ..errors import ApiError
+from ..errors import ApiError, RequestTooLarge
 
 router = APIRouter(prefix="/v1", tags=["ocr"])
 
@@ -91,6 +91,8 @@ async def read_input(request: Request) -> tuple[bytes, dict, Optional[str]]:
     elif ctype.startswith("multipart/form-data"):
         try:
             fields = await request.form(max_files=1, max_fields=20)
+        except RequestTooLarge:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise ApiError(422, "bad_request", "the form could not be read") from exc
         upload = fields.get("file")

@@ -137,13 +137,25 @@ _PAYSLIP_WORDS = re.compile(r"pay ?slip|slip gaji|penyata gaji|salary slip|net p
 _BILL_WORDS = re.compile(r"\bkwh\b|\bbil\b|tunggakan|caj semasa|current charges|amount due|jumlah (?:perlu|yang perlu) "
                          r"(?:di)?bayar|meter|bayar sebelum|pay before|due date|tarikh akhir|no\.? akaun|account no", re.I)
 _PRICE = re.compile(r"\d[.,]\d{2}(?!\d)")
-_BANK_WORDS = re.compile(r"statement of account|account statement|bank statement|penyata akaun|penyata bank|"
+_BANK_WORDS = re.compile(r"statement period|tempoh penyataan|balance from previous statement|current account|"
+                         r"savings account|akaun semasa|akaun simpanan|statement of account|account statement|bank statement|penyata akaun|penyata bank|"
                          r"opening balance|closing balance|balance b/?f|brought forward|baki awal|baki akhir|"
                          r"beginning balance|ending balance", re.I)
+# A bank statement names itself; "statement of account" / "opening balance" alone are
+# shared with ledgers and supplier statements, which are detected more specifically below.
+_BALANCE_KINDS = ("supplier_statement", "ledger", "loan_statement", "trial_balance", "aging_report",
+                  "fleet_card_statement", "settlement_report", "instalment_schedule")
+_BANK_STRONG = re.compile(r"\bbank statement\b|penyata bank|penyata akaun", re.I)
 
 
 def guess_type(text: str) -> str:
-    if len(set(m.lower() for m in _BANK_WORDS.findall(text))) >= 2:
+    dt = doctypes.guess(text)
+    # A bank statement either names itself, or shows two balance phrases and is not a more
+    # specific document (a ledger / supplier statement carries "opening/closing balance" too).
+    # Only the kinds that are themselves statements of balances take precedence over a bank statement:
+    # a real statement's own lines mention transfers, cheques and payments, which are other kinds' words.
+    if _BANK_STRONG.search(text) or (dt not in _BALANCE_KINDS
+                                     and len(set(m.lower() for m in _BANK_WORDS.findall(text))) >= 2):
         return "bank_statement"
     # an order list names a table or how it is served, and prints no prices
     if len(set(m.lower() for m in _ORDER_WORDS.findall(text))) >= 2 and not _PRICE.search(text):
@@ -152,8 +164,8 @@ def guess_type(text: str) -> str:
         return "payslip"
     if len(set(m.lower() for m in _BILL_WORDS.findall(text))) >= 3:
         return "utility_bill"
-    if doctypes.guess(text):
-        return doctypes.guess(text)
+    if dt:
+        return dt
     return "invoice"
 
 
@@ -251,28 +263,35 @@ def sale_checks(f: dict) -> list[dict]:
     return out
 
 
-def repair_balances(txns: list[dict], start: Optional[float]) -> int:
+def repair_balances(txns: list[dict], start: Optional[float], owed: bool = False) -> int:
     """Follow the running balance. Where a line fits only with debit and credit
     exchanged, exchange them (the model put the amount in the wrong column).
-    Returns how many lines were exchanged."""
-    swapped, prev = 0, start
+    Lines without a printed balance are carried into the next one that has it (a
+    `pending` run), so a multi-line day is not judged against a stale balance.
+    owed: a charge (debit) raises the balance (a credit card). Returns how many
+    lines were exchanged."""
+    swapped, prev, pending = 0, start, 0.0
     for t in txns:
         bal = t["balance"]
-        if prev is not None and bal is not None:
-            move = (t["credit"] or 0) - (t["debit"] or 0)
-            if not _near(prev + move, bal) and _near(prev - move, bal) and move != 0:
-                t["debit"], t["credit"] = t["credit"], t["debit"]
-                swapped += 1
+        move = (t["debit"] or 0) - (t["credit"] or 0) if owed else (t["credit"] or 0) - (t["debit"] or 0)
+        if prev is not None and bal is not None and move != 0 \
+                and not _near(prev + pending + move, bal) and _near(prev + pending - move, bal):
+            t["debit"], t["credit"] = t["credit"], t["debit"]
+            swapped += 1
+            move = -move
+        pending += move
         if bal is not None:
-            prev = bal
+            prev, pending = bal, 0.0
     return swapped
 
 
-def broken_balances(txns: list[dict], start: Optional[float]) -> list[int]:
-    """1-based positions of lines whose printed balance does not follow from the one before."""
+def broken_balances(txns: list[dict], start: Optional[float], owed: bool = False) -> list[int]:
+    """1-based positions of lines whose printed balance does not follow from the one before.
+    owed: a charge (debit) raises the balance and a payment (credit) lowers it (a credit card)."""
     bad, prev, pending = [], start, 0.0
     for i, t in enumerate(txns, 1):
-        pending += (t["credit"] or 0) - (t["debit"] or 0)
+        move = (t["debit"] or 0) - (t["credit"] or 0) if owed else (t["credit"] or 0) - (t["debit"] or 0)
+        pending += move
         if t["balance"] is None:
             continue  # lines without a balance are carried into the next one that has it
         if prev is not None and not _near(prev + pending, t["balance"]):
@@ -286,7 +305,7 @@ def statement_checks(f: dict, printed: Optional[dict] = None, owed: bool = False
     txns, opening, closing = f["transactions"], f["opening_balance"], f["closing_balance"]
     out = []
     with_balance = sum(1 for t in txns if t["balance"] is not None)
-    bad = broken_balances(txns, opening)
+    bad = broken_balances(txns, opening, owed)
     out.append(_check("running_balances", None if not with_balance else not bad,
                       "no transaction prints a running balance" if not with_balance else
                       f"the balance does not follow on transaction(s) {bad[:20]}" if bad else
@@ -563,23 +582,23 @@ def _statement(pages: list[dict], texts: list[str], kind: str = "bank_statement"
     """The transactions are read from the table by position (no model, exact
     and fast); the model only names the account details at the top of the first
     page. A statement that is not laid out as a table goes to the model whole."""
-    table = statement.parse(pages, get_settings().date_order)
     owed = kind == "card_statement"
+    table = statement.parse(pages, get_settings().date_order, owed)
     if not table["transactions"]:
-        r = _statement_by_model(pages, texts)
+        r = _statement_by_model(pages, texts, owed)
         return {**r, "document_type": kind, "checks": statement_checks(r["fields"], owed=owed)}
     first = next(t for t in texts if t.strip())
     head, bad_dates = _ask(_HEADER, HEADER_SCHEMA, "\n".join(first.splitlines()[:40])[:4000])
     fields = {**head, "opening_balance": table["opening_balance"], "closing_balance": table["closing_balance"],
               "transactions": table["transactions"]}
-    repaired = repair_balances(fields["transactions"], fields["opening_balance"])
+    repaired = repair_balances(fields["transactions"], fields["opening_balance"], owed)
     return {"document_type": kind, "fields": fields,
             "checks": statement_checks(fields, table["printed"], owed=owed), "attempts": 1,
             "bad_dates": bad_dates, "truncated": False, "list_key": "transactions", "repaired": repaired,
             "method": "table"}
 
 
-def _statement_by_model(pages: list[dict], texts: list[str]) -> dict:
+def _statement_by_model(pages: list[dict], texts: list[str], owed: bool = False) -> dict:
     limit = get_settings().llm_context * 2
     merged: dict = {k: None for k in STATEMENT_SCHEMA["properties"]}
     merged["transactions"] = []
@@ -592,16 +611,16 @@ def _statement_by_model(pages: list[dict], texts: list[str]) -> dict:
         got, dates = _ask(_STATEMENT, STATEMENT_SCHEMA, text[:limit])
         attempts += 1
         start = got["opening_balance"] if got["opening_balance"] is not None else last_balance
-        repaired_here = repair_balances(got["transactions"], start)
-        bad = broken_balances(got["transactions"], start)
+        repaired_here = repair_balances(got["transactions"], start, owed)
+        bad = broken_balances(got["transactions"], start, owed)
         if bad:  # read this page once more, told which lines do not follow
             again, again_dates = _ask(_STATEMENT, STATEMENT_SCHEMA, text[:limit],
                                       f"- running_balances: the balance does not follow on transaction(s) {bad[:20]} "
                                       "of this page. Check debit against credit, and missed or doubled lines.")
             attempts += 1
             again_start = again["opening_balance"] if again["opening_balance"] is not None else last_balance
-            again_repaired = repair_balances(again["transactions"], again_start)
-            if len(broken_balances(again["transactions"], again_start)) < len(bad):
+            again_repaired = repair_balances(again["transactions"], again_start, owed)
+            if len(broken_balances(again["transactions"], again_start, owed)) < len(bad):
                 got, dates, repaired_here = again, again_dates, again_repaired
         repaired += repaired_here
         offset = len(merged["transactions"])
@@ -618,7 +637,7 @@ def _statement_by_model(pages: list[dict], texts: list[str]) -> dict:
             last_balance = balances[-1]
     if attempts == 0:
         raise ApiError(422, "no_text", "no text was found in the document, so there is nothing to extract")
-    return {"document_type": "bank_statement", "fields": merged, "checks": statement_checks(merged),
+    return {"document_type": "bank_statement", "fields": merged, "checks": statement_checks(merged, owed=owed),
             "attempts": attempts, "bad_dates": bad_dates, "truncated": truncated, "list_key": "transactions",
             "repaired": repaired}
 
