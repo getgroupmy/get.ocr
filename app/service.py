@@ -11,7 +11,7 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import codes, engine, extract, storage, webhooks
+from . import codes, engine, extract, storage, vision, webhooks
 from .config import get_settings
 from .db import ApiClient, Job, Usage, session_scope, utcnow
 from .documents import Document, parse_pages
@@ -19,10 +19,18 @@ from .errors import ApiError
 
 log = logging.getLogger("ocr.service")
 DETAILS = ("lines", "text")
+READERS = ("standard", "glm")
 
 
 def clean_options(pages: Optional[str], detail: Optional[str], force_ocr: bool, extract_type: Optional[str] = None,
-                  include_text: bool = False, fields=None, codes: bool = False, split: bool = False) -> dict:  # noqa: ANN001
+                  include_text: bool = False, fields=None, codes: bool = False, split: bool = False,  # noqa: ANN001
+                  reader: Optional[str] = None, task: Optional[str] = None) -> dict:
+    reader = (reader or "standard").strip().lower()
+    if reader not in READERS:
+        raise ApiError(422, "bad_engine", "engine must be 'standard' or 'glm'")
+    task = (task or "text").strip().lower()
+    if task not in vision.TASKS:
+        raise ApiError(422, "bad_task", "task must be one of: " + ", ".join(vision.TASKS))
     detail = (detail or "lines").lower()
     if detail not in DETAILS:
         raise ApiError(422, "bad_detail", "detail must be 'lines' or 'text'")
@@ -34,12 +42,17 @@ def clean_options(pages: Optional[str], detail: Optional[str], force_ocr: bool, 
         raise ApiError(422, "bad_fields", "type=custom needs 'fields': the values to find in the document")
     return {"pages": (pages or "").strip()[:200] or None, "detail": detail, "force_ocr": bool(force_ocr),
             "extract": extract_type, "include_text": bool(include_text), "fields": wanted, "codes": bool(codes),
-            "split": bool(split)}
+            "split": bool(split), "engine": reader, "task": task}
 
 
 def recognise(data: bytes, options: dict, max_pages: int) -> dict:
     """Read the chosen pages of an image or PDF."""
-    if not engine.available():
+    glm = options.get("engine") == "glm"
+    if glm and not vision.available():
+        raise ApiError(503, "reader_unavailable",
+                       "the vision reader is not available: the model server on this machine is not answering, or "
+                       f"its model is not installed (ollama pull {get_settings().vlm_model})")
+    if not glm and not engine.available():
         raise ApiError(503, "engine_unavailable", "the OCR engine is not loaded on this server")
     started = time.monotonic()
     with Document(data) as doc:
@@ -50,11 +63,16 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
                            "use the 'pages' option, or POST /v1/jobs for long documents")
         pages = []
         for n in numbers:
-            page = doc.page(n, use_text_layer=not options.get("force_ocr"), with_lines=bool(options.get("layer_lines")))
+            page = doc.page(n, use_text_layer=not options.get("force_ocr") and not glm,
+                            with_lines=bool(options.get("layer_lines")))
             out: dict = {"page": n, "width": page.width, "height": page.height}
-            if page.text_layer is not None:
+            if glm:  # the vision model reads the picture: whole-page text, no positions or confidence
+                out.update(source="glm", text=vision.read(page.image, options.get("task") or "text"), confidence=None,
+                           quality=engine.quality(page.image))
+                lines: list[dict] = []
+            elif page.text_layer is not None:
                 out.update(source="text_layer", text=page.text_layer, confidence=None)
-                lines: list[dict] = page.text_lines or []
+                lines = page.text_lines or []
             else:
                 lines = engine.read(page.image)
                 conf = round(sum(ln["confidence"] for ln in lines) / len(lines), 4) if lines else None
@@ -72,7 +90,7 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
                                 for c in codes.find(image)]
             pages.append(out)
         return {
-            "engine": engine.NAME,
+            "engine": vision.NAME if glm else engine.NAME,
             "kind": doc.kind,
             "page_count": doc.page_count,
             "pages": pages,

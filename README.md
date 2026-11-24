@@ -99,6 +99,30 @@ someone logs in to the Mac, unless you set the Mac to log in automatically.
 With Docker the container reaches Ollama on the host at `host.docker.internal:11434`; that works with
 Docker Desktop on a Mac. On Linux, Ollama must listen on an address the container can reach.
 
+**A second reader for handwriting and hard pictures.** The standard reader is fast and gives the
+position of every line, but it cannot read handwriting and struggles with complex tables. A small
+vision model, [GLM-OCR](https://huggingface.co/zai-org/GLM-OCR) (MIT licence, about 2.7 GB), can be
+installed beside it on the same model server:
+
+```bash
+ollama pull glm-ocr
+```
+
+`/health` then shows `"vision_reader": true`. Ask for it per request with `engine=glm` on
+`/v1/ocr`, `/v1/extract` or `/v1/jobs`; `task` chooses what the model is asked for (`text`, the
+default, `table` or `formula`). Each page is sent to it as a picture, on this machine only, and
+comes back with `"source": "glm"`.
+
+What you give up: it answers with the text of the whole page, so there are no `lines`, no positions
+and no confidence, and `sources` cannot point at a box. Bank statements read this way go through
+the extraction model instead of the exact table reader, so use the standard reader for anything
+with a text layer or clean print. It is also much slower than the standard reader.
+
+**This was built from the model's published instructions and has not been run with the real
+model.** Its prompts and the request format are as documented; how well it reads, in which form it
+gives tables, how long a page takes on the Mac mini and the largest picture it handles well are
+unknown until it is tried there. Two models loaded together need the memory for both.
+
 **Public address.** If get.ekyc's Cloudflare tunnel already runs on that Mac, add a second public
 hostname to the same tunnel in Cloudflare Zero Trust (for example `ocr.getride.my`) with service
 **HTTP** `localhost:8090`. No second tunnel is needed. Block `/admin*` at Cloudflare with an Access

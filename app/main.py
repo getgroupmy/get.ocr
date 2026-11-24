@@ -66,7 +66,7 @@ def health(request: Request, db=Depends(get_db)):  # noqa: ANN001
     ready = engine.available()
     # "extraction" is separate from status: plain reading works without the model server.
     body = {"status": "ok" if ready else "degraded", "engine": engine.NAME, "ocr": ready,
-            "extraction": llm.ready(), "queue": service.queue_length()}
+            "extraction": llm.ready(), "vision_reader": llm.vision_ready(), "queue": service.queue_length()}
     if key is not None:
         body["key"] = "ok"
     return body

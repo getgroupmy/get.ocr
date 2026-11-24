@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     llm_model: str = "qwen2.5:7b"
     llm_context: int = 8192  # tokens the model is given room for (Ollama's own default is too small)
     llm_timeout_seconds: float = 180.0
+    # A second reader: a vision model on the same model server that reads the picture of a page itself
+    # (handwriting, hard photos, complex tables). "" turns it off. Asked for per request with engine=glm.
+    vlm_model: str = "glm-ocr"
+    vlm_timeout_seconds: float = 180.0
+    vlm_max_side: int = 2000  # pictures are scaled down to this before they are sent to the model
+    vlm_max_tokens: int = 4096  # the longest answer per page; stops a model that starts repeating itself
     llm_allow_remote: bool = False  # False: refuse to start if llm_url is not this machine or the local network
     date_order: str = "dmy"  # how to read 03/04/2026 on a document: dmy | mdy
 

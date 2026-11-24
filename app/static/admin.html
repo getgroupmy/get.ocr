@@ -109,6 +109,11 @@
             <div><label for="t-type">Result</label><select id="t-type">
               <option value="">Text only</option>
             </select></div>
+            <div><label for="t-engine">Reader</label><select id="t-engine">
+              <option value="standard">Standard (fast, with positions)</option>
+              <option value="glm">Vision model (handwriting, hard photos)</option>
+              <option value="glm:table">Vision model: a table</option>
+            </select></div>
             <div id="t-fields-box" hidden><label for="t-fields">Fields to find</label><input type="text" id="t-fields" placeholder="policy_number, expiry_date, sum_insured"></div>
             <div><label for="t-pages">PDF pages (optional)</label><input type="text" id="t-pages" placeholder="1-3"></div>
             <div><label for="t-force"><input type="checkbox" id="t-force"> Ignore the PDF's text layer</label>
@@ -278,6 +283,8 @@ $("#try-form").addEventListener("submit", async (ev) => {
   if ($("#t-force").checked) fd.append("force_ocr", "true");
   if ($("#t-type").value) { fd.append("type", $("#t-type").value); fd.append("include_text", "true"); }
   if ($("#t-type").value === "custom") fd.append("fields", $("#t-fields").value);
+  const [reader, task] = $("#t-engine").value.split(":");
+  if (reader !== "standard") { fd.append("engine", reader); if (task) fd.append("task", task); }
   if ($("#t-type").value && $("#t-split").checked) fd.append("split", "true");
   const go = $("#t-go"); go.disabled = true; go.textContent = "Reading…";
   const began = Date.now();  // a model can take minutes: show that it is still working
@@ -327,7 +334,7 @@ function showFields(r) {
 document.querySelectorAll("[data-snippet]").forEach((p) => { p.textContent = p.textContent.replace("{BASE}", location.origin); });
 fetch("/health").then((r) => r.json()).then((h) => {
   $("#health").replaceChildren(el("span", null, "dot " + (h.status === "ok" ? "ok" : "bad")),
-    document.createTextNode((h.status === "ok" ? "engine ready" : "engine not loaded") + (h.extraction ? " · extraction ready" : " · extraction off")));
+    document.createTextNode((h.status === "ok" ? "engine ready" : "engine not loaded") + (h.extraction ? " · extraction ready" : " · extraction off") + (h.vision_reader ? " · vision reader ready" : "")));
 }).catch(() => { $("#health").textContent = "server unreachable"; });
 if (token) enter().then((ok) => { if (!ok) signOut(); }); else $("#signin").hidden = false;
 </script>
