@@ -125,6 +125,7 @@ async def _now(db: Session, client: ApiClient, data: bytes, options: dict, kind:
         db.commit()
         raise
     service.record_usage(db, client.id, kind, True, len(result["pages"]), len(data), result["duration_ms"])
+    service.note_duplicates(db, client.id, data, result)
     return result
 
 
@@ -142,7 +143,30 @@ async def extract_now(request: Request, client: ApiClient = Depends(require_clie
     nothing is stored."""
     data, options, _ = await read_input(request)
     options["extract"] = options["extract"] or "auto"
-    return await _now(db, client, data, options, "extract")
+    result = await _now(db, client, data, options, "extract")
+    if "text/csv" in request.headers.get("accept", "").lower():
+        return Response(rows_csv(result), media_type="text/csv; charset=utf-8")
+    return result
+
+
+def rows_csv(result: dict) -> str:
+    """The list of lines of an extraction (transactions, line items, rows) as CSV, for a spreadsheet.
+    With several documents in the file, a first column says which one each row is from."""
+    import csv
+    import io
+    documents = result.get("documents") or [result]
+    out = io.StringIO()
+    writer, header = csv.writer(out), None
+    for n, doc in enumerate(documents, 1):
+        rows = next((v for v in (doc.get("fields") or {}).values() if isinstance(v, list) and v
+                     and isinstance(v[0], dict)), [])
+        for row in rows:
+            if header is None:
+                header = list(row)
+                writer.writerow((["document"] if len(documents) > 1 else []) + header)
+            writer.writerow(([n] if len(documents) > 1 else []) + [row.get(k, "") if row.get(k) is not None else ""
+                                                                 for k in header])
+    return out.getvalue()
 
 
 def job_out(job: Job, with_result: bool = True) -> dict:

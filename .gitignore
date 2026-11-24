@@ -5,3 +5,10 @@ __pycache__/
 data/
 .env
 server.log
+
+# real documents for scripts/evaluate.py stay on the machine
+eval/*
+!eval/README.md
+backups/
+.env.*
+!.env.example

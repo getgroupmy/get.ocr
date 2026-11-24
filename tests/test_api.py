@@ -219,3 +219,52 @@ def test_admin_clients_usage_and_revoke(client, need_engine):
 def test_console_try_it(client, need_engine):
     r = client.post("/admin/api/try", files={"file": ("a.png", synth.image_bytes(LINES), "image/png")}, headers=ADMIN)
     assert r.status_code == 200 and "INV-2026-00417" in r.json()["text"]
+
+
+# --- duplicates, rate limit, audit, CSV -----------------------------------------------------
+def test_the_same_file_twice_is_reported(client, api_key, need_engine):
+    png = synth.image_bytes(["A document sent twice", "Reference 7781"])
+    first = client.post("/v1/ocr", files={"file": ("a.png", png, "image/png")}, headers=api_key).json()
+    again = client.post("/v1/ocr", files={"file": ("b.png", png, "image/png")}, headers=api_key).json()
+    assert first["duplicate_file_first_seen"] is None and again["duplicate_file_first_seen"].endswith("Z")
+    other = client.post("/v1/ocr", files={"file": ("c.png", synth.image_bytes(["Another one"]), "image/png")},
+                        headers=api_key).json()
+    assert other["duplicate_file_first_seen"] is None
+
+
+def test_requests_are_limited_per_key(client, api_key, monkeypatch):
+    from app import auth
+    from app.config import get_settings
+    monkeypatch.setattr(get_settings(), "rate_per_minute", 3)
+    auth._calls.clear()
+    codes = [client.get("/v1/jobs", headers=api_key).status_code for _ in range(5)]
+    assert codes == [200, 200, 200, 429, 429]
+    auth._calls.clear()
+    assert client.get("/v1/jobs", headers=api_key).status_code == 200
+
+
+def test_console_actions_are_logged(client):
+    made = client.post("/admin/api/clients", json={"name": "audited app"}, headers=ADMIN).json()
+    client.delete("/admin/api/clients/" + made["id"], headers=ADMIN)
+    events = client.get("/admin/api/audit", headers=ADMIN).json()["events"]
+    assert [e["action"] for e in events[:2]] == ["client.revoked", "client.created"]
+    assert made["id"] in events[0]["target"] and made["api_key"] not in str(events)
+    assert client.get("/admin/api/audit").status_code == 401
+
+
+def test_health_reports_free_disk(client):
+    assert client.get("/health").json()["disk_free_gb"] > 0
+
+
+def test_a_page_on_its_side_is_turned_upright(client, api_key, need_engine):
+    import io
+    from PIL import Image
+    upright = synth.page_image(LINES)
+    for degrees in (90, 270):  # PIL turns anticlockwise; turning the same amount clockwise undoes it
+        buf = io.BytesIO()
+        upright.rotate(degrees, expand=True).save(buf, "PNG")
+        page = client.post("/v1/ocr", files={"file": ("s.png", buf.getvalue(), "image/png")}, headers=api_key).json()["pages"][0]
+        assert page["rotated"] == degrees and page["width"] == upright.width and page["height"] == upright.height
+        assert "INV-2026-00417" in page["text"] and page["text"].index("Invoice") < page["text"].index("Jumlah")
+    plain = client.post("/v1/ocr", files={"file": ("u.png", synth.image_bytes(LINES), "image/png")}, headers=api_key).json()
+    assert "rotated" not in plain["pages"][0]

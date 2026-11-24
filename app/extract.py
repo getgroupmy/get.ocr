@@ -352,9 +352,10 @@ def ground(fields: dict, list_key: Optional[str], pages: list[dict], check_rows:
         for p in pages:
             for ln in p.get("lines") or []:
                 if _found(value, ln["text"]):
-                    return {"page": p["page"], "box": ln["box"]}
+                    # confidence: how sure the reader was of that line; None for a PDF's own text, which is exact
+                    return {"page": p["page"], "box": ln["box"], "confidence": ln.get("confidence")}
             if not p.get("lines") and _found(value, p["text"]):
-                return {"page": p["page"], "box": None}
+                return {"page": p["page"], "box": None, "confidence": None}
         return None
 
     for key, value in fields.items():
@@ -367,6 +368,14 @@ def ground(fields: dict, list_key: Optional[str], pages: list[dict], check_rows:
         where = locate(value)
         if where:
             sources[key] = where
+    if list_key:  # where each row is on the page: the line that holds its longest piece of text
+        rows_at = []
+        for row in fields[list_key]:
+            words = sorted((v for k, v in row.items() if isinstance(v, str) and "date" not in k and len(v) > 2),
+                           key=len, reverse=True)
+            rows_at.append(next((w for w in (locate(v[:40]) for v in words[:2]) if w and w["box"]), None))
+        if any(rows_at):
+            sources[list_key] = rows_at
     for i, row in enumerate(fields[list_key] if check_rows and list_key else []):
         for key, value in row.items():
             if value is None or key in ("kind", "role") or "date" in key:
@@ -693,7 +702,7 @@ def run(pages: list[dict], texts: list[str], wanted: str, custom: Optional[dict]
         "sources": sources,
         "balance_columns_swapped": r["repaired"],
         "truncated": r["truncated"],
-        "model": get_settings().llm_model,
+        "model": llm.current_model(),
         "model_calls": r["attempts"],
         # "table": rows read by position, the model only named the header fields. "model": the model read everything.
         "read_by": r.get("method", "model"),

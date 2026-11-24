@@ -67,6 +67,11 @@ def health(request: Request, db=Depends(get_db)):  # noqa: ANN001
     # "extraction" is separate from status: plain reading works without the model server.
     body = {"status": "ok" if ready else "degraded", "engine": engine.NAME, "ocr": ready,
             "extraction": llm.ready(), "vision_reader": llm.vision_ready(), "queue": service.queue_length()}
+    try:
+        import shutil
+        body["disk_free_gb"] = round(shutil.disk_usage(get_settings().data_dir).free / 1e9, 1)
+    except OSError:
+        body["disk_free_gb"] = None
     if key is not None:
         body["key"] = "ok"
     return body

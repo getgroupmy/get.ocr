@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     max_upload_mb: int = 20
     sync_max_pages: int = 5  # POST /v1/ocr answers in the request; longer PDFs go to /v1/jobs
     max_pages: int = 100  # per job
+    rate_per_minute: int = 120  # requests one API key may make in a minute; 0 = no limit
+    duplicate_days: int = 365  # how long a document is remembered (as a hash only) to spot it coming in twice
     max_queue: int = 200  # jobs waiting; beyond this new jobs get 429
     retention_days: int = 7  # job results are deleted this long after completion (0 = keep)
     webhook_timeout_seconds: float = 10.0
