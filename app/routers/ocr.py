@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from .. import extract, service, storage
 from ..auth import require_client
 from ..config import get_settings
-from ..db import ApiClient, Job, get_db
+from ..db import ApiClient, Correction, Job, get_db
 from ..errors import ApiError
 
 router = APIRouter(prefix="/v1", tags=["ocr"])
@@ -39,6 +39,9 @@ _FILE_BODY = {
                                       "slower, whole-page text, no line positions"},
             "task": {"type": "string", "enum": ["text", "table", "formula"], "default": "text",
                      "description": "With engine=glm: what to ask the vision model for"},
+            "marks": {"type": "boolean", "default": False,
+                      "description": "Experimental: also report tick boxes (with the text beside each and whether "
+                                     "it is ticked) and patches of stamp ink on every page"},
             "split": {"type": "boolean", "default": False,
                       "description": "Extraction only: the file holds several documents scanned together; "
                                      "answer with one entry per document under 'documents'"},
@@ -103,7 +106,8 @@ async def read_input(request: Request) -> tuple[bytes, dict, Optional[str]]:
     options = service.clean_options(fields.get("pages"), fields.get("detail"), _truthy(fields.get("force_ocr", False)),
                                     fields.get("type"), _truthy(fields.get("include_text", False)),
                                     fields.get("fields"), _truthy(fields.get("codes", False)),
-                                    _truthy(fields.get("split", False)), fields.get("engine"), fields.get("task"))
+                                    _truthy(fields.get("split", False)), fields.get("engine"), fields.get("task"),
+                                    _truthy(fields.get("marks", False)))
     ref = fields.get("external_ref")
     return data, options, (str(ref)[:200] if ref else None)
 
@@ -125,6 +129,7 @@ async def _now(db: Session, client: ApiClient, data: bytes, options: dict, kind:
         db.commit()
         raise
     service.record_usage(db, client.id, kind, True, len(result["pages"]), len(data), result["duration_ms"])
+    service.apply_corrections(db, client.id, result)
     service.note_duplicates(db, client.id, data, result)
     return result
 
@@ -133,6 +138,61 @@ async def _now(db: Session, client: ApiClient, data: bytes, options: dict, kind:
 def types(client: ApiClient = Depends(require_client)):
     """Each kind with its fields, the name of its list of lines, and its checks."""
     return {"types": extract.catalogue()}
+
+
+@router.post("/corrections", status_code=201, summary="Report a value that was read wrongly")
+async def add_correction(request: Request, client: ApiClient = Depends(require_client), db: Session = Depends(get_db)):
+    """`{"document_type": "invoice", "field": "supplier_name", "original": "ACME SUPPLlES", "corrected":
+    "ACME SUPPLIES"}`. From then on, the same misreading of that text field in that kind of document is
+    replaced for this client, and the answer says so under `corrected_from_memory`. Text fields only."""
+    try:
+        body = await request.json()
+        kind, field = str(body["document_type"])[:40], str(body["field"])[:60]
+        original, corrected = str(body["original"])[:500], str(body["corrected"])[:500]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ApiError(422, "bad_request", "send document_type, field, original and corrected") from exc
+    if not original.strip() or not corrected.strip() or original == corrected:
+        raise ApiError(422, "bad_request", "original and corrected must be two different pieces of text")
+    row = Correction(client_id=client.id, match=service.correction_key(kind, field, original),
+                     detail={"document_type": kind, "field": field, "original": original, "corrected": corrected})
+    db.add(row)
+    db.flush()
+    return {"id": row.id, **row.detail}
+
+
+@router.get("/corrections", summary="The corrections this client has reported")
+def list_corrections(client: ApiClient = Depends(require_client), db: Session = Depends(get_db)):
+    rows = db.scalars(select(Correction).where(Correction.client_id == client.id).order_by(Correction.at.desc()).limit(500))
+    return {"corrections": [{"id": r.id, "at": r.at.isoformat() + "Z", **r.detail} for r in rows]}
+
+
+@router.delete("/corrections/{correction_id}", status_code=204, summary="Forget a correction")
+def delete_correction(correction_id: int, client: ApiClient = Depends(require_client), db: Session = Depends(get_db)):
+    row = db.get(Correction, correction_id)
+    if row is None or row.client_id != client.id:
+        raise ApiError(404, "not_found", "correction not found")
+    db.delete(row)
+    return Response(status_code=204)
+
+
+@router.post("/match", summary="Compare extracted documents with each other")
+async def match_documents(request: Request, client: ApiClient = Depends(require_client)):
+    """Send the `fields` you got from /v1/extract. `{"compare": {"a": fields, "b": fields}}` sets an
+    invoice against its purchase or delivery order, line by line. `{"reconcile": {"statement": fields,
+    "documents": [{"ref": "your id", "fields": fields}], "days": 7}}` finds the statement line that
+    pays each document. Nothing is read or stored; no model is used."""
+    from .. import match
+    try:
+        body = await request.json()
+        if "compare" in body:
+            return match.compare(body["compare"]["a"], body["compare"]["b"])
+        if "reconcile" in body:
+            r = body["reconcile"]
+            return match.reconcile(r["statement"], list(r["documents"]), int(r.get("days", 7)))
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise ApiError(422, "bad_request", "send {\"compare\": {\"a\": …, \"b\": …}} or "
+                                           "{\"reconcile\": {\"statement\": …, \"documents\": […]}}") from exc
+    raise ApiError(422, "bad_request", "send 'compare' or 'reconcile'")
 
 
 @router.post("/extract", openapi_extra=_FILE_BODY, summary="Read a file and extract its fields")

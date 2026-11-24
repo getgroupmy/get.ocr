@@ -40,7 +40,9 @@
   .notice { border:1px solid var(--line); border-left:4px solid var(--accent); border-radius:8px; padding:12px; margin-bottom:12px; }
   .notice code { word-break:break-all; white-space:normal; }
   td.clip { max-width:220px; overflow:hidden; text-overflow:ellipsis; }
-  #try-view { position:relative; display:inline-block; max-width:100%; margin:12px 0; line-height:0; }
+  #try-view { margin:12px 0; }
+  #try-view .sheet { position:relative; display:inline-block; max-width:100%; line-height:0; margin-bottom:10px; }
+  #try-view .mark.tick { border-color:var(--ok); }
   #try-view img { max-width:100%; max-height:80vh; border:1px solid var(--line); border-radius:8px; }
   #try-view .mark { position:absolute; border:2px solid var(--accent); background:rgba(40,120,220,.12); border-radius:2px; }
   #try-view .mark.on { border-color:var(--bad); background:rgba(220,60,60,.25); }
@@ -307,28 +309,31 @@ $("#try-form").addEventListener("submit", async (ev) => {
     $("#try-meta").textContent = r.pages.length + " of " + r.page_count + " page(s) in " + (r.duration_ms / 1000).toFixed(2) + " s";
     $("#try-text").textContent = r.text || "(no text found)";
     showFields(r);
-    $("#try-json").textContent = JSON.stringify(r, null, 2);
+    $("#try-json").textContent = JSON.stringify(r, (k, v) => (k === "preview" ? "(picture)" : v), 2);
   } catch (e) { $("#try-out").hidden = true; showError(e.message); }
   finally { clearInterval(tick); go.disabled = false; go.textContent = "Read"; }
 });
 
-// The uploaded picture with a box around every value that was found on it, to check the reading by eye.
+// The pages as they were read, with a box around every value that was found, to check the reading by eye.
 function showMarks(r, kv) {
   const view = $("#try-view"); view.replaceChildren(); view.hidden = true; $("#try-view-note").hidden = true;
-  const file = $("#t-file").files[0]; const page = (r.pages || [])[0];
-  if (!file || !file.type.startsWith("image/") || !page || page.rotated || !r.sources) return;
-  const img = el("img"); img.src = URL.createObjectURL(file); img.alt = "the uploaded document"; view.append(img);
-  const marks = {};
-  const add = (key, s) => {
-    if (!s || !s.box || s.page !== page.page) return;
-    const xs = s.box.map((p) => p[0]), ys = s.box.map((p) => p[1]);
-    const m = el("div", null, "mark"); m.title = key.replace(/_/g, " ") + (s.confidence ? " · reader " + Math.round(s.confidence * 100) + "% sure" : "");
-    m.style.left = 100 * Math.min(...xs) / page.width + "%"; m.style.top = 100 * Math.min(...ys) / page.height + "%";
-    m.style.width = 100 * (Math.max(...xs) - Math.min(...xs)) / page.width + "%"; m.style.height = 100 * (Math.max(...ys) - Math.min(...ys)) / page.height + "%";
-    view.append(m); (marks[key] = marks[key] || []).push(m);
-  };
-  for (const [key, s] of Object.entries(r.sources)) Array.isArray(s) ? s.forEach((one) => add(key, one)) : add(key, s);
-  if (!Object.keys(marks).length) return;
+  if (!r.sources) return;
+  const marks = {}; let any = false;
+  for (const page of (r.pages || []).filter((p) => p.preview)) {
+    const sheet = el("div", null, "sheet"); const img = el("img"); img.src = page.preview; img.alt = "page " + page.page; sheet.append(img);
+    const add = (key, s, cls) => {
+      if (!s || !s.box || (s.page || page.page) !== page.page) return;
+      const xs = s.box.map((p) => p[0]), ys = s.box.map((p) => p[1]);
+      const m = el("div", null, "mark" + (cls ? " " + cls : "")); m.title = key.replace(/_/g, " ") + (s.confidence ? " · reader " + Math.round(s.confidence * 100) + "% sure" : "");
+      m.style.left = 100 * Math.min(...xs) / page.width + "%"; m.style.top = 100 * Math.min(...ys) / page.height + "%";
+      m.style.width = 100 * (Math.max(...xs) - Math.min(...xs)) / page.width + "%"; m.style.height = 100 * (Math.max(...ys) - Math.min(...ys)) / page.height + "%";
+      sheet.append(m); (marks[key] = marks[key] || []).push(m); any = true;
+    };
+    for (const [key, s] of Object.entries(r.sources)) Array.isArray(s) ? s.forEach((one) => add(key, one)) : add(key, s);
+    for (const c of page.checkboxes || []) add((c.checked ? "ticked: " : "not ticked: ") + c.label, c, c.checked ? "tick" : "");
+    view.append(sheet);
+  }
+  if (!any) return;
   view.hidden = false; $("#try-view-note").hidden = false;
   for (const tr of kv.children) {
     const mine = marks[tr.dataset.field] || [];

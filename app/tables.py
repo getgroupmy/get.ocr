@@ -64,63 +64,82 @@ def _column(piece: dict, heads: list[dict]) -> int:
     return min(range(len(heads)), key=lambda i: distance(heads[i]))
 
 
-def parse(pages: list[dict]) -> dict:
-    """`pages` as service.recognise returns them, with lines. Returns
-    {'columns': [...], 'rows': [{column: value}], 'totals': {column: value} or None}.
-    A table that continues on the next page under the same headings is one table."""
-    columns: list[str] = []
+def _read(printed: list[list[dict]], start: int) -> tuple[list[str], list[dict], Optional[dict], int]:
+    """The table whose headings are row `start`: its column names, rows, totals, and the row it ends before."""
+    heads = printed[start]
+    taken: set = set()
+    names = [_name(h["text"], taken) for h in heads]
     rows: list[dict] = []
     totals: Optional[dict] = None
+    last: Optional[dict] = None
+    last_bottom = heads[-1]["bottom"]
+    height = max(heads[0]["bottom"] - heads[0]["top"], 1)
+    end = len(printed)
+    for i in range(start + 1, len(printed)):
+        r = printed[i]
+        if r[0]["top"] - last_bottom > 4 * height or (totals is not None and _heading_score(r, printed[i + 1:])):
+            end = i
+            break  # a wide gap, or the next table's headings: this table has ended
+        last_bottom = max(x["bottom"] for x in r)
+        cells: dict = {}
+        for piece in r:
+            c = names[_column(piece, heads)]
+            cells[c] = (cells[c] + " " + piece["text"]) if c in cells else piece["text"]
+        if _TOTAL.match(r[0]["text"]):
+            totals = {c: number(v) for c, v in cells.items() if number(v) is not None}
+            last = None
+            continue
+        if last is None and not rows and len(r) >= 3 and not any(number(v) is not None for v in cells.values()):
+            continue  # the headings again in a second language
+        if last is not None and not any(number(v) is not None for v in cells.values()):
+            for c, v in cells.items():  # a second line of text belongs to the row above
+                last[c] = (str(last[c]) + " " + v) if last.get(c) not in (None, "") else v
+            continue
+        row = {c: None for c in names}
+        row.update({c: number(v) if number(v) is not None else v for c, v in cells.items()})
+        rows.append(row)
+        last = row
+    return names, rows, totals, end
+
+
+def parse(pages: list[dict]) -> dict:
+    """`pages` as service.recognise returns them, with lines. Returns the first table as
+    {'columns', 'rows', 'totals'} and any further ones under 'more'. A table that continues
+    on the next page under the same headings is one table."""
+    found: list[dict] = []
     for p in pages:
         printed = [_pieces(r) for r in engine._rows(p.get("lines") or [])]
-        start = _find_heading(printed)
-        if start is None:
-            continue
-        heads = printed[start]
-        taken: set = set()
-        names = [_name(h["text"], taken) for h in heads]
-        if columns and names != columns:
-            continue  # another table: only the first one is read
-        columns = names
-        last: Optional[dict] = None
-        last_bottom = heads[-1]["bottom"]
-        height = max(heads[0]["bottom"] - heads[0]["top"], 1)
-        for r in printed[start + 1:]:
-            if r[0]["top"] - last_bottom > 4 * height:
-                break  # a wide gap: the table has ended
-            last_bottom = max(x["bottom"] for x in r)
-            cells: dict = {}
-            for piece in r:
-                c = names[_column(piece, heads)]
-                cells[c] = (cells[c] + " " + piece["text"]) if c in cells else piece["text"]
-            if _TOTAL.match(r[0]["text"]):
-                totals = {c: number(v) for c, v in cells.items() if number(v) is not None}
-                last = None
-                continue
-            if last is None and not rows and len(r) >= 3 and not any(number(v) is not None for v in cells.values()):
-                continue  # the headings again in a second language
-            if last is not None and not any(number(v) is not None for v in cells.values()):
-                for c, v in cells.items():  # a second line of text belongs to the row above
-                    last[c] = (str(last[c]) + " " + v) if last.get(c) not in (None, "") else v
-                continue
-            row = {c: None for c in names}
-            row.update({c: number(v) if number(v) is not None else v for c, v in cells.items()})
-            rows.append(row)
-            last = row
-    return {"columns": columns, "rows": rows, "totals": totals}
+        at = 0
+        while at < len(printed):
+            start = _find_heading(printed[at:])
+            if start is None:
+                break
+            names, rows, totals, end = _read(printed, at + start)
+            same = next((t for t in found if t["columns"] == names), None)
+            if same is not None:  # the same headings again: the table carried on
+                same["rows"] += rows
+                same["totals"] = totals or same["totals"]
+            elif rows:
+                found.append({"columns": names, "rows": rows, "totals": totals})
+            at = max(end, at + start + 1)
+    if not found:
+        return {"columns": [], "rows": [], "totals": None, "more": []}
+    return {**found[0], "more": found[1:]}
 
 
 def checks(table: dict) -> list[dict]:
-    totals = table["totals"]
-    if not totals:
-        return [{"name": "column_totals", "passed": None, "detail": "the table prints no totals row"}]
+    tables = [t for t in [table, *table.get("more", [])] if t["totals"]]
+    if not tables:
+        return [{"name": "column_totals", "passed": None, "detail": "no table prints a totals row"}]
     wrong, right = [], 0
-    for column, want in totals.items():
-        values = [r[column] for r in table["rows"] if isinstance(r.get(column), (int, float))]
-        got = round(sum(values), 2)
-        if abs(got - want) <= TOLERANCE + 1e-9:
-            right += 1
-        else:
-            wrong.append(f"{column} adds up to {got:.2f}, the table prints {want:.2f}")
+    for n, t in enumerate(tables, 1):
+        for column, want in t["totals"].items():
+            values = [r[column] for r in t["rows"] if isinstance(r.get(column), (int, float))]
+            got = round(sum(values), 2)
+            if abs(got - want) <= TOLERANCE + 1e-9:
+                right += 1
+            else:
+                wrong.append((f"table {n}: " if len(tables) > 1 else "") +
+                             f"{column} adds up to {got:.2f}, the table prints {want:.2f}")
     return [{"name": "column_totals", "passed": not wrong,
              "detail": "; ".join(wrong) if wrong else f"{right} column(s) add up to the totals the table prints"}]

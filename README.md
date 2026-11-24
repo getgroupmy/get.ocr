@@ -151,6 +151,21 @@ On the Mac mini, from `~/get.ocr`:
   prints, per kind, how many fields were right, how often the checks passed and the time per
   document. `--models a,b` compares installed models; `--engine glm` reads with the vision model.
   Real documents in `eval/` are kept out of git.
+- **Ollama after a restart.** `./scripts/ollama_at_boot.sh` makes Ollama start with the Mac instead
+  of at login, so extraction comes back by itself after a power cut. **It has not been run on a Mac.**
+- **Alerts.** Set `OCR_ALERT_WEBHOOK` to a URL (a Slack or Telegram bot hook, or your own): it is
+  sent `{"service", "problem", "state", "detail", "text"}` when the reader, the model, the disk or
+  the queue starts failing and again when it recovers. It cannot report the service itself being
+  down; for that, have something outside check `/health`.
+- **More than one job at a time.** `OCR_WORKERS` sets how many queued documents are handled together.
+- **Console users.** The owner's token (`OCR_ADMIN_TOKEN`) can give other people a sign-in of their
+  own: `POST /admin/api/users` with `{"name": "Aina", "role": "viewer"}` answers with their token
+  once. A `viewer` may look and try documents; an `admin` may also create and revoke clients. Only
+  the owner manages users. The activity log names who did what. There is no screen for this yet:
+  use the API.
+- **Routing by kind.** `PUT /admin/api/clients/{id}/routes` with `{"routes": {"invoice": "https://…"}}`
+  sends that client's finished jobs of that kind to their own address, signed with the client's
+  webhook secret.
 - **Limits per app.** One API key may make `OCR_RATE_PER_MINUTE` requests a minute (429
   `rate_limited` beyond that).
 - **Activity log.** Creating, revoking and changing clients is recorded with the time and the
@@ -422,9 +437,46 @@ together with the checks and `not_found_in_text`.
 **Rows for a spreadsheet.** Send `Accept: text/csv` to `POST /v1/extract` to get the list of lines
 as CSV.
 
-**Pages on their side.** A page photographed or scanned sideways is turned upright before reading;
-the page then carries `rotated` (90 or 270) and its positions are on the upright page. An
-upside-down page is read, but its lines come out in reverse order.
+**Turned pages.** A page that is sideways or upside down is turned upright before reading; the page
+then carries `rotated` (90, 180 or 270) and its positions are on the upright page.
+
+**How well each value is backed.** `evidence` gives each top-level value a level: `high` (printed
+in the text, on a line the reader was sure of, and the checks pass), `medium` (printed, but the
+reader was unsure of the line, or it is a number and the sums do not work out), `low` (not printed:
+the model made it up or changed it) or `unverified` (a date or code that is rewritten on purpose
+and so not looked up). It is built from the lookups and checks, not from the model's opinion of
+itself.
+
+**Where the file came from.** `file` gives the producer, creator and dates the file itself carries,
+and `edited_with` when they name an editing program (Photoshop, an online PDF editor, …). This is a
+hint to look closer, not proof either way: a clean file can be forged and an honest one can pass
+through an editor.
+
+**Tick boxes and stamps (experimental).** With `marks=true`, each page read from a picture lists
+`checkboxes` (the text beside each box and whether it is `checked`) and `stamps` (patches of red,
+blue or purple ink). They are found by shape and colour, were tried only on made-up forms, and a
+coloured logo is reported as a stamp. Signatures are not detected.
+
+**Corrections that stick.** When a text value was misread, tell the service once:
+
+```bash
+curl -s -X POST $BASE/v1/corrections -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
+  -d '{"document_type": "invoice", "field": "supplier_name", "original": "ACME SUPPLlES", "corrected": "ACME SUPPLIES"}'
+```
+
+From then on the same misreading of that field in that kind of document is replaced for your key,
+and the answer lists what was changed under `corrected_from_memory`. Text fields only: a wrong number
+is never replaced from memory. `GET /v1/corrections` lists them, `DELETE /v1/corrections/{id}` forgets one.
+
+**One document against another.** `POST /v1/match` takes fields you already extracted; nothing is
+read or stored and no model is used.
+
+- `{"compare": {"a": fields, "b": fields}}` sets an invoice against its purchase or delivery order:
+  each line is `same`, `differs` (with which of quantity, unit price, amount) or only on one side,
+  and the totals and parties are compared.
+- `{"reconcile": {"statement": fields, "documents": [{"ref": "your id", "fields": fields}], "days": 7}}`
+  finds the statement line that pays each document: the same amount, preferring a line that names
+  the document's number or the other party. It lists the statement lines nothing claimed.
 
 **Picture quality.** Every page that was read from a picture carries `quality`: `sharpness`,
 `brightness` and `issues` (`blurry`, `dark`, `low_resolution`). Use it to ask for a better photo
@@ -570,11 +622,11 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
   setting for small lone characters were tuned on a single photo of an order list, where they
   recovered a quantity that was missed in the shadow. Other photos are untested.
 - **Order lists** are read by the model and have only been run against a stand-in, not the real model.
-- **The review view is a viewer.** In Try it, a picture is shown with every found value outlined. It
-  does not save corrections, does not work for PDFs or turned pages, and nothing learns from it.
-- **Not built.** Matching one document against another (an invoice against its purchase order, a
-  payment against a statement line); detecting an edited picture; export to an accounting system;
-  searchable PDF; users and roles for the console (there is one admin token); alerts.
+- **The review view is a viewer.** In Try it, the first three pages are shown as they were read, with
+  every found value outlined. Corrections are made through the API, not in this view.
+- **Not built.** Detecting an edited picture from its pixels (only the file's own metadata is
+  reported); signatures; export to an accounting system; searchable PDF; tables with merged cells;
+  the model's own confidence in a field.
 - **Also not built.** Handwriting; Jawi, Tamil and Thai; whether a tick box is ticked; whether a signature or
   a stamp is present; identity documents (get.ekyc does those). 1D barcodes go through OpenCV's
   reader but were not tested; only QR codes were.
@@ -616,6 +668,8 @@ app/routers/admin.py     /admin/api: clients, usage, try it
 app/service.py           reading a document, the job queue, retention
 app/documents.py         images and PDFs into pages
 app/doctypes.py          the catalogue of other documents: fields, checks, words to recognise them
+app/match.py             one document against another: compare, reconcile
+app/marks.py             tick boxes and stamps (experimental)
 app/tables.py            any table, read by position
 app/codes.py             QR codes and barcodes
 app/statement.py         the transaction table of a bank statement, read by position

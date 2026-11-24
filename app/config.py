@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     max_pages: int = 100  # per job
     rate_per_minute: int = 120  # requests one API key may make in a minute; 0 = no limit
     duplicate_days: int = 365  # how long a document is remembered (as a hash only) to spot it coming in twice
+    workers: int = 1  # queued documents read at the same time; the reader and the model still take one at a time
+    alert_webhook: str = ""  # a URL that is sent a short JSON message when something stops working, and when it recovers
+    alert_disk_gb: float = 2.0  # alert when less than this is free where the data is kept
     max_queue: int = 200  # jobs waiting; beyond this new jobs get 429
     retention_days: int = 7  # job results are deleted this long after completion (0 = keep)
     webhook_timeout_seconds: float = 10.0
