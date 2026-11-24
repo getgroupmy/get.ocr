@@ -9,7 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
-from . import engine, service
+from . import engine, llm, service
 from .auth import find_client
 from .config import get_settings
 from .db import get_db, init_db
@@ -64,8 +64,9 @@ def health(request: Request, db=Depends(get_db)):  # noqa: ANN001
     if key is not None and find_client(db, key) is None:
         raise ApiError(401, "unauthorized", "invalid X-API-Key")
     ready = engine.available()
+    # "extraction" is separate from status: plain reading works without the model server.
     body = {"status": "ok" if ready else "degraded", "engine": engine.NAME, "ocr": ready,
-            "queue": service.queue_length()}
+            "extraction": llm.ready(), "queue": service.queue_length()}
     if key is not None:
         body["key"] = "ok"
     return body

@@ -84,3 +84,23 @@ def _rows(lines: list[dict]) -> list[list[dict]]:
 def layout_text(lines: list[dict]) -> str:
     """Plain text: one printed row per line of text."""
     return "\n".join(" ".join(ln["text"] for ln in row) for row in _rows(lines))
+
+
+def layout_columns(lines: list[dict]) -> str:
+    """Plain text that keeps the columns: each piece of a row starts at the
+    character position that matches where it sits on the page, so the amounts of
+    a table stay under each other. This is what the field extraction reads."""
+    widths = sorted((max(p[0] for p in ln["box"]) - min(p[0] for p in ln["box"])) / max(len(ln["text"]), 1)
+                    for ln in lines if ln["text"])
+    if not widths:
+        return ""
+    char_w = max(widths[len(widths) // 2], 1.0)  # median width of one character
+    out = []
+    for row in _rows(lines):
+        text = ""
+        for ln in row:
+            col = int(min(p[0] for p in ln["box"]) / char_w)
+            gap = col - len(text)
+            text += (" " * max(gap, 2 if text else 0)) + ln["text"]
+        out.append(text.rstrip())
+    return "\n".join(out)

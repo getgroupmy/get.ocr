@@ -5,8 +5,22 @@ import base64
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def is_local_url(url: str) -> bool:
+    """True for this machine, a Docker host alias, a .local name or a private network address."""
+    import ipaddress
+    from urllib.parse import urlsplit
+    host = (urlsplit(url).hostname or "").lower()
+    if host in ("localhost", "host.docker.internal", "ollama") or host.endswith((".local", ".internal", ".lan")):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_private or ip.is_link_local
 
 
 class Settings(BaseSettings):
@@ -25,6 +39,15 @@ class Settings(BaseSettings):
     min_confidence: float = 0.5  # lines the model is less sure of than this are dropped
     pdf_dpi: int = 200  # resolution PDF pages are rendered at before reading
     max_image_side: int = 3000  # larger images and pages are scaled down to this
+
+    # --- field extraction (a language model on this machine) -------------
+    llm_url: str = "http://127.0.0.1:11434"  # Ollama on the same machine; "" turns extraction off
+    llm_api: str = "ollama"  # ollama | openai (any OpenAI-compatible local server; URL then ends in /v1)
+    llm_model: str = "qwen2.5:7b"
+    llm_context: int = 8192  # tokens the model is given room for (Ollama's own default is too small)
+    llm_timeout_seconds: float = 180.0
+    llm_allow_remote: bool = False  # False: refuse to start if llm_url is not this machine or the local network
+    date_order: str = "dmy"  # how to read 03/04/2026 on a document: dmy | mdy
 
     # --- limits / housekeeping -------------------------------------------
     max_upload_mb: int = 20
@@ -52,6 +75,17 @@ class Settings(BaseSettings):
         if len(raw) != 32:
             raise ValueError("OCR_STORAGE_KEY must decode to exactly 32 bytes")
         return v
+
+    @model_validator(mode="after")
+    def _llm_stays_local(self) -> "Settings":
+        if self.llm_url and not self.llm_allow_remote and not is_local_url(self.llm_url):
+            raise ValueError("OCR_LLM_URL points outside this machine and the local network, so documents would "
+                             "leave your hardware. Use a local address, or set OCR_LLM_ALLOW_REMOTE=true to allow it")
+        if self.llm_api not in ("ollama", "openai"):
+            raise ValueError("OCR_LLM_API must be 'ollama' or 'openai'")
+        if self.date_order not in ("dmy", "mdy"):
+            raise ValueError("OCR_DATE_ORDER must be 'dmy' or 'mdy'")
+        return self
 
     @property
     def storage_key_bytes(self) -> bytes:

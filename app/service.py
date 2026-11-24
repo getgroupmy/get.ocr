@@ -10,7 +10,7 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import engine, storage, webhooks
+from . import engine, extract, storage, webhooks
 from .config import get_settings
 from .db import ApiClient, Job, Usage, session_scope, utcnow
 from .documents import Document, parse_pages
@@ -20,11 +20,16 @@ log = logging.getLogger("ocr.service")
 DETAILS = ("lines", "text")
 
 
-def clean_options(pages: str | None, detail: str | None, force_ocr: bool) -> dict:
+def clean_options(pages: str | None, detail: str | None, force_ocr: bool, extract_type: str | None = None,
+                  include_text: bool = False) -> dict:
     detail = (detail or "lines").lower()
     if detail not in DETAILS:
         raise ApiError(422, "bad_detail", "detail must be 'lines' or 'text'")
-    return {"pages": (pages or "").strip()[:200] or None, "detail": detail, "force_ocr": bool(force_ocr)}
+    extract_type = (extract_type or "").strip().lower() or None
+    if extract_type and extract_type not in extract.TYPES:
+        raise ApiError(422, "bad_type", "type must be one of: " + ", ".join(extract.TYPES))
+    return {"pages": (pages or "").strip()[:200] or None, "detail": detail, "force_ocr": bool(force_ocr),
+            "extract": extract_type, "include_text": bool(include_text)}
 
 
 def recognise(data: bytes, options: dict, max_pages: int) -> dict:
@@ -62,6 +67,30 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
         }
 
 
+def extract_fields(data: bytes, options: dict, max_pages: int) -> dict:
+    """Read the document, then have the local model turn the text into fields."""
+    from . import llm
+    if not llm.ready():
+        raise ApiError(503, "extraction_unavailable",
+                       "field extraction is not available: the model server on this machine is not answering, "
+                       "or the model is not installed")
+    started = time.monotonic()
+    ocr = recognise(data, {**options, "detail": "lines"}, max_pages)
+    texts = [engine.layout_columns(p["lines"]) if p["source"] == "ocr" else p["text"] for p in ocr["pages"]]
+    out = extract.run(ocr["pages"], texts, options.get("extract") or "auto")
+    out.update(engine=ocr["engine"], kind=ocr["kind"], page_count=ocr["page_count"],
+               pages=[{k: p[k] for k in ("page", "width", "height", "source", "confidence")} for p in ocr["pages"]])
+    if options.get("include_text"):
+        out["text"] = ocr["text"]
+    out["duration_ms"] = int((time.monotonic() - started) * 1000)
+    return out
+
+
+def run(data: bytes, options: dict, max_pages: int) -> dict:
+    """Plain reading, or reading plus field extraction when the options ask for it."""
+    return extract_fields(data, options, max_pages) if options.get("extract") else recognise(data, options, max_pages)
+
+
 def record_usage(db: Session, client_id: str, kind: str, ok: bool, pages: int, size: int, ms: int) -> None:
     db.add(Usage(client_id=client_id, kind=kind, ok=ok, pages=pages, size_bytes=size, duration_ms=ms))
 
@@ -90,7 +119,7 @@ def process(job_id: str) -> None:
     started = time.monotonic()
     result, error = None, None
     try:
-        result = recognise(storage.load(job_id), options, get_settings().max_pages)
+        result = run(storage.load(job_id), options, get_settings().max_pages)
     except ApiError as exc:
         error = (exc.code, exc.message)
     except FileNotFoundError:
