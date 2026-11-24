@@ -28,7 +28,7 @@ _FILE_BODY = {
                        "description": "'lines' adds every line with its position and confidence"},
             "force_ocr": {"type": "boolean", "default": False,
                           "description": "Read PDF pages as pictures even when they carry a text layer"},
-            "type": {"type": "string", "enum": ["auto", "invoice", "receipt", "bank_statement"],
+            "type": {"type": "string", "enum": ["auto", "invoice", "receipt", "bank_statement", "order"],
                      "description": "/v1/extract: what the document is (default auto). "
                                     "/v1/jobs: send it to get fields instead of plain text"},
             "include_text": {"type": "boolean", "default": False,
@@ -115,8 +115,8 @@ async def _now(db: Session, client: ApiClient, data: bytes, options: dict, kind:
 
 @router.post("/extract", openapi_extra=_FILE_BODY, summary="Read a file and extract its fields")
 async def extract_now(request: Request, client: ApiClient = Depends(require_client), db: Session = Depends(get_db)):
-    """Reads an invoice, receipt or bank statement and answers with its fields,
-    its lines, and arithmetic checks on them. The text is turned into fields by
+    """Reads an invoice, receipt, bank statement or order list and answers with
+    its fields, its lines, and checks on them. The text is turned into fields by
     a language model running on this server; nothing is sent elsewhere and
     nothing is stored."""
     data, options, _ = await read_input(request)
