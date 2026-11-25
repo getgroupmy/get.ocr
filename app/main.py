@@ -9,7 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
-from . import engine, llm, service, signatures
+from . import engine, jawi, llm, service, signatures
 from .auth import find_client
 from .config import get_settings
 from .db import get_db, init_db
@@ -102,6 +102,7 @@ def health(request: Request, db=Depends(get_db)):  # noqa: ANN001
     # "extraction" is separate from status: plain reading works without the model server.
     body = {"status": "ok" if ready else "degraded", "engine": engine.NAME, "ocr": ready,
             "extraction": llm.ready(), "vision_reader": llm.vision_ready(), "signatures": signatures.available(),
+            "jawi": jawi.available(),
             "queue": service.queue_length()}
     try:
         import shutil

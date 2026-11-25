@@ -19,7 +19,7 @@ webhooks, and data encrypted at rest.
 | **Output** | Plain text in reading order, and every line with its position and the model's confidence |
 | **PDF text layer** | A PDF page that already carries text is read from that text (exact and fast). Scanned pages are read as pictures. `force_ocr` reads everything as pictures |
 | **Fields** | `POST /v1/extract` turns a document into fields and lines (invoices and other sales documents, bank statements, payslips, utility bills, order lists, or your own list of fields), checks the arithmetic, and flags values that are not in the text. Needs a language model installed on the same machine (see below) |
-| **Engine** | PP-OCR (PaddleOCR models through RapidOCR), on the CPU. Latin script (English, Malay) and Chinese |
+| **Engine** | PP-OCR (PaddleOCR models through RapidOCR), on the CPU. Latin script (English, Malay) and Chinese. Printed Jawi with `engine=jawi` |
 
 ## Quick start (Docker)
 
@@ -113,7 +113,23 @@ ollama pull glm-ocr
 default, `table` or `formula`). Each page is sent to it as a picture, on this machine only, and
 comes back with `"source": "glm"`.
 
-What you give up: it answers with the text of the whole page, so there are no `lines`, no positions
+**Jawi (Malay in Arabic script).** Ask with `engine=jawi` on `/v1/ocr`, `/v1/extract` or
+`/v1/jobs`, or choose "Standard, with Jawi" as the Reader in the console. The standard reader finds
+where the lines are; each line it cannot read is read again by a model made for Jawi
+([budaya-lab/Jawi-OCR-Kraken-v1](https://huggingface.co/budaya-lab/Jawi-OCR-Kraken-v1),
+Apache-2.0). Those lines come back with `"script": "jawi"`, their text in reading order (right to
+left, numbers left to right), a confidence and a position like any other line. Lines in Latin
+letters on the same page are read as usual. Nothing is installed for it: the model (16 MB) is in
+`models/jawi`, converted to run on the runtime the service already uses, and it runs on this
+machine only. A page takes about twice as long as with the standard reader alone.
+
+```bash
+curl -s -X POST $BASE/v1/ocr -H "X-API-Key: $KEY" -F file=@surat.jpg -F engine=jawi
+```
+
+What it does not do, and how well it reads, is under "Limits you should know".
+
+What you give up with `engine=glm`: it answers with the text of the whole page, so there are no `lines`, no positions
 and no confidence, and `sources` cannot point at a box. Bank statements read this way go through
 the extraction model instead of the exact table reader, so use the standard reader for anything
 with a text layer or clean print. It is also much slower than the standard reader.
@@ -179,7 +195,7 @@ On the Mac mini, from `~/get.ocr`:
 - **Activity log.** Creating, revoking and changing clients is recorded with the time and the
   address it came from, shown under "Activity in this console" and at `GET /admin/api/audit`.
 - **Watching it.** `GET /health` needs no key and reports `status`, `ocr`, `extraction`,
-  `vision_reader`, `queue` and `disk_free_gb`; point any uptime checker at it. Nothing in the
+  `vision_reader`, `jawi`, `queue` and `disk_free_gb`; point any uptime checker at it. Nothing in the
   service sends alerts by itself.
 - **Tests on GitHub.** `.github/workflows/tests.yml` runs the tests on Python 3.9 and 3.12 for every
   pull request and push to `main`.
@@ -658,8 +674,32 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
 
 - **Printed text.** Handwriting is read poorly. Accuracy depends on the scan or photo: keep it sharp
   and evenly lit.
-- **Scripts.** The bundled model reads Latin script and Chinese. Jawi/Arabic, Tamil and Thai are
-  not read; RapidOCR has models for other scripts, but none is wired in here.
+- **Scripts.** The standard reader reads Latin script and Chinese. Printed Jawi is read with
+  `engine=jawi` (see the next point). Arabic as a language, Tamil and Thai are not read.
+- **Jawi, measured.** The model was trained by its authors on newspaper print of the 1930s to
+  1960s; they report 3.7% of characters wrong on their own held-out lines. No transcribed real
+  Jawi page could be found to check that here. What was measured, on lines and pages made from
+  240 modern news sentences in eight typefaces:
+  - *Single lines:* 10% of characters wrong over all eight typefaces, the same as the original
+    model run through its own software. It depends on the typeface: 2% to 9% in the six text
+    typefaces (5% together), 13% in a Kufi face and 36% in a rounded poster face. 85% of the six
+    letters only Jawi has (چ ڠ ڤ ݢ ڽ ۏ) came out right; ڠ read as ڤ is the commonest mistake.
+  - *Whole pages* (12 pages, 16 Jawi lines among 6 lines in Latin letters, text typefaces): 188 of
+    192 Jawi lines found and read with 2.5% of characters wrong; the lines in Latin letters came
+    out exactly as without the option. (Lower than the single lines because these sentences have
+    no Latin words in them.)
+  - *Ordinary documents read with the option on* (50 scanned English forms, 2,582 lines; the
+    rules were set on the first 25): 2 lines wrongly taken for Jawi, both in the second 25.
+  - *Turned pages:* all 48 of the made pages (upright, upside down, both sides) and all 8 real
+    newspaper pages turned on their head came out upright.
+  - *Real newspaper pages* (8 from the public jawi-layout-v1 set): read as Jawi with an average
+    confidence of 0.83 to 0.97 a page. There is no transcription to count mistakes against.
+  - **Not read:** handwritten Jawi (not tried; the model was trained on print); Latin words inside a Jawi line (the model knows only some
+    capital letters, so "RM", a name or a web address inside the line comes out wrong; a line
+    wholly in Latin letters is fine); Arabic vowel marks. Decorative and poster typefaces read
+    badly. Whether "kg 250" on the paper was typed "250 kg" cannot be told from the paper and is
+    left as printed. The searchable PDF carries Latin text only. Field extraction from Jawi text
+    by the language model has not been tried.
 - **Rotated pages.** On a page that is upside down or on its side the lines are still read, but
   they come out in the wrong order (bottom line first, or all on one row). Rotate it upright before sending.
 - **How good the model is.** On the Mac mini `qwen2.5:7b` answers in 30 to 40 seconds per call. It
@@ -698,12 +738,9 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
   - *Not measured:* tick boxes (14 were reported on the 50 forms; nobody checked them) and bundle
     splitting.
 - **Tried and not shipped, with the measurements:**
-  - *Jawi.* The Arabic-script model that comes with the reader lists the six Jawi letters in its
+  - *Jawi with the model that comes with the reader.* It lists the six Jawi letters in its
     alphabet, but on clean rendered Jawi sentences it got 19% of the characters wrong and gave only
-    5 of the 11 Jawi-only letters (ڠ always came out as غ), and on a real Jawi newspaper page it
-    read at 0.76 confidence without one Jawi-only letter. A model trained on Jawi exists
-    (budaya-lab/Jawi-OCR-Kraken-v1, Apache-2.0, about 4% character errors on old newspaper print by
-    its own account); it needs PyTorch and line segmentation and was not built in.
+    5 of the 11 Jawi-only letters (ڠ always came out as غ). The dedicated model above replaced it.
   - *Tampering from the picture.* On 35 forged and 35 genuine receipts of the public "Find it
     again!" set, error-level analysis told them apart with an AUC of 0.69 and a noise measure with
     0.60, where 0.50 is a coin toss. That is too weak to put a verdict on a document, and it would
@@ -712,7 +749,7 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
 - **Not built.** Detecting an edited picture from its pixels (only the file's own metadata is
   reported); whether a signature is genuine or whose it is;
   the model's own confidence in a field.
-- **Also not built.** Handwriting; Jawi, Tamil and Thai; whether a tick box is ticked; whether a signature or
+- **Also not built.** Handwriting; Tamil and Thai; whether a tick box is ticked; whether a signature or
   a stamp is present; identity documents (get.ekyc does those). 
 - **Statement layouts.** The table reader was checked against one real 20-page Hong Leong Bank
   statement (192 transactions, equal to the totals the bank prints) and made-up ones. It expects a
@@ -724,7 +761,7 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
   names that do not fit a real layout and values the 7B model gets wrong; try each kind you need on
   your own documents first. Long free-text documents (contracts, agreements) have nothing to add up,
   so a wrong value there cannot be caught. For identity documents use get.ekyc, which validates what it reads.
-- **Extraction reads the OCR text, not the picture.** What the OCR cannot read (handwriting, Jawi,
+- **Extraction reads the OCR text, not the picture.** What the OCR cannot read (handwriting,
   Tamil, Thai) cannot be extracted either. A statement transaction whose description continues on
   the next page loses those lines.
 - **One page at a time.** Each reading already uses every core; requests queue behind each other.
@@ -759,6 +796,7 @@ app/tables.py            any table, read by position
 app/codes.py             QR codes and barcodes
 app/statement.py         the transaction table of a bank statement, read by position
 app/engine.py            PP-OCR through RapidOCR
+app/jawi.py              Jawi lines, read by their own model (models/jawi)
 app/extract.py           fields, arithmetic checks, lookup of values in the text
 app/llm.py               the local model server (Ollama or OpenAI-compatible)
 app/webhooks.py          signed webhook delivery
@@ -770,6 +808,7 @@ app/static/admin.html    console
 | Component | Use | Licence |
 |---|---|---|
 | [RapidOCR](https://github.com/RapidAI/RapidOCR) with PP-OCR models | Text detection and recognition | Apache-2.0 |
+| [Jawi-OCR-Kraken-v1](https://huggingface.co/budaya-lab/Jawi-OCR-Kraken-v1) by budaya-lab, converted to ONNX (`models/jawi`, see its NOTICE) | Reading Jawi lines | Apache-2.0 |
 | ONNX Runtime | Runs the models on the CPU | MIT |
 | [pypdfium2](https://github.com/pypdfium2-team/pypdfium2) (PDFium) | PDF rendering and text layer | Apache-2.0 / BSD-3-Clause |
 | Pillow | Image decoding | MIT-CMU |

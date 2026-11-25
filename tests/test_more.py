@@ -287,3 +287,56 @@ def test_a_nearly_square_hit_is_not_a_signature(monkeypatch):
     found = signatures.find(np.full((1000, 800, 3), 255, np.uint8))
     assert len(found) == 1 and found[0]["box"][0] == [280.0, 770.0] and found[0]["confidence"] > 0.99
     assert len(signatures.find(np.full((1000, 800, 3), 255, np.uint8), min_shape=0)) == 2
+
+
+def test_jawi_characters_are_put_in_reading_order():
+    from app import jawi
+    def on_paper(text: str) -> str:  # the model gives a line as it sits on the paper, left to right
+        return " ".join(w if w[0].isascii() else w[::-1] for w in reversed(text.split(" ")))
+    for line in ("جومله بايرن اياله 250 ريڠݢيت", "سلامت داتڠ کڤد سموا", "کيرا٢ 5,000 ݢورو", "ڤد 12/03/2026 دان 14/03/2026"):
+        assert jawi.logical(on_paper(line)) == line
+    assert jawi.logical("RM 1,250.50") == "RM 1,250.50"  # a Latin line stays as it is
+    assert jawi.logical("ناد Kuala Lumpur يد") == "دي Kuala Lumpur دان"  # Latin words keep their order
+    assert jawi.logical("(تروس) 3") == "3 (سورت)"  # brackets are swapped along with the order, so they still enclose
+    assert jawi.is_jawi("سلامت داتڠ", 0.9) and not jawi.is_jawi("اس", 0.95) and not jawi.is_jawi("سلامت", 0.7)
+    assert not jawi.is_jawi("Tarikh 12 Mac سل", 0.99)  # mostly Latin
+
+
+def test_a_page_with_jawi_is_read_when_asked(client, api_key, need_engine):
+    from pathlib import Path
+    png = (Path(__file__).parent / "pictures" / "jawi.png").read_bytes()
+    r = client.post("/v1/ocr", files={"file": ("surat.png", png, "image/png")}, data={"engine": "jawi"}, headers=api_key)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    page = body["pages"][0]
+    assert body["engine"] == "pp-ocr+jawi-kraken-v1" and "rotated" not in page
+    assert client.get("/health").json()["jawi"] is True
+    jawi_lines = [ln for ln in page["lines"] if ln.get("script") == "jawi"]
+    assert len(jawi_lines) == 3 and all(ln["confidence"] > 0.8 for ln in jawi_lines)
+    assert "سلامت داتڠ" in page["text"] and "250" in jawi_lines[-1]["text"] and "بايرن" in jawi_lines[-1]["text"]
+    # the lines in Latin letters are the standard reader's, and in their place on the page
+    rows = page["text"].split("\n")
+    assert "Sekolah Kebangsaan Taman Melati" in rows[0] and "12 Mac 2026" in rows[-1]
+    # without the option the Jawi lines are not read, and nothing is marked
+    plain = client.post("/v1/ocr", files={"file": ("surat.png", png, "image/png")}, headers=api_key).json()
+    assert not any("script" in ln for ln in plain["pages"][0]["lines"]) and "سلامت" not in plain["text"]
+    assert "Sekolah Kebangsaan Taman Melati" in plain["text"]
+
+
+def test_a_jawi_page_on_its_head_is_turned(need_engine):
+    from pathlib import Path
+
+    import cv2
+    import numpy as np
+
+    from app import engine
+    img = cv2.imdecode(np.frombuffer((Path(__file__).parent / "pictures" / "jawi.png").read_bytes(), np.uint8), cv2.IMREAD_COLOR)
+    lines, _, turned = engine.read_upright(np.ascontiguousarray(np.rot90(img, 2)), "jawi")
+    assert turned == 180 and sum(1 for ln in lines if ln.get("script") == "jawi") == 3
+    lines, _, turned = engine.read_upright(img, "jawi")
+    assert turned == 0
+
+
+def test_an_unknown_reader_is_refused(client, api_key):
+    r = client.post("/v1/ocr", files={"file": ("a.png", b"x", "image/png")}, data={"engine": "tamil"}, headers=api_key)
+    assert r.status_code == 422 and r.json()["error"] == "bad_engine" and "jawi" in r.json()["message"]
