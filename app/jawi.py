@@ -27,6 +27,9 @@ MIN_SHARE = 0.6  # a line is Jawi when this share of what the model read is Arab
 MIN_CONFIDENCE = 0.6
 MIN_LETTERS = 3
 SHORT, SHORT_CONFIDENCE = 6, 0.8
+MIXED_LETTERS, MIXED_SHARE = 8, 0.25  # a line of Jawi with Latin names in it
+LATIN_DOUBT = 0.7   # a word the Jawi model read below this is tried with the standard reader
+LATIN_SURE = 0.85   # and the standard reader's word is taken when it is at least this sure
 _session = None
 _labels: dict = {}
 _failed = False
@@ -35,6 +38,8 @@ _ARABIC = re.compile(r"[؀-ۿݐ-ݿ]")
 _LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
 _LATIN = re.compile(r"[A-Za-z]")
 _DIGIT = re.compile(r"[0-9]")
+_LATIN_WORD = re.compile(r"^[A-Za-z0-9 .,:;/@&'’()%+\-]+$")
+_PUNCT = ".,/:-%&@'’;"
 _MIRROR = str.maketrans("()[]", ")(][")
 
 
@@ -58,22 +63,32 @@ def available() -> bool:
 
 def _left_to_right(chars: list, i: int) -> int:
     """Where the run of Latin letters and digits that starts at i ends. A number stays whole
-    ("1,200.50"), a word with digits stays whole ("A4"), words stay together ("Kuala Lumpur"); two
-    numbers apart, and the small ٢ that doubles a Jawi word, are not joined. Whether "kg 250" on
-    the paper was written "kg 250" or "250 kg" cannot be told from the paper: it is left as printed."""
+    ("1,250.50"), a word with digits stays whole ("A4"), words and what is between them stay
+    together ("Kuala Lumpur", "KPDNHEP: Ghost Smoke", "http://a.my"); two numbers apart, and the
+    small ٢ that doubles a Jawi word, are not joined. Whether "kg 250" on the paper was written
+    "kg 250" or "250 kg" cannot be told from the paper: it is left as printed."""
+    def strong(c: str) -> bool:
+        return bool(_LATIN.match(c) or _DIGIT.match(c))
+
     j = i
     while j < len(chars):
         c = chars[j]
-        nxt = chars[j + 1] if j + 1 < len(chars) else ""
-        if _LATIN.match(c) or _DIGIT.match(c):
+        if strong(c):
             j += 1
-        elif c in ".,/:-%" and j > i and (_DIGIT.match(nxt) or _LATIN.match(nxt)):
-            j += 1
-        elif c == " " and j > i and (_LATIN.match(nxt) or _DIGIT.match(nxt)) and (
-                any(_LATIN.match(x) for x in chars[i:j]) or any(_LATIN.match(x) for x in "".join(chars[j + 1:]).split(" ")[0])):
-            j += 1  # a word and the number beside it are one piece ("RM 1,250.50", "No. 12")
-        else:
+            continue
+        if j == i:
             break
+        k = j  # what follows the punctuation and at most one space on each side of it
+        while k < len(chars) and k - j < 4 and (chars[k] in _PUNCT or chars[k] == " "):
+            k += 1
+        between = "".join(chars[j:k])
+        if k >= len(chars) or not strong(chars[k]) or between.count(" ") > 2:
+            break
+        ahead = "".join(chars[k:]).split(" ")[0]
+        lettered = any(_LATIN.match(x) for x in chars[i:j]) or any(_LATIN.match(x) for x in ahead)
+        if " " in between and not lettered:
+            break  # "20 9": two numbers
+        j = k
     return j
 
 
@@ -94,13 +109,19 @@ def logical(visual: str) -> str:
     return "".join(out)
 
 
-def read_line(gray: np.ndarray) -> tuple[str, float]:
-    """One cropped line (grey, dark text on light) to its text in reading order and a confidence."""
+def read_line(gray: np.ndarray, latin: bool = True) -> tuple[str, float]:
+    """One cropped line (grey, dark text on light) to its text in reading order and a confidence.
+    latin: read the words in Latin letters inside the line with the standard reader."""
+    return _read(gray, latin)[:2]
+
+
+def _read(gray: np.ndarray, latin: bool = True) -> tuple[str, float, int]:
+    """read_line, and how many Arabic-script letters the model was sure of."""
     from PIL import Image
     session = _load()
     h, w = gray.shape[:2]
     if session is None or h < 4 or w < 4:
-        return "", 0.0
+        return "", 0.0, 0
     im = Image.fromarray(gray).resize((max(int(w * HEIGHT / h), 1), HEIGHT), Image.LANCZOS)
     x = np.full((HEIGHT, im.width + 2 * PAD), 255, np.uint8)
     x[:, PAD:PAD + im.width] = np.asarray(im)
@@ -111,17 +132,113 @@ def read_line(gray: np.ndarray) -> tuple[str, float]:
     e = np.exp(logits - logits.max(axis=0, keepdims=True))
     probs = e / e.sum(axis=0, keepdims=True)
     best = probs.argmax(axis=0)
-    text, scores, last = [], [], 0
+    text, scores, places, last = [], [], [], 0
+    per_step = x.shape[1] / max(len(best), 1) * h / HEIGHT  # one step of the model, in pixels of the crop
     for step, label in enumerate(best):
         if label != 0 and label != last:
             text.append(_labels.get(int(label), ""))
             scores.append(float(probs[label, step]))
+            places.append((step + 0.5) * per_step - PAD * h / HEIGHT)
         elif label != 0:
             scores[-1] = max(scores[-1], float(probs[label, step]))
         last = label
     if not text:
-        return "", 0.0
-    return logical("".join(text)).strip(), float(np.mean(scores))
+        return "", 0.0, 0
+    if latin:
+        text, scores = _with_latin_words(gray, text, scores, places)
+    sure = sum(1 for c, score in zip(text, scores) if score >= 0.85 and _ARABIC.match(c))
+    return logical("".join(text)).strip(), float(np.mean(scores)), sure
+
+
+def _gap_near(ink: np.ndarray, x: float, h: int) -> int:
+    """The middle of the widest white gap near x: the model's places for letters are rough, and a
+    word must be cut out between words, not through one."""
+    lo, hi = max(int(x - 0.6 * h), 0), min(int(x + 0.6 * h), len(ink))
+    best, start = (0, int(min(max(x, 0), len(ink)))), None
+    for col in range(lo, hi + 1):
+        if col < hi and not ink[col]:
+            start = col if start is None else start
+        elif start is not None:
+            if col - start > best[0]:
+                best = (col - start, (start + col) // 2)
+            start = None
+    return best[1]
+
+
+def _with_latin_words(gray: np.ndarray, text: list, scores: list, places: list) -> tuple[list, list]:
+    """The Jawi model knows a few capital letters only: "Utem" comes out as "C11". Where it read
+    Latin letters or was unsure, the word on the paper is read by the standard reader, and that
+    reading is taken when it is sure and in Latin letters."""
+    h, w = gray.shape[:2]
+    # The words are where the model itself put the spaces; each reaches halfway to its neighbours.
+    tokens: list[list[int]] = []
+    for k, c in enumerate(text):
+        if c == " ":
+            continue
+        if tokens and tokens[-1][-1] == k - 1:
+            tokens[-1].append(k)
+        else:
+            tokens.append([k])
+    doubt: list[list] = []  # [first character, last character, the model read Latin letters here, token number]
+    for number, inside in enumerate(tokens):
+        inside = list(inside)
+        # A Jawi word the model is sure of at either end stays: it does not always see the space before a Latin word.
+        while inside and _ARABIC.match(text[inside[0]]) and scores[inside[0]] >= 0.8:
+            inside.pop(0)
+        while inside and _ARABIC.match(text[inside[-1]]) and scores[inside[-1]] >= 0.8:
+            inside.pop()
+        if not inside or all(_DIGIT.match(text[k]) or text[k] in _PUNCT for k in inside):
+            continue  # a number is the Jawi model's own
+        lettered = any(_LATIN.match(text[k]) for k in inside)
+        if lettered or (len(inside) >= 2 and sum(scores[k] for k in inside) < LATIN_DOUBT * len(inside)):
+            if doubt and lettered and doubt[-1][2] and doubt[-1][3] == number - 1 and doubt[-1][1] == tokens[number - 1][-1]:
+                doubt[-1][1], doubt[-1][3] = inside[-1], number  # words side by side are read together: "Kuala Lumpur"
+            else:
+                doubt.append([inside[0], inside[-1], lettered, number])
+    if not doubt:
+        return text, scores
+    from . import engine
+    eng = engine._engine()
+    if eng is None:
+        return text, scores
+    ink = (gray < (int(gray.min()) + int(gray.max())) / 2).any(axis=0)
+    spans = []
+    for first, last, lettered, _ in doubt[:6]:
+        reach = 0.45 * h  # where no neighbour says otherwise
+        x0 = (places[first - 1] + places[first]) / 2 if first else places[first] - reach
+        x1 = (places[last] + places[last + 1]) / 2 if last + 1 < len(places) else places[last] + reach
+        if first and text[first - 1] == " " and first >= 2:
+            x0 = (places[first - 2] + places[first]) / 2 if places[first] - places[first - 2] < 3 * h else places[first] - reach
+        if last + 1 < len(text) and text[last + 1] == " " and last + 2 < len(text):
+            x1 = (places[last] + places[last + 2]) / 2 if places[last + 2] - places[last] < 3 * h else places[last] + reach
+        spans.append((_gap_near(ink, x0, h), _gap_near(ink, x1, h), lettered, places[first], places[last]))
+    for x0, x1, lettered, left, right in spans:
+        if x1 - x0 < 0.5 * h:
+            continue
+        crop = np.ascontiguousarray(gray[:, x0:x1])
+        try:
+            with engine._run_lock:
+                got = eng(np.stack([crop] * 3, axis=-1), use_det=False, use_cls=False, use_rec=True, text_score=0.0)
+            word, sure = (got.txts[0].strip(), float(got.scores[0])) if got is not None and got.txts else ("", 0.0)
+        except Exception:  # noqa: BLE001 - the standard reader could not take the crop: keep the Jawi reading
+            log.debug("a Latin word could not be read again", exc_info=True)
+            continue
+        word = " ".join(word.split())
+        log.debug("a doubtful word read again: %r at %.2f", word, sure)
+        # Where the Jawi model saw no Latin letter and was only unsure, the standard reader must be
+        # very sure: it read an unsure Jawi word as "aslo" at 0.9.
+        if sure < (LATIN_SURE if lettered else 0.97) or len(_LATIN.findall(word)) < 2 or not _LATIN_WORD.match(word):
+            continue
+        if len(word) < 0.4 * (x1 - x0) / (0.55 * h):
+            continue  # far too few letters for the width: it read a part and would drop the rest
+        inside = [k for k, at in enumerate(places) if left - 1e-6 <= at <= right + 1e-6]
+        if not inside:
+            continue
+        first, end = inside[0], inside[-1] + 1
+        new = ([" "] if first and text[first - 1] != " " else []) + list(word) + ([" "] if end < len(text) and text[end] != " " else [])
+        at = list(np.linspace(left, right, len(new)))
+        text[first:end], scores[first:end], places[first:end] = new, [sure] * len(new), at
+    return text, scores
 
 
 def share(text: str) -> float:
@@ -130,8 +247,12 @@ def share(text: str) -> float:
     return len(_ARABIC.findall(text)) / len(letters) if letters else 0.0
 
 
-def is_jawi(text: str, confidence: float) -> bool:
+def is_jawi(text: str, confidence: float, sure: int = 0) -> bool:
+    """sure: Arabic-script letters the model read with confidence. A line that is half names in
+    Latin letters is still a Jawi line when enough of the rest was read surely."""
     letters = len(_ARABIC.findall(text))
+    if sure >= MIXED_LETTERS and share(text) >= MIXED_SHARE and confidence >= MIN_CONFIDENCE:
+        return True
     return (share(text) >= MIN_SHARE and letters >= MIN_LETTERS
             and confidence >= (SHORT_CONFIDENCE if letters < SHORT else MIN_CONFIDENCE))
 
@@ -173,12 +294,13 @@ def reread(img: np.ndarray, lines: list[dict]) -> list[dict]:
     kept: list[dict] = []
     jawi: list[dict] = []
     for line in lines:
-        text, conf = read_line(_crop(gray, line["box"]))
-        ours = is_jawi(text, conf)
+        text, conf, sure = _read(_crop(gray, line["box"]))
+        ours = is_jawi(text, conf, sure)
+        mixed = sure >= MIXED_LETTERS
         # The standard reader knows Latin letters, digits and Chinese. Where it is sure of what it
         # read and that is not Arabic script, the line is its own.
         theirs = line["confidence"] >= 0.9 and len(text) < 2 * len(line["text"]) and share(line["text"]) < 0.5
-        if ours and not (theirs and conf < line["confidence"]):
+        if ours and not (theirs and conf < line["confidence"] and not mixed):
             jawi.append({"text": text, "confidence": round(conf, 4), "box": line["box"], "script": "jawi"})
         else:
             kept.append(line)
@@ -212,8 +334,8 @@ def reread(img: np.ndarray, lines: list[dict]) -> list[dict]:
         box = group[0]["box"]
         for g in group[1:]:
             box = _join(box, g["box"])
-        text, conf = read_line(_crop(gray, box))
-        if is_jawi(text, conf):
+        text, conf, sure = _read(_crop(gray, box))
+        if is_jawi(text, conf, sure):
             kept.append({"text": text, "confidence": round(conf, 4), "box": box, "script": "jawi"})
         else:  # together they read worse than apart: keep the pieces
             kept.extend(group)

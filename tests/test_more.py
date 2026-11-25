@@ -340,3 +340,39 @@ def test_a_jawi_page_on_its_head_is_turned(need_engine):
 def test_an_unknown_reader_is_refused(client, api_key):
     r = client.post("/v1/ocr", files={"file": ("a.png", b"x", "image/png")}, data={"engine": "tamil"}, headers=api_key)
     assert r.status_code == 422 and r.json()["error"] == "bad_engine" and "jawi" in r.json()["message"]
+
+
+def test_latin_names_inside_a_jawi_line_are_read(need_engine):
+    from pathlib import Path
+
+    import cv2
+    import numpy as np
+
+    from app import engine, jawi
+    img = cv2.imdecode(np.frombuffer((Path(__file__).parent / "pictures" / "jawi_mixed.png").read_bytes(), np.uint8), cv2.IMREAD_COLOR)
+    lines = engine.read(img, "jawi")
+    assert [ln.get("script") for ln in lines] == ["jawi", "jawi"]
+    # in reading order: the Jawi words right to left, each Latin name where it stands among them
+    assert lines[0]["text"] == "سيلا هوبوڠي Encik Ahmad د Kuala Lumpur"
+    assert "Syarikat" in lines[1]["text"] and "250" in lines[1]["text"] and lines[1]["text"].startswith("ب")
+    # the Jawi model alone knows no small Latin letters
+    alone, _ = jawi.read_line(jawi._crop(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), lines[0]["box"]), latin=False)
+    assert "Kuala" not in alone and "سيلا" in alone
+    assert jawi.logical("KPDNHEP: Ghost Smoke اسقيرڤ") == "ڤريقسا KPDNHEP: Ghost Smoke"
+
+
+def test_a_searchable_pdf_carries_the_jawi_text(client, api_key, need_engine):
+    from pathlib import Path
+
+    from app.documents import Document
+    png = (Path(__file__).parent / "pictures" / "jawi.png").read_bytes()
+    r = client.post("/v1/searchable", files={"file": ("surat.png", png, "image/png")}, data={"engine": "jawi"}, headers=api_key)
+    assert r.status_code == 200 and r.content[:5] == b"%PDF-"
+    with Document(r.content) as doc:
+        text = doc.page(1).text_layer
+    # found by a search for the word as it is typed, letters in reading order
+    assert "سلامت داتڠ" in text and "250" in text and "Sekolah Kebangsaan Taman Melati" in text
+    plain = client.post("/v1/searchable", files={"file": ("surat.png", png, "image/png")}, headers=api_key)
+    with Document(plain.content) as doc:
+        assert "سلامت" not in doc.page(1).text_layer and "Sekolah Kebangsaan" in doc.page(1).text_layer
+    assert len(r.content) - len(plain.content) < 80_000  # the font for the hidden text is small

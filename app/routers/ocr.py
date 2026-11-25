@@ -147,7 +147,8 @@ async def searchable_pdf(request: Request, client: ApiClient = Depends(require_c
     from .. import searchable
     data, options, _ = await read_input(request)
     try:
-        pdf, pages = await run_in_threadpool(searchable.build, data, options.get("pages"), get_settings().sync_max_pages)
+        pdf, pages = await run_in_threadpool(searchable.build, data, options.get("pages"), get_settings().sync_max_pages,
+                                          "jawi" if options.get("engine") == "jawi" else None)
     except ApiError:
         service.record_usage(db, client.id, "sync", False, 0, len(data), 0)
         db.commit()

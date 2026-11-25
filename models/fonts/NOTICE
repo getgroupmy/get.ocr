@@ -1,0 +1,10 @@
+hidden-text.ttf
+
+A subset of Amiri Regular (Copyright 2010-2022 The Amiri Project Authors,
+https://github.com/aliftype/amiri), licensed under the SIL Open Font License, Version 1.1
+(https://openfontlicense.org). Kept: Basic Latin, Latin-1, the Arabic and Arabic Supplement blocks
+and a few punctuation marks; removed: every other character, the shaping tables and the hinting.
+The family name was changed to "GetOCR Hidden Text".
+
+It carries the invisible text of a searchable PDF where that text is in Jawi. Nothing is drawn
+with it. The subset is licensed under the same Open Font License.

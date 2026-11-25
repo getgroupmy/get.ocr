@@ -171,4 +171,18 @@ def reread(img: np.ndarray, lines: list, script: Optional[str]) -> list:
             out.append({"text": text, "confidence": round(conf, 4), "box": line["box"], "script": script})
         else:
             out.append(line)
-    return out
+    # The line finder sometimes gives a piece of a line a box of its own, and the standard reader
+    # reads the piece as a Latin letter or two: drop what lies inside a line that was read here.
+    read = [_span(ln["box"]) for ln in out if ln.get("script")]
+    return [ln for ln in out if ln.get("script") or not any(_inside(_span(ln["box"]), big) for big in read)]
+
+
+def _span(box: list) -> tuple:
+    xs, ys = [p[0] for p in box], [p[1] for p in box]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _inside(small: tuple, big: tuple) -> bool:
+    both = max(0.0, min(small[2], big[2]) - max(small[0], big[0])) * max(0.0, min(small[3], big[3]) - max(small[1], big[1]))
+    area = (small[2] - small[0]) * (small[3] - small[1])
+    return area > 0 and both > 0.7 * area and area < 0.5 * (big[2] - big[0]) * (big[3] - big[1])
