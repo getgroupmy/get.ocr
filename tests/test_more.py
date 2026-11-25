@@ -338,7 +338,7 @@ def test_a_jawi_page_on_its_head_is_turned(need_engine):
 
 
 def test_an_unknown_reader_is_refused(client, api_key):
-    r = client.post("/v1/ocr", files={"file": ("a.png", b"x", "image/png")}, data={"engine": "tamil"}, headers=api_key)
+    r = client.post("/v1/ocr", files={"file": ("a.png", b"x", "image/png")}, data={"engine": "klingon"}, headers=api_key)
     assert r.status_code == 422 and r.json()["error"] == "bad_engine" and "jawi" in r.json()["message"]
 
 
@@ -376,3 +376,32 @@ def test_a_searchable_pdf_carries_the_jawi_text(client, api_key, need_engine):
     with Document(plain.content) as doc:
         assert "سلامت" not in doc.page(1).text_layer and "Sekolah Kebangsaan" in doc.page(1).text_layer
     assert len(r.content) - len(plain.content) < 80_000  # the font for the hidden text is small
+
+
+def test_arabic_tamil_and_thai_lines_are_read_when_asked(client, api_key, need_engine):
+    from pathlib import Path
+
+    import pytest
+
+    from app import scripts
+    wanted = {"arabic": ("250", "دينارا"), "tamil": ("மொத்த தொகை 250 ரூபாய்",), "thai": ("ยอดรวมทั้งหมด 250 บาท",)}
+    for script, words in wanted.items():
+        if not scripts.available(script):  # its model is fetched from the net on first use
+            pytest.skip(f"the {script} model could not be fetched here")
+        png = (Path(__file__).parent / "pictures" / f"{script}.png").read_bytes()
+        r = client.post("/v1/ocr", files={"file": (f"{script}.png", png, "image/png")}, data={"engine": script}, headers=api_key)
+        assert r.status_code == 200, r.text
+        page = r.json()["pages"][0]
+        marked = [ln for ln in page["lines"] if ln.get("script") == script]
+        assert len(marked) == 2 and r.json()["engine"] == "pp-ocr+" + scripts.name(script)
+        assert all(word in marked[1]["text"] for word in words)
+        # the two lines in Latin letters are the standard reader's, as without the option
+        assert "Invoice No. 2026/0417" in page["text"] and "Date: 12 March 2026" in page["text"]
+
+
+def test_a_scrap_read_inside_an_unread_line_does_not_hide_the_line():
+    long_line = [[10, 10], [500, 10], [500, 40], [10, 40]]
+    scrap = [[200, 12], [230, 12], [230, 38], [200, 38]]
+    assert engine._same_place(long_line, scrap) is False  # the long line is still to be read
+    assert engine._same_place(scrap, long_line) is True
+    assert engine._same_place(long_line, [[12, 9], [498, 9], [498, 41], [12, 41]]) is True

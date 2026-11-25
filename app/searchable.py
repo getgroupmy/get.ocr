@@ -19,7 +19,8 @@ HIDDEN_FONT = Path(__file__).resolve().parent.parent / "models" / "fonts" / "hid
 def build(data: bytes, pages: Optional[str], max_pages: int, script: Optional[str] = None) -> tuple[bytes, int]:
     """The searchable PDF and how many pages it has. A PDF whose pages all carry text already is
     returned as it is. The invisible text uses a standard PDF font for Latin script; with
-    script="jawi" the Jawi lines are read and carried by a small font put into the file."""
+    script "jawi" or "arabic" those lines are read and carried by a small font put into the file.
+    Tamil and Thai lines are read but not carried: the file would need a font for each."""
     import cv2
     import pypdfium2 as pdfium
     import pypdfium2.raw as raw
@@ -53,7 +54,7 @@ def build(data: bytes, pages: Optional[str], max_pages: int, script: Optional[st
             for ln in lines:
                 xs, ys = [p[0] * scale for p in ln["box"]], [p[1] * scale for p in ln["box"]]
                 use = font
-                if ln.get("script") == "jawi":
+                if ln.get("script") in ("jawi", "arabic"):
                     if arabic is None:
                         glyphs = HIDDEN_FONT.read_bytes()
                         arabic = raw.FPDFText_LoadFont(out, (ctypes.c_uint8 * len(glyphs)).from_buffer_copy(glyphs), len(glyphs),

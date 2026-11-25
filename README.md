@@ -19,7 +19,7 @@ webhooks, and data encrypted at rest.
 | **Output** | Plain text in reading order, and every line with its position and the model's confidence |
 | **PDF text layer** | A PDF page that already carries text is read from that text (exact and fast). Scanned pages are read as pictures. `force_ocr` reads everything as pictures |
 | **Fields** | `POST /v1/extract` turns a document into fields and lines (invoices and other sales documents, bank statements, payslips, utility bills, order lists, or your own list of fields), checks the arithmetic, and flags values that are not in the text. Needs a language model installed on the same machine (see below) |
-| **Engine** | PP-OCR (PaddleOCR models through RapidOCR), on the CPU. Latin script (English, Malay) and Chinese. Printed Jawi with `engine=jawi` |
+| **Engine** | PP-OCR (PaddleOCR models through RapidOCR), on the CPU. Latin script (English, Malay) and Chinese. Printed Jawi, Arabic, Tamil and Thai with `engine=jawi`, `arabic`, `tamil` or `thai` |
 
 ## Quick start (Docker)
 
@@ -127,7 +127,14 @@ machine only. A page takes about twice as long as with the standard reader alone
 curl -s -X POST $BASE/v1/ocr -H "X-API-Key: $KEY" -F file=@surat.jpg -F engine=jawi
 ```
 
-What it does not do, and how well it reads, is under "Limits you should know".
+**Arabic, Tamil and Thai.** `engine=arabic`, `engine=tamil` and `engine=thai` work the same way:
+the standard reader finds the lines, and each line it cannot read is read by the PP-OCRv5 model for
+that script (PaddleOCR, Apache-2.0, 8 MB each) and marked `"script": "arabic"` and so on. Ask for
+one script per request. Each model is fetched once from the model's public host, on first use or
+with `scripts/get_models.sh`, and checked against a known fingerprint; documents are never sent
+anywhere. If the mini cannot reach that host the request answers 503 `reader_unavailable`.
+
+What these do not do, and how well they read, is under "Limits you should know".
 
 What you give up with `engine=glm`: it answers with the text of the whole page, so there are no `lines`, no positions
 and no confidence, and `sources` cannot point at a box. Bank statements read this way go through
@@ -674,8 +681,29 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
 
 - **Printed text.** Handwriting is read poorly. Accuracy depends on the scan or photo: keep it sharp
   and evenly lit.
-- **Scripts.** The standard reader reads Latin script and Chinese. Printed Jawi is read with
-  `engine=jawi` (see the next point). Arabic as a language, Tamil and Thai are not read.
+- **Scripts.** The standard reader reads Latin script and Chinese. Printed Jawi, Arabic, Tamil and
+  Thai are read with `engine=jawi`, `arabic`, `tamil` or `thai` (see the next two points).
+- **Arabic, Tamil and Thai, measured** (share of characters wrong):
+
+  | | 160 rendered lines, 4 typefaces | 8 pages mixed with Latin lines | A set made by others |
+  |---|---|---|---|
+  | Arabic | 3.6% | 4.2%, 96 of 96 lines found | 3.8% on 60 long printed lines (PATS) |
+  | Tamil | 0.8% | 0.6%, 96 of 96 | 1.1% on 50 benchmark lines read directly, 7.2% through the line finder |
+  | Thai | 0.4% | 0.8%, 95 of 96 | 17% to 35% on 104 small real-world snippets |
+
+  The Latin lines on those pages came out unchanged, and on 25 scanned English forms (1,289
+  lines) no line was taken for any of the three scripts. **Thai on real pictures is poor**: only
+  rendered Thai read well; small low-resolution snippets and Thai numerals did not. Printed text
+  typefaces only: calligraphic Arabic and handwriting in these scripts were not tried. A single
+  Western digit inside an Arabic line can be lost. Turned pages were tried on one made page per
+  script only. In the searchable PDF, Arabic lines are carried; Tamil and Thai lines are not.
+  Speed was not measured.
+- **Handwriting, measured and not improved.** On 30 lines each of two public English sets, the
+  present reader gets 15% of characters wrong on neat scanned handwriting (IAM) and 51% on photos
+  of everyday handwriting (GNHK). TrOCR (MIT) gets 6% to 7% on IAM, the set it was trained on,
+  and 74% to 112% on GNHK, at up to 9 seconds a line; the newer PP-OCR models were worse than the
+  present reader on both. Nothing reached a usable level on handwriting it had not seen, so
+  nothing was added. The vision reader (`engine=glm`) remains the route to try, and is untested.
 - **Jawi, measured.** The model was trained by its authors on newspaper print of the 1930s to
   1960s; they report 3.7% of characters wrong on their own held-out lines. No transcribed real
   Jawi page could be found to check that here. What was measured, on lines and pages made from
@@ -777,7 +805,7 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
 - **Not built.** Detecting an edited picture from its pixels (only the file's own metadata is
   reported); whether a signature is genuine or whose it is;
   the model's own confidence in a field.
-- **Also not built.** Handwriting; Tamil and Thai; whether a tick box is ticked; whether a signature or
+- **Also not built.** Handwriting; whether a tick box is ticked; whether a signature or
   a stamp is present; identity documents (get.ekyc does those). 
 - **Statement layouts.** The table reader was checked against one real 20-page Hong Leong Bank
   statement (192 transactions, equal to the totals the bank prints) and made-up ones. It expects a
@@ -792,8 +820,7 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
   names that do not fit a real layout and values the 7B model gets wrong; try each kind you need on
   your own documents first. Long free-text documents (contracts, agreements) have nothing to add up,
   so a wrong value there cannot be caught. For identity documents use get.ekyc, which validates what it reads.
-- **Extraction reads the OCR text, not the picture.** What the OCR cannot read (handwriting,
-  Tamil, Thai) cannot be extracted either. A statement transaction whose description continues on
+- **Extraction reads the OCR text, not the picture.** What the OCR cannot read (handwriting) cannot be extracted either. A statement transaction whose description continues on
   the next page loses those lines.
 - **One page at a time.** Each reading already uses every core; requests queue behind each other.
 - **One admin token.** There are no console users or roles, and no audit trail, unlike get.ekyc.
@@ -828,6 +855,7 @@ app/codes.py             QR codes and barcodes
 app/statement.py         the transaction table of a bank statement, read by position
 app/engine.py            PP-OCR through RapidOCR
 app/jawi.py              Jawi lines, read by their own model (models/jawi)
+app/scripts.py           Arabic, Tamil and Thai lines, each read by the model for its script
 app/extract.py           fields, arithmetic checks, lookup of values in the text
 app/llm.py               the local model server (Ollama or OpenAI-compatible)
 app/webhooks.py          signed webhook delivery
@@ -840,6 +868,9 @@ app/static/admin.html    console
 |---|---|---|
 | [RapidOCR](https://github.com/RapidAI/RapidOCR) with PP-OCR models | Text detection and recognition | Apache-2.0 |
 | [Jawi-OCR-Kraken-v1](https://huggingface.co/budaya-lab/Jawi-OCR-Kraken-v1) by budaya-lab, converted to ONNX (`models/jawi`, see its NOTICE) | Reading Jawi lines | Apache-2.0 |
+| PP-OCRv5 recognition models for Arabic, Tamil and Thai (fetched on first use) | Reading those scripts | Apache-2.0 |
+| [python-bidi](https://github.com/MeirKriheli/python-bidi) | Reading order of Arabic lines | LGPL-3.0 |
+| Amiri, a subset (`models/fonts`, see its NOTICE) | Carries hidden Jawi and Arabic text in a searchable PDF | OFL-1.1 |
 | ONNX Runtime | Runs the models on the CPU | MIT |
 | [pypdfium2](https://github.com/pypdfium2-team/pypdfium2) (PDFium) | PDF rendering and text layer | Apache-2.0 / BSD-3-Clause |
 | Pillow | Image decoding | MIT-CMU |

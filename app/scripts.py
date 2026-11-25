@@ -73,6 +73,8 @@ def _load(script: str):
     with _lock:
         if script not in _engines and script not in _failed:
             try:
+                if SCRIPTS[script]["right_to_left"]:
+                    import bidi  # noqa: F401 - the library needs it for right-to-left lines and says so only when reading
                 from rapidocr import LangRec, ModelType, OCRVersion, RapidOCR
                 logging.getLogger("RapidOCR").setLevel(logging.ERROR)
                 _engines[script] = RapidOCR(params={

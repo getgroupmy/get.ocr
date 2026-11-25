@@ -12,7 +12,7 @@ from datetime import timedelta
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from . import codes, crypto, engine, extract, jawi, marks, signatures, storage, vision, webhooks
+from . import codes, crypto, engine, extract, jawi, marks, scripts, signatures, storage, vision, webhooks
 from .config import get_settings
 from .db import ApiClient, Correction, Job, Route, Seen, Usage, session_scope, utcnow
 from .documents import Document, parse_pages
@@ -20,7 +20,7 @@ from .errors import ApiError
 
 log = logging.getLogger("ocr.service")
 DETAILS = ("lines", "text")
-READERS = ("standard", "jawi", "glm")
+READERS = ("standard", "jawi", "arabic", "tamil", "thai", "glm")
 
 
 def clean_options(pages: Optional[str], detail: Optional[str], force_ocr: bool, extract_type: Optional[str] = None,
@@ -28,7 +28,7 @@ def clean_options(pages: Optional[str], detail: Optional[str], force_ocr: bool, 
                   reader: Optional[str] = None, task: Optional[str] = None, find_marks: bool = False) -> dict:
     reader = (reader or "standard").strip().lower()
     if reader not in READERS:
-        raise ApiError(422, "bad_engine", "engine must be 'standard', 'jawi' or 'glm'")
+        raise ApiError(422, "bad_engine", "engine must be one of: " + ", ".join(READERS))
     task = (task or "text").strip().lower()
     if task not in vision.TASKS:
         raise ApiError(422, "bad_task", "task must be one of: " + ", ".join(vision.TASKS))
@@ -55,9 +55,12 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
                        f"its model is not installed (ollama pull {get_settings().vlm_model})")
     if not glm and not engine.available():
         raise ApiError(503, "engine_unavailable", "the OCR engine is not loaded on this server")
-    script = "jawi" if options.get("engine") == "jawi" else None
-    if script and not jawi.available():
+    script = options.get("engine") if options.get("engine") in ("jawi",) + tuple(scripts.SCRIPTS) else None
+    if script == "jawi" and not jawi.available():
         raise ApiError(503, "reader_unavailable", "the Jawi reader is not available: its model file is missing from models/jawi")
+    if script in scripts.SCRIPTS and not scripts.available(script):
+        raise ApiError(503, "reader_unavailable",
+                       f"the {script} reader is not available: its model could not be fetched (run scripts/get_models.sh)")
     started = time.monotonic()
     with Document(data) as doc:
         numbers = parse_pages(options.get("pages"), doc.page_count)
@@ -117,7 +120,8 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
                     out["preview"] = "data:image/jpeg;base64," + base64.b64encode(jpeg.tobytes()).decode() if ok else None
             pages.append(out)
         return {
-            "engine": vision.NAME if glm else engine.NAME + "+" + jawi.NAME if script else engine.NAME,
+            "engine": vision.NAME if glm else engine.NAME + "+" + (jawi.NAME if script == "jawi" else scripts.name(script)) if script
+            else engine.NAME,
             "kind": doc.kind,
             "file": doc.info(),
             "page_count": doc.page_count,

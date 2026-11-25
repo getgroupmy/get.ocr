@@ -178,7 +178,7 @@ async def try_searchable(request: Request):
     from .. import searchable
     data, options, _ = await read_input(request)
     pdf, _ = await run_in_threadpool(searchable.build, data, options.get("pages"), get_settings().max_pages,
-                                          "jawi" if options.get("engine") == "jawi" else None)
+                                          options.get("engine") if options.get("engine") in ("jawi", "arabic", "tamil", "thai") else None)
     return Response(pdf, media_type="application/pdf")
 
 

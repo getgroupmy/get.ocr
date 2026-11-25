@@ -35,9 +35,10 @@ _FILE_BODY = {
             "fields": {"type": "string",
                        "description": "With type=custom: the values to find. Names separated by commas, or JSON "
                                       '{"name": "string|number|date"} or {"name": {"type": ..., "description": ...}}'},
-            "engine": {"type": "string", "enum": ["standard", "jawi", "glm"], "default": "standard",
+            "engine": {"type": "string", "enum": ["standard", "jawi", "arabic", "tamil", "thai", "glm"], "default": "standard",
                        "description": "'jawi' reads the lines in Jawi (Malay in Arabic script) with a model made "
                                       "for it and marks them \"script\": \"jawi\"; the other lines are read as usual. "
+                                      "'arabic', 'tamil' and 'thai' do the same for those scripts (the model is fetched on first use). "
                                       "'glm' reads each page with the vision model (handwriting, hard photos): "
                                       "slower, whole-page text, no line positions"},
             "task": {"type": "string", "enum": ["text", "table", "formula"], "default": "text",
@@ -148,7 +149,7 @@ async def searchable_pdf(request: Request, client: ApiClient = Depends(require_c
     data, options, _ = await read_input(request)
     try:
         pdf, pages = await run_in_threadpool(searchable.build, data, options.get("pages"), get_settings().sync_max_pages,
-                                          "jawi" if options.get("engine") == "jawi" else None)
+                                          options.get("engine") if options.get("engine") in ("jawi", "arabic", "tamil", "thai") else None)
     except ApiError:
         service.record_usage(db, client.id, "sync", False, 0, len(data), 0)
         db.commit()

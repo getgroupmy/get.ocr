@@ -228,7 +228,7 @@ def _printed_total(rows: list[dict], label: re.Pattern) -> tuple[Optional[float]
         if not m:
             continue
         count = None
-        for w in r["words"]:
+        for w in r.get("words") or [{"text": word} for word in r["text"][m.end():].split()]:
             if _money(w["text"]):
                 return _money(w["text"])[0], count
             word = w["text"].strip("()")
