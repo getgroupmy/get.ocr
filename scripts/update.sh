@@ -8,6 +8,7 @@ git fetch origin main
 git checkout main
 git merge --ff-only origin/main
 .venv/bin/pip install -q -r requirements.txt
+./scripts/get_models.sh | grep -v "^Done" || echo "! the optional models could not be fetched; the service runs without them"
 echo "Restarting (asks for your Mac password)…"
 sudo launchctl kickstart -k system/my.getride.ocr
 for _ in $(seq 1 30); do

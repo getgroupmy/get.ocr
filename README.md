@@ -142,7 +142,7 @@ On the Mac mini, from `~/get.ocr`:
 | Update to the latest `main` and restart | `./scripts/update.sh` |
 | Back up the database (to `./backups`, or a folder you name) | `./scripts/backup.sh /Volumes/NAS/ocr` |
 | Replace the admin token | `./scripts/rotate_admin_token.sh` |
-| Fetch optional models (signature detection) | `./scripts/get_models.sh` |
+| Fetch optional models (signature detection); `update.sh` runs this too | `./scripts/get_models.sh` |
 | Measure accuracy on your own documents | `.venv/bin/python scripts/evaluate.py eval` (see `eval/README.md`) |
 
 - **Backups** hold the encrypted database and queued files. They are useless without
@@ -455,6 +455,12 @@ together with the checks and `not_found_in_text`.
 **Rows for a spreadsheet.** Send `Accept: text/csv` to `POST /v1/extract` to get the list of lines
 as CSV.
 
+**Several accounts in one statement.** When a statement prints an opening balance for each
+account, `accounts` lists them (opening and closing balance, the first transaction and how many)
+and the balance checks are made account by account. A consolidated statement that separates its
+accounts only by headings is not split: on two such public samples the transactions were read as
+one list and the balance check fails.
+
 **Transactions for an accounting system.** For a statement, add a profile to the same header:
 `Accept: text/csv; profile=quickbooks-3` (Date, Description, Amount, money out negative),
 `profile=quickbooks-4` (Date, Description, Credit, Debit) or `profile=generic` (Date, Description,
@@ -482,9 +488,10 @@ through an editor.
 is and how sure the detector is. It does not say whose it is or whether it is genuine. It needs a
 26 MB model (YOLOS-tiny, Apache-2.0), fetched once with `./scripts/get_models.sh`; `/health` shows
 `"signatures": true` when it is in place. Measured on a public test set of 74 pages: 84% of the
-signatures found, 73% of what it reported was a signature. On 49 pages without signatures
-(statements, receipts) it reported none, but on statements with a large diagonal watermark it
-reported one on 7 of 9 pages: a watermark across the page is taken for a signature.
+signatures found, 73% of what it reported was a signature. A hit that is nearly square is
+dropped, since a signature is wider than it is tall: that brought the pages wrongly flagged among
+statements with a large diagonal watermark from 7 of 9 down to 2 of 9, for 83% of signatures found
+and 79% of hits real. On 46 other pages without signatures (statements, receipts) it reported none.
 
 **Tables with merged cells.** `type=table_grid` reads a table's structure from its picture with a
 small model (SLANet-plus, Apache-2.0, fetched on first use): `cells` with `row`, `column`,

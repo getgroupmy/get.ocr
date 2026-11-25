@@ -65,7 +65,7 @@ def require_admin(request: Request, x_admin_token: str = Header(default=""), db:
         if x_admin_token else None
     if user is None or not user.active:
         raise ApiError(401, "unauthorized", "invalid or missing X-Admin-Token")
-    changing = request.method not in ("GET", "HEAD") and not request.url.path.endswith("/try")
+    changing = request.method not in ("GET", "HEAD") and not request.url.path.endswith(("/try", "/searchable"))
     if changing and user.role != "admin":
         raise ApiError(403, "forbidden", "this console user may look, not change")
     if "/users" in request.url.path:

@@ -172,6 +172,15 @@ def revoke_user(uid: str, request: Request, db: Session = Depends(get_db)):
     return Response(status_code=204)
 
 
+@router.post("/searchable")
+async def try_searchable(request: Request):
+    """The console's searchable PDF of an uploaded scan. Not stored and not counted as usage."""
+    from .. import searchable
+    data, options, _ = await read_input(request)
+    pdf, _ = await run_in_threadpool(searchable.build, data, options.get("pages"), get_settings().max_pages)
+    return Response(pdf, media_type="application/pdf")
+
+
 @router.get("/audit")
 def audit(limit: int = 100, db: Session = Depends(get_db)):
     """What was done in the console, newest first."""

@@ -378,7 +378,8 @@ def ground(fields: dict, list_key: Optional[str], pages: list[dict], check_rows:
         return None
 
     for key, value in fields.items():
-        if value is None or key in (list_key, "document_type", "currency", *dates) or "date" in key \
+        if value is None or isinstance(value, (list, dict)) or key in (list_key, "document_type", "currency", *dates) \
+                or "date" in key \
                 or key.startswith("period_"):
             continue
         if not _found(value, whole):
@@ -593,12 +594,27 @@ def _statement(pages: list[dict], texts: list[str], kind: str = "bank_statement"
     head, bad_dates = _ask(_HEADER, HEADER_SCHEMA, "\n".join(first.splitlines()[:40])[:4000])
     fields = {**head, "opening_balance": table["opening_balance"], "closing_balance": table["closing_balance"],
               "transactions": table["transactions"]}
-    repaired = repair_balances(fields["transactions"], fields["opening_balance"], owed)
-    checks = statement_checks(fields, table["printed"], owed=owed)
-    if table.get("accounts", 1) > 1:
-        # several accounts in one statement are read as one list, so their balances cannot follow each other
-        checks.append(_check("one_account", False, f"the statement prints {table['accounts']} opening balances: it holds "
-                             "several accounts, read here as one list. Send each account's pages on their own."))
+    accounts = [a for a in table.get("by_account") or [] if a["transactions"]]
+    repaired = 0 if len(accounts) > 1 else repair_balances(fields["transactions"], fields["opening_balance"], owed)
+    if len(accounts) > 1:
+        # several accounts in one statement: each is checked against its own opening and closing balance
+        fields["accounts"] = table["by_account"]
+        results = []
+        for a in accounts:
+            part = fields["transactions"][a["first_transaction"] - 1:a["first_transaction"] - 1 + a["transactions"]]
+            repaired += repair_balances(part, a["opening_balance"], owed)
+            results.append(statement_checks({"transactions": part, "opening_balance": a["opening_balance"],
+                                             "closing_balance": a["closing_balance"]}, owed=owed))
+        checks = []
+        for i, name in enumerate(("running_balances", "balance_reconciles")):
+            states = [r[i]["passed"] for r in results]
+            bad = [n + 1 for n, st in enumerate(states) if st is False]
+            checks.append(_check(name, False if bad else (True if any(st is True for st in states) else None),
+                                 f"{len(accounts)} accounts in this statement; " + (
+                                     f"it does not hold for account(s) {bad}: " + results[bad[0] - 1][i]["detail"] if bad
+                                     else "it holds for every account that prints what is needed")))
+    else:
+        checks = statement_checks(fields, table["printed"], owed=owed)
     return {"document_type": kind, "fields": fields,
             "checks": checks, "attempts": 1,
             "bad_dates": bad_dates, "truncated": False, "list_key": "transactions", "repaired": repaired,
