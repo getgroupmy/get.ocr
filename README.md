@@ -763,11 +763,16 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
     general vision model (DINOv2-small) did worse (14% to 20%), a published Apache-2.0 verifier
     far worse. The published models that do better (SigNet) are licensed for research only.
     Whether a signature is genuine cannot be told without a reference at all.
-  - *Tampering from the picture.* On 35 forged and 35 genuine receipts of the public "Find it
-    again!" set, error-level analysis told them apart with an AUC of 0.69 and a noise measure with
-    0.60, where 0.50 is a coin toss. That is too weak to put a verdict on a document, and it would
-    do worse on a re-scan or a screenshot. `file.edited_with` (the file's own metadata) stays the
-    only hint. The stronger published models are licensed for research only, or have no ready build.
+  - *Tampering from the picture.* Tried twice. On 318 receipts of the public "Find it again!"
+    set (155 forged, 163 genuine) the best signal, error-level analysis at JPEG quality 75, told
+    forged from genuine with an AUC of 0.72, where 0.50 is a coin toss; double-compression,
+    block-grid, copy-move and noise measures were between 0.4 and 0.6. With a strict threshold
+    set on other receipts it found 12 of 35 forged ones with no false alarm on 35 genuine. On a
+    second set of 58 documents the same signal fell to 0.60: it does not carry from one kind of
+    document to another, and it would do worse on a re-scan or a screenshot. That is too weak to
+    put a verdict on a document. `file.edited_with` (the file's own metadata) stays the only
+    hint. The stronger published models carry no licence, or were trained on research-only
+    data; one with an MIT licence (PSCC-Net) could not be run here and is untested.
 - **Not built.** Detecting an edited picture from its pixels (only the file's own metadata is
   reported); whether a signature is genuine or whose it is;
   the model's own confidence in a field.
