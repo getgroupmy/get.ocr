@@ -121,7 +121,7 @@ Apache-2.0). Those lines come back with `"script": "jawi"`, their text in readin
 left, numbers left to right), a confidence and a position like any other line. Lines in Latin
 letters on the same page are read as usual. Nothing is installed for it: the model (16 MB) is in
 `models/jawi`, converted to run on the runtime the service already uses, and it runs on this
-machine only. A page takes about twice as long as with the standard reader alone.
+machine only. A page takes two to three times as long as with the standard reader alone.
 
 ```bash
 curl -s -X POST $BASE/v1/ocr -H "X-API-Key: $KEY" -F file=@surat.jpg -F engine=jawi
@@ -712,8 +712,8 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
     model run through its own software. It depends on the typeface: 2% to 9% in the six text
     typefaces (5% together), 13% in a Kufi face and 36% in a rounded poster face. 85% of the six
     letters only Jawi has (چ ڠ ڤ ݢ ڽ ۏ) came out right; ڠ read as ڤ is the commonest mistake.
-  - *Whole pages* (12 pages, 16 Jawi lines among 6 lines in Latin letters, text typefaces): 188 of
-    192 Jawi lines found and read with 2.5% of characters wrong; the lines in Latin letters came
+  - *Whole pages* (12 pages, 16 Jawi lines among 6 lines in Latin letters, text typefaces): 190 of
+    192 Jawi lines found and read with 1.5% of characters wrong; the lines in Latin letters came
     out exactly as without the option. (Lower than the single lines because these sentences have
     no Latin words in them.)
   - *Ordinary documents read with the option on* (50 scanned English forms, 2,582 lines; the
