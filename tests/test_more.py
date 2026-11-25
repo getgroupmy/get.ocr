@@ -338,5 +338,110 @@ def test_a_jawi_page_on_its_head_is_turned(need_engine):
 
 
 def test_an_unknown_reader_is_refused(client, api_key):
-    r = client.post("/v1/ocr", files={"file": ("a.png", b"x", "image/png")}, data={"engine": "tamil"}, headers=api_key)
+    r = client.post("/v1/ocr", files={"file": ("a.png", b"x", "image/png")}, data={"engine": "klingon"}, headers=api_key)
     assert r.status_code == 422 and r.json()["error"] == "bad_engine" and "jawi" in r.json()["message"]
+
+
+def test_latin_names_inside_a_jawi_line_are_read(need_engine):
+    from pathlib import Path
+
+    import cv2
+    import numpy as np
+
+    from app import engine, jawi
+    img = cv2.imdecode(np.frombuffer((Path(__file__).parent / "pictures" / "jawi_mixed.png").read_bytes(), np.uint8), cv2.IMREAD_COLOR)
+    lines = engine.read(img, "jawi")
+    assert [ln.get("script") for ln in lines] == ["jawi", "jawi"]
+    # in reading order: the Jawi words right to left, each Latin name where it stands among them
+    assert lines[0]["text"] == "سيلا هوبوڠي Encik Ahmad د Kuala Lumpur"
+    assert "Syarikat" in lines[1]["text"] and "250" in lines[1]["text"] and lines[1]["text"].startswith("ب")
+    # the Jawi model alone knows no small Latin letters
+    alone, _ = jawi.read_line(jawi._crop(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), lines[0]["box"]), latin=False)
+    assert "Kuala" not in alone and "سيلا" in alone
+    assert jawi.logical("KPDNHEP: Ghost Smoke اسقيرڤ") == "ڤريقسا KPDNHEP: Ghost Smoke"
+
+
+def test_a_searchable_pdf_carries_the_jawi_text(client, api_key, need_engine):
+    from pathlib import Path
+
+    from app.documents import Document
+    png = (Path(__file__).parent / "pictures" / "jawi.png").read_bytes()
+    r = client.post("/v1/searchable", files={"file": ("surat.png", png, "image/png")}, data={"engine": "jawi"}, headers=api_key)
+    assert r.status_code == 200 and r.content[:5] == b"%PDF-"
+    with Document(r.content) as doc:
+        text = doc.page(1).text_layer
+    # found by a search for the word as it is typed, letters in reading order
+    assert "سلامت داتڠ" in text and "250" in text and "Sekolah Kebangsaan Taman Melati" in text
+    plain = client.post("/v1/searchable", files={"file": ("surat.png", png, "image/png")}, headers=api_key)
+    with Document(plain.content) as doc:
+        assert "سلامت" not in doc.page(1).text_layer and "Sekolah Kebangsaan" in doc.page(1).text_layer
+    assert len(r.content) - len(plain.content) < 80_000  # the font for the hidden text is small
+
+
+def test_arabic_tamil_and_thai_lines_are_read_when_asked(client, api_key, need_engine):
+    from pathlib import Path
+
+    import pytest
+
+    from app import scripts
+    wanted = {"arabic": ("250", "دينارا"), "tamil": ("மொத்த தொகை 250 ரூபாய்",), "thai": ("ยอดรวมทั้งหมด 250 บาท",)}
+    for script, words in wanted.items():
+        if not scripts.available(script):  # its model is fetched from the net on first use
+            pytest.skip(f"the {script} model could not be fetched here")
+        png = (Path(__file__).parent / "pictures" / f"{script}.png").read_bytes()
+        r = client.post("/v1/ocr", files={"file": (f"{script}.png", png, "image/png")}, data={"engine": script}, headers=api_key)
+        assert r.status_code == 200, r.text
+        page = r.json()["pages"][0]
+        marked = [ln for ln in page["lines"] if ln.get("script") == script]
+        assert len(marked) == 2 and r.json()["engine"] == "pp-ocr+" + scripts.name(script)
+        assert all(word in marked[1]["text"] for word in words)
+        # the two lines in Latin letters are the standard reader's, as without the option
+        assert "Invoice No. 2026/0417" in page["text"] and "Date: 12 March 2026" in page["text"]
+
+
+def test_a_scrap_read_inside_an_unread_line_does_not_hide_the_line():
+    long_line = [[10, 10], [500, 10], [500, 40], [10, 40]]
+    scrap = [[200, 12], [230, 12], [230, 38], [200, 38]]
+    assert engine._same_place(long_line, scrap) is False  # the long line is still to be read
+    assert engine._same_place(scrap, long_line) is True
+    assert engine._same_place(long_line, [[12, 9], [498, 9], [498, 41], [12, 41]]) is True
+
+
+def test_an_order_slip_keeps_its_quantities_strokes_and_tick_brackets(client, api_key, need_engine, fake_model):  # noqa: F811
+    slip = synth.order_slip(struck=(0, 2), ticked=(3,))
+    r = client.post("/v1/ocr", files={"file": ("slip.png", slip, "image/png")}, data={"marks": "true"}, headers=api_key)
+    assert r.status_code == 200, r.text
+    page = r.json()["pages"][0]
+    rows = page["text"].split("\n")
+    # every item with its quantity, also the two whose "1" has a pen stroke through it; no stray "L" from a bracket
+    assert rows[3:8] == ["1 Stir-Fried Vege Sawi", "1 Vegetarian Fried Rice", "1 Quarter Roasted Chicken",
+                         "1 Siu Mai King", "2 Filtered Water"]
+    assert [ln["text"] for ln in page["lines"] if ln.get("struck")] == ["1 Stir-Fried Vege Sawi", "1 Quarter Roasted Chicken"]
+    boxes = [c for c in page["checkboxes"] if c.get("kind") == "brackets"]
+    assert len(boxes) == 5 and [c["checked"] for c in boxes] == [False, False, False, True, False]
+    assert "Siu Mai King" in boxes[3]["label"] and "Filtered Water" in boxes[4]["label"]
+    # as fields: the model reads the text; the stroke and the tick come from the paper
+    answers, _ = fake_model
+    answers.append({"title": "Order List", "order_number": None, "table": "2A", "guests": None, "date": "2026-11-25",
+                    "time": "8:19 PM", "staff": None, "service_type": None,
+                    "items": [{"quantity": 1, "name": "Stir-Fried Vege Sawi", "short_name": None, "notes": None},
+                              {"quantity": 1, "name": "Vegetarian Fried Rice", "short_name": None, "notes": None},
+                              {"quantity": None, "name": "Quarter Roasted Chicken", "short_name": None, "notes": None},
+                              {"quantity": 1, "name": "Siu Mai King", "short_name": None, "notes": None},
+                              {"quantity": 2, "name": "Filtered Water", "short_name": None, "notes": None}]})
+    body = client.post("/v1/extract", files={"file": ("slip.png", slip, "image/png")}, data={"type": "order"}, headers=api_key).json()
+    items = body["fields"]["items"]
+    assert [(it["quantity"], it["struck"], it["ticked"]) for it in items] == [
+        (1, True, False), (1, False, False), (1, True, False), (1, False, True), (2, False, False)]
+    assert body["checks"][0]["passed"] is True  # the quantity the model left out was taken from the line
+
+
+def test_a_plain_page_gets_no_quantities_or_strokes(need_engine):
+    import cv2
+    import numpy as np
+    img = cv2.imdecode(np.frombuffer(synth.image_bytes(LINES), np.uint8), cv2.IMREAD_COLOR)
+    lines = engine.read(img)
+    assert not any(ln.get("struck") for ln in lines)
+    from app import lists
+    assert [ln["text"] for ln in lists.leading_quantities(img, lines)] == [ln["text"] for ln in lines]
+    assert lists.brackets(img, lines) == []

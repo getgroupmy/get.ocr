@@ -179,3 +179,29 @@ def qr_page(text: str, lines: list[str]) -> bytes:
     buf = io.BytesIO()
     Image.fromarray(arr).save(buf, "PNG")
     return buf.getvalue()
+
+
+def order_slip(struck=(0, 2), ticked=(3,)):
+    """A kitchen order slip as a photo would show it: each quantity stands alone in front of its
+    item, a blue pen stroke crosses some, and a [ ] ends every row. Returns the PNG bytes."""
+    import cv2
+    import numpy as np
+    img = np.full((760, 900, 3), 245, np.uint8)
+    font, ink = cv2.FONT_HERSHEY_DUPLEX, (40, 45, 60)
+    for y, text in ((70, "** Order List **"), (120, "Table No: 2A"), (170, "Date : 25/11/2026 8:19 PM")):
+        cv2.putText(img, text, (60, y), font, 1.0, ink, 2, cv2.LINE_AA)
+    items = [("1", "Stir-Fried Vege Sawi"), ("1", "Vegetarian Fried Rice"), ("1", "Quarter Roasted Chicken"),
+             ("1", "Siu Mai King"), ("2", "Filtered Water")]
+    for n, (qty, name) in enumerate(items):
+        y = 260 + 60 * n
+        cv2.putText(img, qty, (62, y), font, 1.0, ink, 2, cv2.LINE_AA)
+        cv2.putText(img, name, (130, y), font, 1.0, ink, 2, cv2.LINE_AA)
+        cv2.putText(img, "[", (760, y), font, 1.0, ink, 2, cv2.LINE_AA)
+        cv2.putText(img, "]", (830, y), font, 1.0, ink, 2, cv2.LINE_AA)
+        if n in struck:
+            cv2.line(img, (30, y + 22), (105, y - 40), (170, 70, 30), 4, cv2.LINE_AA)  # a blue pen
+        if n in ticked:
+            cv2.line(img, (785, y - 12), (797, y), (170, 70, 30), 4, cv2.LINE_AA)
+            cv2.line(img, (797, y), (820, y - 28), (170, 70, 30), 4, cv2.LINE_AA)
+    cv2.putText(img, "END", (380, 600), font, 1.0, ink, 2, cv2.LINE_AA)
+    return cv2.imencode(".png", img)[1].tobytes()

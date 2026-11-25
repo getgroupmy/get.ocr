@@ -4,17 +4,23 @@ from __future__ import annotations
 
 import ctypes
 import io
+from pathlib import Path
 from typing import Optional
 
-from . import engine
+from . import engine, jawi
 from .config import get_settings
 from .documents import Document, parse_pages
 from .errors import ApiError
 
 
-def build(data: bytes, pages: Optional[str], max_pages: int) -> tuple[bytes, int]:
+HIDDEN_FONT = Path(__file__).resolve().parent.parent / "models" / "fonts" / "hidden-text.ttf"
+
+
+def build(data: bytes, pages: Optional[str], max_pages: int, script: Optional[str] = None) -> tuple[bytes, int]:
     """The searchable PDF and how many pages it has. A PDF whose pages all carry text already is
-    returned as it is. Latin script only: the invisible text uses a standard PDF font."""
+    returned as it is. The invisible text uses a standard PDF font for Latin script; with
+    script "jawi" or "arabic" those lines are read and carried by a small font put into the file.
+    Tamil and Thai lines are read but not carried: the file would need a font for each."""
     import cv2
     import pypdfium2 as pdfium
     import pypdfium2.raw as raw
@@ -29,9 +35,10 @@ def build(data: bytes, pages: Optional[str], max_pages: int) -> tuple[bytes, int
             return data, doc.page_count
         out = pdfium.PdfDocument.new()
         font = raw.FPDFText_LoadStandardFont(out, b"Helvetica")
+        arabic = None  # loaded when the first Jawi line needs it: it adds 55 KB to the file
         for n in numbers:
             source = doc.page(n, use_text_layer=False)
-            lines, image, _ = engine.read_upright(source.image)
+            lines, image, _ = engine.read_upright(source.image, script)
             px_h, px_w = image.shape[:2]
             # a PDF page keeps its size (it was drawn at pdf_dpi); a picture is taken to be a 150 dpi scan
             scale = 72 / (get_settings().pdf_dpi if doc.kind == "pdf" else 150)
@@ -46,10 +53,20 @@ def build(data: bytes, pages: Optional[str], max_pages: int) -> tuple[bytes, int
             page.insert_obj(picture)
             for ln in lines:
                 xs, ys = [p[0] * scale for p in ln["box"]], [p[1] * scale for p in ln["box"]]
-                text = ln["text"].encode("latin-1", "ignore").decode("latin-1")  # what the standard font can carry
-                if not text.strip():
+                use = font
+                if ln.get("script") in ("jawi", "arabic"):
+                    if arabic is None:
+                        glyphs = HIDDEN_FONT.read_bytes()
+                        arabic = raw.FPDFText_LoadFont(out, (ctypes.c_uint8 * len(glyphs)).from_buffer_copy(glyphs), len(glyphs),
+                                                       raw.FPDF_FONT_TRUETYPE, 1)
+                    # A PDF holds the letters where they sit on the paper, left to right; a reader
+                    # of the file turns them back into reading order. logical() undoes itself.
+                    use, text = arabic, jawi.logical(ln["text"])
+                else:
+                    text = ln["text"].encode("latin-1", "ignore").decode("latin-1")  # what the standard font can carry
+                if not text.strip() or not use:
                     continue
-                obj = raw.FPDFPageObj_CreateTextObj(out, font, ctypes.c_float(max(max(ys) - min(ys), 1.0)))
+                obj = raw.FPDFPageObj_CreateTextObj(out, use, ctypes.c_float(max(max(ys) - min(ys), 1.0)))
                 encoded = (text + "\x00").encode("utf-16-le")
                 raw.FPDFText_SetText(obj, ctypes.cast(ctypes.c_char_p(encoded), ctypes.POINTER(ctypes.c_ushort)))
                 raw.FPDFTextObj_SetTextRenderMode(obj, raw.FPDF_TEXTRENDERMODE_INVISIBLE)

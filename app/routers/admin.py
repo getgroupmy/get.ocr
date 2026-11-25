@@ -177,7 +177,8 @@ async def try_searchable(request: Request):
     """The console's searchable PDF of an uploaded scan. Not stored and not counted as usage."""
     from .. import searchable
     data, options, _ = await read_input(request)
-    pdf, _ = await run_in_threadpool(searchable.build, data, options.get("pages"), get_settings().max_pages)
+    pdf, _ = await run_in_threadpool(searchable.build, data, options.get("pages"), get_settings().max_pages,
+                                          options.get("engine") if options.get("engine") in ("jawi", "arabic", "tamil", "thai") else None)
     return Response(pdf, media_type="application/pdf")
 
 

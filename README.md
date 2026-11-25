@@ -19,7 +19,7 @@ webhooks, and data encrypted at rest.
 | **Output** | Plain text in reading order, and every line with its position and the model's confidence |
 | **PDF text layer** | A PDF page that already carries text is read from that text (exact and fast). Scanned pages are read as pictures. `force_ocr` reads everything as pictures |
 | **Fields** | `POST /v1/extract` turns a document into fields and lines (invoices and other sales documents, bank statements, payslips, utility bills, order lists, or your own list of fields), checks the arithmetic, and flags values that are not in the text. Needs a language model installed on the same machine (see below) |
-| **Engine** | PP-OCR (PaddleOCR models through RapidOCR), on the CPU. Latin script (English, Malay) and Chinese. Printed Jawi with `engine=jawi` |
+| **Engine** | PP-OCR (PaddleOCR models through RapidOCR), on the CPU. Latin script (English, Malay) and Chinese. Printed Jawi, Arabic, Tamil and Thai with `engine=jawi`, `arabic`, `tamil` or `thai` |
 
 ## Quick start (Docker)
 
@@ -121,13 +121,20 @@ Apache-2.0). Those lines come back with `"script": "jawi"`, their text in readin
 left, numbers left to right), a confidence and a position like any other line. Lines in Latin
 letters on the same page are read as usual. Nothing is installed for it: the model (16 MB) is in
 `models/jawi`, converted to run on the runtime the service already uses, and it runs on this
-machine only. A page takes about twice as long as with the standard reader alone.
+machine only. A page takes two to three times as long as with the standard reader alone.
 
 ```bash
 curl -s -X POST $BASE/v1/ocr -H "X-API-Key: $KEY" -F file=@surat.jpg -F engine=jawi
 ```
 
-What it does not do, and how well it reads, is under "Limits you should know".
+**Arabic, Tamil and Thai.** `engine=arabic`, `engine=tamil` and `engine=thai` work the same way:
+the standard reader finds the lines, and each line it cannot read is read by the PP-OCRv5 model for
+that script (PaddleOCR, Apache-2.0, 8 MB each) and marked `"script": "arabic"` and so on. Ask for
+one script per request. Each model is fetched once from the model's public host, on first use or
+with `scripts/get_models.sh`, and checked against a known fingerprint; documents are never sent
+anywhere. If the mini cannot reach that host the request answers 503 `reader_unavailable`.
+
+What these do not do, and how well they read, is under "Limits you should know".
 
 What you give up with `engine=glm`: it answers with the text of the whole page, so there are no `lines`, no positions
 and no confidence, and `sources` cannot point at a box. Bank statements read this way go through
@@ -567,6 +574,18 @@ with `quantity`, `name`, `short_name`, `notes`). `auto` takes a document for an 
 names a table or how it is served and prints no prices. Its one check, `item_quantities`, says
 whether every item has a quantity; there are no amounts to add up.
 
+Three things on such a slip come from the paper, not from the model:
+
+- **A quantity standing alone** in front of an item ("1   Siu Mai King") is often missed by the
+  line finder. The place in front of each line is read on its own and the quantity put back; it
+  is in the plain text of `/v1/ocr` too.
+- **A pen stroke through a quantity** (the kitchen crossing an item off): the line gets
+  `"struck": true` and the item `"struck": true`. The digit under the stroke is told by
+  comparing it with the digits printed cleanly on the same slip.
+- **The `[ ]` printed at the end of a row:** each item gets `"ticked"` true or false (null when
+  the slip prints no such box). With `marks=true` they are also listed under `checkboxes` with
+  `"kind": "brackets"`.
+
 **Statements are read as a table, not by the model.** The transactions are taken from where the words
 sit on the page: a row starts with a date, its amounts are placed in the deposit, withdrawal or
 balance column by their position, and following lines without a date are added to the description.
@@ -674,8 +693,29 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
 
 - **Printed text.** Handwriting is read poorly. Accuracy depends on the scan or photo: keep it sharp
   and evenly lit.
-- **Scripts.** The standard reader reads Latin script and Chinese. Printed Jawi is read with
-  `engine=jawi` (see the next point). Arabic as a language, Tamil and Thai are not read.
+- **Scripts.** The standard reader reads Latin script and Chinese. Printed Jawi, Arabic, Tamil and
+  Thai are read with `engine=jawi`, `arabic`, `tamil` or `thai` (see the next two points).
+- **Arabic, Tamil and Thai, measured** (share of characters wrong):
+
+  | | 160 rendered lines, 4 typefaces | 8 pages mixed with Latin lines | A set made by others |
+  |---|---|---|---|
+  | Arabic | 3.6% | 4.2%, 96 of 96 lines found | 3.8% on 60 long printed lines (PATS) |
+  | Tamil | 0.8% | 0.6%, 96 of 96 | 1.1% on 50 benchmark lines read directly, 7.2% through the line finder |
+  | Thai | 0.4% | 0.8%, 95 of 96 | 17% to 35% on 104 small real-world snippets |
+
+  The Latin lines on those pages came out unchanged, and on 25 scanned English forms (1,289
+  lines) no line was taken for any of the three scripts. **Thai on real pictures is poor**: only
+  rendered Thai read well; small low-resolution snippets and Thai numerals did not. Printed text
+  typefaces only: calligraphic Arabic and handwriting in these scripts were not tried. A single
+  Western digit inside an Arabic line can be lost. Turned pages were tried on one made page per
+  script only. In the searchable PDF, Arabic lines are carried; Tamil and Thai lines are not.
+  Speed was not measured.
+- **Handwriting, measured and not improved.** On 30 lines each of two public English sets, the
+  present reader gets 15% of characters wrong on neat scanned handwriting (IAM) and 51% on photos
+  of everyday handwriting (GNHK). TrOCR (MIT) gets 6% to 7% on IAM, the set it was trained on,
+  and 74% to 112% on GNHK, at up to 9 seconds a line; the newer PP-OCR models were worse than the
+  present reader on both. Nothing reached a usable level on handwriting it had not seen, so
+  nothing was added. The vision reader (`engine=glm`) remains the route to try, and is untested.
 - **Jawi, measured.** The model was trained by its authors on newspaper print of the 1930s to
   1960s; they report 3.7% of characters wrong on their own held-out lines. No transcribed real
   Jawi page could be found to check that here. What was measured, on lines and pages made from
@@ -684,22 +724,31 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
     model run through its own software. It depends on the typeface: 2% to 9% in the six text
     typefaces (5% together), 13% in a Kufi face and 36% in a rounded poster face. 85% of the six
     letters only Jawi has (چ ڠ ڤ ݢ ڽ ۏ) came out right; ڠ read as ڤ is the commonest mistake.
-  - *Whole pages* (12 pages, 16 Jawi lines among 6 lines in Latin letters, text typefaces): 188 of
-    192 Jawi lines found and read with 2.5% of characters wrong; the lines in Latin letters came
+  - *Whole pages* (12 pages, 16 Jawi lines among 6 lines in Latin letters, text typefaces): 190 of
+    192 Jawi lines found and read with 1.5% of characters wrong; the lines in Latin letters came
     out exactly as without the option. (Lower than the single lines because these sentences have
     no Latin words in them.)
   - *Ordinary documents read with the option on* (50 scanned English forms, 2,582 lines; the
-    rules were set on the first 25): 2 lines wrongly taken for Jawi, both in the second 25.
+    rules were set on the first 25): 4 lines wrongly taken for Jawi, 1 in the first 25 and 3 in
+    the second. It was 2 before lines that mix Jawi with Latin names were recognised.
   - *Turned pages:* all 48 of the made pages (upright, upside down, both sides) and all 8 real
     newspaper pages turned on their head came out upright.
   - *Real newspaper pages* (8 from the public jawi-layout-v1 set): read as Jawi with an average
     confidence of 0.83 to 0.97 a page. There is no transcription to count mistakes against.
-  - **Not read:** handwritten Jawi (not tried; the model was trained on print); Latin words inside a Jawi line (the model knows only some
-    capital letters, so "RM", a name or a web address inside the line comes out wrong; a line
-    wholly in Latin letters is fine); Arabic vowel marks. Decorative and poster typefaces read
-    badly. Whether "kg 250" on the paper was typed "250 kg" cannot be told from the paper and is
-    left as printed. The searchable PDF carries Latin text only. Field extraction from Jawi text
-    by the language model has not been tried.
+  - *Latin words inside a Jawi line.* The Jawi model knows only some capital letters, so each
+    word it read in Latin letters, or was unsure of, is read again by the standard reader and
+    taken when that reader is sure. On the 36 test lines in text typefaces that hold Latin words
+    (names, "RM2", web addresses), 34 of 59 such words now come out exactly, from none before, and
+    the characters wrong on those lines fell from 18.6% to 11.1%. Lines without Latin words read
+    as before (1.6%). So about four Latin words in ten inside a Jawi line are still wrong.
+  - *Searchable PDF.* With `engine=jawi` the Jawi lines are carried in the PDF (a 55 KB font is
+    put into the file for them) and are found by a search for the word as typed; checked with two
+    PDF text extractors.
+  - **Not read:** handwritten Jawi. No model for it could be built in: the only one found is a
+    9 GB vision model with no licence stated, and no transcribed handwriting was found to test
+    with. Arabic vowel marks. Decorative and poster typefaces read badly. Whether "kg 250" on the
+    paper was typed "250 kg" cannot be told from the paper and is left as printed. Field
+    extraction from Jawi text by the language model has not been tried.
 - **Rotated pages.** On a page that is upside down or on its side the lines are still read, but
   they come out in the wrong order (bottom line first, or all on one row). Rotate it upright before sending.
 - **How good the model is.** On the Mac mini `qwen2.5:7b` answers in 30 to 40 seconds per call. It
@@ -712,6 +761,14 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
   setting for small lone characters were tuned on a single photo of an order list, where they
   recovered a quantity that was missed in the shadow. Other photos are untested.
 - **Order lists** are read by the model and have only been run against a stand-in, not the real model.
+  The quantities, pen strokes and `[ ]` were built on one real photo of a slip (4 missing
+  quantities put back, 2 strokes and 5 empty brackets found) and a made-up one. On 52 other
+  documents (50 scanned forms, a card statement, a receipt; 2,794 lines) no line changed. Limits:
+  the pen must be of another colour than the print (a black pen on black print is not seen); a
+  struck digit is only told when the same digit stands clean elsewhere on the slip, otherwise
+  the item is left without a quantity and fails `item_quantities`; a quantity column needs two
+  digits under each other to be believed; what a stroke or a tick means is for your app to say.
+  A missing space inside a name ("VegeHong") is the reader's and is not corrected.
 - **The review view is a viewer.** In Try it, the first three pages are shown as they were read, with
   every found value outlined. Corrections are made through the API, not in this view.
 - **What was measured on public documents** (not on yours, and none of it involves the model):
@@ -730,30 +787,52 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
     transactions) and fail the balance check because the documents' own printed balances do not
     follow, which is what the check is for; 2 card statements are read (19 and 30 transactions):
     nobody verified those rows against the pages, and the 30-row one fails its opening-to-closing
-    check for a reason not looked into; 2 hold several
-    accounts and are read as one list, now reported by a failing `one_account` check; 1 scanned
-    copy finds 147 of 162 rows; 3 give nothing (Dutch and French layouts with European numbers or
-    the date inside the description, and a one-row example). No Malaysian bank account statement
-    other than Hong Leong was found to test.
+    check for a reason not looked into; the Hong Kong statement with two accounts is split into
+    them by the title over each table (15 and 10 transactions) and each passes its running-balance
+    check; the Dutch one (European numbers, one signed amount column, no running balance: 22
+    transactions) passes its opening-to-closing and printed-totals checks; the French-Canadian one
+    (thousands set apart by a space, French month names: 25 transactions) passes all three; 1
+    scanned copy finds 147 of 162 rows; 1 is a bank's illustrated guide to its consolidated
+    statement, not a statement, and reads as 13 rows that fail the checks; 1 is a one-row example
+    and gives nothing. Those three European and multi-account samples are synthetic benchmark
+    documents, one of each kind: other Dutch, French or German banks' layouts are untested. No
+    Malaysian bank account statement other than Hong Leong was found to test.
   - *Not measured:* tick boxes (14 were reported on the 50 forms; nobody checked them) and bundle
     splitting.
 - **Tried and not shipped, with the measurements:**
   - *Jawi with the model that comes with the reader.* It lists the six Jawi letters in its
     alphabet, but on clean rendered Jawi sentences it got 19% of the characters wrong and gave only
     5 of the 11 Jawi-only letters (ڠ always came out as غ). The dedicated model above replaced it.
-  - *Tampering from the picture.* On 35 forged and 35 genuine receipts of the public "Find it
-    again!" set, error-level analysis told them apart with an AUC of 0.69 and a noise measure with
-    0.60, where 0.50 is a coin toss. That is too weak to put a verdict on a document, and it would
-    do worse on a re-scan or a screenshot. `file.edited_with` (the file's own metadata) stays the
-    only hint. The stronger published models are licensed for research only, or have no ready build.
+  - *Comparing two signatures (is it the same person's).* Tried on two public sets, CEDAR and
+    BHSig260-Bengali, 8 genuine and 8 forged signatures from each of 120 writers; half the writers
+    set the threshold and the other half are reported. The best method (stroke-direction
+    histograms) told one person's signature from another's with 8% to 10% errors only when tuned
+    for each set; with one setting it rejected 22% of genuine signatures on one set and accepted
+    14% of other people's on the other, and it accepted 31% to 75% of practised forgeries. A
+    general vision model (DINOv2-small) did worse (14% to 20%), a published Apache-2.0 verifier
+    far worse. The published models that do better (SigNet) are licensed for research only.
+    Whether a signature is genuine cannot be told without a reference at all.
+  - *Tampering from the picture.* Tried twice. On 318 receipts of the public "Find it again!"
+    set (155 forged, 163 genuine) the best signal, error-level analysis at JPEG quality 75, told
+    forged from genuine with an AUC of 0.72, where 0.50 is a coin toss; double-compression,
+    block-grid, copy-move and noise measures were between 0.4 and 0.6. With a strict threshold
+    set on other receipts it found 12 of 35 forged ones with no false alarm on 35 genuine. On a
+    second set of 58 documents the same signal fell to 0.60: it does not carry from one kind of
+    document to another, and it would do worse on a re-scan or a screenshot. That is too weak to
+    put a verdict on a document. `file.edited_with` (the file's own metadata) stays the only
+    hint. The stronger published models carry no licence, or were trained on research-only
+    data; one with an MIT licence (PSCC-Net) could not be run here and is untested.
 - **Not built.** Detecting an edited picture from its pixels (only the file's own metadata is
   reported); whether a signature is genuine or whose it is;
   the model's own confidence in a field.
-- **Also not built.** Handwriting; Tamil and Thai; whether a tick box is ticked; whether a signature or
+- **Also not built.** Handwriting; whether a tick box is ticked; whether a signature or
   a stamp is present; identity documents (get.ekyc does those). 
 - **Statement layouts.** The table reader was checked against one real 20-page Hong Leong Bank
   statement (192 transactions, equal to the totals the bank prints) and made-up ones. It expects a
-  date at the start of each transaction and right-aligned amount columns. Other banks' layouts are
+  date at the start of each transaction and right-aligned amount columns. Amounts may be written
+  1,250.00, 1.250,00, 1 250,00 or 1'250.00; month names may be English, Malay, Dutch, French or
+  German; one column of signed amounts is read as money in and out. A statement of several
+  accounts is split where each account has its own opening balance or its own titled table. Other banks' layouts are
   untested; the three checks say when a reading does not add up.
 - **Which kinds were tried for real.** Only bank statements have run on real documents with the real
   model. Every other kind, including the whole catalogue, was built from general knowledge of what
@@ -761,8 +840,7 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
   names that do not fit a real layout and values the 7B model gets wrong; try each kind you need on
   your own documents first. Long free-text documents (contracts, agreements) have nothing to add up,
   so a wrong value there cannot be caught. For identity documents use get.ekyc, which validates what it reads.
-- **Extraction reads the OCR text, not the picture.** What the OCR cannot read (handwriting,
-  Tamil, Thai) cannot be extracted either. A statement transaction whose description continues on
+- **Extraction reads the OCR text, not the picture.** What the OCR cannot read (handwriting) cannot be extracted either. A statement transaction whose description continues on
   the next page loses those lines.
 - **One page at a time.** Each reading already uses every core; requests queue behind each other.
 - **One admin token.** There are no console users or roles, and no audit trail, unlike get.ekyc.
@@ -797,6 +875,7 @@ app/codes.py             QR codes and barcodes
 app/statement.py         the transaction table of a bank statement, read by position
 app/engine.py            PP-OCR through RapidOCR
 app/jawi.py              Jawi lines, read by their own model (models/jawi)
+app/scripts.py           Arabic, Tamil and Thai lines, each read by the model for its script
 app/extract.py           fields, arithmetic checks, lookup of values in the text
 app/llm.py               the local model server (Ollama or OpenAI-compatible)
 app/webhooks.py          signed webhook delivery
@@ -809,6 +888,9 @@ app/static/admin.html    console
 |---|---|---|
 | [RapidOCR](https://github.com/RapidAI/RapidOCR) with PP-OCR models | Text detection and recognition | Apache-2.0 |
 | [Jawi-OCR-Kraken-v1](https://huggingface.co/budaya-lab/Jawi-OCR-Kraken-v1) by budaya-lab, converted to ONNX (`models/jawi`, see its NOTICE) | Reading Jawi lines | Apache-2.0 |
+| PP-OCRv5 recognition models for Arabic, Tamil and Thai (fetched on first use) | Reading those scripts | Apache-2.0 |
+| [python-bidi](https://github.com/MeirKriheli/python-bidi) | Reading order of Arabic lines | LGPL-3.0 |
+| Amiri, a subset (`models/fonts`, see its NOTICE) | Carries hidden Jawi and Arabic text in a searchable PDF | OFL-1.1 |
 | ONNX Runtime | Runs the models on the CPU | MIT |
 | [pypdfium2](https://github.com/pypdfium2-team/pypdfium2) (PDFium) | PDF rendering and text layer | Apache-2.0 / BSD-3-Clause |
 | Pillow | Image decoding | MIT-CMU |

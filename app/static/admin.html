@@ -122,6 +122,9 @@
             <div><label for="t-engine">Reader</label><select id="t-engine">
               <option value="standard">Standard (fast, with positions)</option>
               <option value="jawi">Standard, with Jawi (Malay in Arabic script)</option>
+              <option value="arabic">Standard, with Arabic</option>
+              <option value="tamil">Standard, with Tamil</option>
+              <option value="thai">Standard, with Thai</option>
               <option value="glm">Vision model (handwriting, hard photos)</option>
               <option value="glm:table">Vision model: a table</option>
             </select></div>
@@ -423,6 +426,7 @@ $("#try-downloads").addEventListener("click", async (ev) => {
   const f = lastResult.fields || {};
   if (kind === "searchable") {
     const fd = new FormData(); fd.append("file", $("#t-file").files[0]);
+    if (["jawi", "arabic", "tamil", "thai"].includes($("#t-engine").value)) fd.append("engine", $("#t-engine").value);
     try {
       const r = await fetch("/admin/api/searchable", { method: "POST", body: fd, headers: { "X-Admin-Token": token } });
       if (!r.ok) throw new Error(((await r.json().catch(() => null)) || {}).message || "could not make the PDF");

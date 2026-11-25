@@ -7,6 +7,7 @@ out is taken from the column headings and proved against the printed balances.""
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections import Counter
 from datetime import date
 from itertools import product
@@ -14,32 +15,58 @@ from typing import Optional
 
 from . import engine
 
-_MONEY = re.compile(r"^(?:RM|MYR|\$)?([(\-+]?)(\d{1,3}(?:[,.]\d{3})*[.,]\d{2}|\d+\.\d{2})(\)?)(-|\+|DR|CR)?$", re.I)
+# "1,250.00", "1.250,00", "1 250,00", "1'250.00": the last two digits are always the cents
+_MONEY = re.compile(r"^(?:RM|MYR|\$|€|£)?([(\-−+]?)(\d{1,3}(?:[,.' \u00a0]\d{3})*[.,]\d{2}|\d+[.,]\d{2})(\)?)(-|−|\+|DR|CR)?$", re.I)
+_GROUP_START = re.compile(r"^[(\-−+]?\d{1,3}$")           # "10" of "10 750,00"
+_GROUP_END = re.compile(r"^\d{3}(?: \d{3})*,\d{2}\)?$")  # "750,00": only where a comma marks the cents
 _MONTHS = {m: i for i, names in enumerate(
-    ("jan", "feb", "mar mac", "apr", "may mei", "jun", "jul", "aug ogo ogos", "sep sept", "oct okt", "nov", "dec dis"), 1)
-    for m in names.split()}
+    ("jan janv", "feb fev fevr", "mar mac mrt maart mars marz maerz", "apr avr", "may mei mai", "jun juni juin",
+     "jul juli juil juillet", "aug ogo ogos aout", "sep sept", "oct okt", "nov", "dec dis dez"), 1)
+    for m in names.split()}  # English, Malay, Dutch, French, German
 _NUMERIC_DATE = re.compile(r"^(\d{1,4})[-/.](\d{1,2})(?:[-/.](\d{2,4}))?$")
-_NAMED_DATE = re.compile(r"^(\d{1,2})[-/ ]?([A-Za-z]{3,9})[-/ ,]*(\d{2,4})?$")
+_NAMED_DATE = re.compile(r"^(\d{1,2})[-/ ]?([A-Za-z]{3,9})\.?[-/ ,]*(\d{2,4})?$")  # after _plain: "02 janv. 25"
 _YEAR = re.compile(r"\b\d{1,2}[-/.](?:\d{1,2}|[A-Za-z]{3,9})[-/.]((?:19|20)?\d{2})\b|\b[A-Za-z]{3,9} ((?:19|20)\d{2})\b|"
-                   r"\b\d{1,2} [A-Za-z]{3,9} (\d{2})\b")
+                   r"\b\d{1,2} [A-Za-z]{3,9} (\d{2})\b(?![.,/]\d)")  # not "15 mei 15.05": that 15 starts the next date
 _ID_LIKE = re.compile(r"^[A-Z0-9][A-Z0-9/-]{0,13}$")  # a serial number or transaction id printed before the date
 _SIDE = {"dr": "-", "debit": "-", "cr": "+", "credit": "+"}  # a column that says which way each line goes
-_CURRENCY = re.compile(r"^(?:rs\.?|rm|myr|sgd|s\$|usd|hkd|inr|\$|€)$", re.I)
+_CURRENCY = re.compile(r"^(?:rs\.?|rm|myr|sgd|s\$|usd|hkd|inr|eur|cad|chf|gbp|\$|€|£)$", re.I)
 
 _OPENING = re.compile(r"balance from previous|previous statement|opening balance|beginning balance|balance b/?f\b|"
-                      r"brought forward|previous bal(?:ance)?\b|baki terdahulu|baki lepas|baki awal|baki bawa|baki mula|baki permulaan|baki penyata lepas", re.I)
+                      r"brought forward|previous bal(?:ance)?\b|baki terdahulu|baki lepas|baki awal|baki bawa|baki mula|baki permulaan|baki penyata lepas|"
+                      r"solde d'ouverture|solde precedent|solde reporte|ancien solde|beginsaldo|vorig saldo|oud saldo|anfangssaldo|alter saldo", re.I)
 _CLOSING = re.compile(r"closing balance|ending balance|balance c/?f\b|carried forward|new balance|statement balance|current balance|baki semasa|baki baru|baki akhir|baki penutup|"
-                      r"baki hantar", re.I)
-_SUMMARY = re.compile(r"\btotal\b|\bjumlah\b|\bsub-?total\b|minimum payment|credit limit|had kredit|end of statement|penyata tamat|\bpage\b|muka ?surat", re.I)
-_HEAD = {"debit": ("withdrawal", "withdrawals", "debit", "debits", "dr", "pengeluaran", "keluar", "payments"),
-         "credit": ("deposit", "deposits", "credit", "credits", "cr", "simpanan", "masuk", "receipts"),
-         "balance": ("balance", "baki"),
-         "amount": ("amount", "amaun")}
-_TOTAL_OUT = re.compile(r"(?:total|jumlah)\s+(?:withdrawals?|debits?|pengeluaran|debit)\b", re.I)
-_TOTAL_IN = re.compile(r"(?:total|jumlah)\s+(?:deposits?|credits?|simpanan|kredit)\b", re.I)
+                      r"baki hantar|solde de fermeture|solde de cloture|nouveau solde|solde final|eindsaldo|nieuw saldo|endsaldo|neuer saldo", re.I)
+_AS_OF = re.compile(r"\b(?:balance|saldo|solde)\s+(?:as of|as at|per|op|au|am|zum)\b", re.I)  # "Balance as of 01.05.2025: 15.320,00"
+_SUMMARY = re.compile(r"\btotal\b|\btotaal\b|\bsumme\b|\bjumlah\b|\bsub-?total\b|minimum payment|credit limit|had kredit|end of statement|penyata tamat|\bpage\b|muka ?surat", re.I)
+_HEAD = {"debit": ("withdrawal", "withdrawals", "debit", "debits", "dr", "pengeluaran", "keluar", "payments",
+                   "retraits", "retrait", "af", "afschrijvingen", "debet", "soll", "lastschrift"),
+         "credit": ("deposit", "deposits", "credit", "credits", "cr", "simpanan", "masuk", "receipts",
+                    "depots", "depot", "bij", "bijschrijvingen", "haben", "gutschrift"),
+         "balance": ("balance", "baki", "solde", "saldo"),
+         "amount": ("amount", "amaun", "montant", "bedrag", "betrag")}
+_TOTAL_OUT = re.compile(r"(?:total|totaal|jumlah)\s+(?:des\s+)?(?:withdrawals?|debits?|pengeluaran|debit|outgoing|retraits|af)\b", re.I)
+_TOTAL_IN = re.compile(r"(?:total|totaal|jumlah)\s+(?:des\s+)?(?:deposits?|credits?|simpanan|kredit|incoming|depots|bij)\b", re.I)
+_ACCOUNT_NO = re.compile(r"\b\d{2,}(?:-\d{2,}){1,4}\b|\b\d{9,}\b")  # 817-890692-838
 _GAP = 0.03       # amounts whose right edges are closer than this share of the page width are one column
 _NEAR_HEAD = 0.10  # a column belongs to a heading no further away than this
 TOLERANCE = 0.05
+
+
+def _plain(text: str) -> str:
+    """Without accents: "Dépôts" is matched as "Depots", "févr." as "fevr."."""
+    return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+
+
+def _ends_amount(words: list[dict], at: int) -> bool:
+    """Is the currency sign at this place the end of an amount's column, not a word in a sentence
+    ("PAID 12.50 USD TO SHOP ... 60.00")? It is when it ends the row, or when the row itself ends
+    with an amount and its sign, which is how a statement that prints the sign prints every amount."""
+    if at + 1 >= len(words):
+        return True
+    w, nxt = words[at], words[at + 1]
+    styled = len(words) >= 2 and _CURRENCY.match(words[-1]["text"]) and (
+        _MONEY.match(words[-2]["text"]) or _GROUP_END.match(words[-2]["text"]))
+    return bool(styled) and nxt["x0"] - w["x1"] > 3 * (w["x1"] - w["x0"]) / max(len(w["text"]), 1)
 
 
 def _words(row: list[dict], width: float) -> list[dict]:
@@ -58,10 +85,18 @@ def _words(row: list[dict], width: float) -> list[dict]:
     out.sort(key=lambda w: w["x0"])
     # "1,250.00 CR" and "RM 1,250.00": the marker belongs to the amount
     joined: list[dict] = []
-    for w in out:
-        if joined and w["text"].upper() in ("DR", "CR") and _MONEY.match(joined[-1]["text"]) \
-                and not joined[-1]["text"].upper().endswith(("DR", "CR")):
-            joined[-1] = {**joined[-1], "text": joined[-1]["text"] + w["text"], "x1": joined[-1]["x1"]}
+    for at, w in enumerate(out):
+        last = joined[-1] if joined else None
+        near = last is not None and w["x0"] - last["x1"] <= 2.5 * (last["x1"] - last["x0"]) / max(len(last["text"]), 1)
+        if last and w["text"].upper() in ("DR", "CR") and _MONEY.match(last["text"]) \
+                and not last["text"].upper().endswith(("DR", "CR")):
+            joined[-1] = {**last, "text": last["text"] + w["text"], "x1": last["x1"]}
+        elif last and near and _GROUP_END.match(w["text"]) and _GROUP_START.match(last["text"].split(" ")[-1]) \
+                and re.match(r"^[(\-−+]?\d{1,3}(?: \d{3})*$", last["text"]):
+            # "10 750,00": thousands set apart by a space, as French and Swiss statements print them
+            joined[-1] = {**last, "text": last["text"] + " " + w["text"], "x1": w["x1"]}
+        elif last and near and _CURRENCY.match(w["text"]) and _MONEY.match(last["text"]) and _ends_amount(out, at):
+            continue  # "114,83 €": the sign after an amount is not a word of the description
         else:
             joined.append(w)
     return joined
@@ -74,7 +109,7 @@ def _money(text: str) -> Optional[tuple[float, str]]:
         return None
     lead, digits, close, tail = m.group(1), m.group(2), m.group(3), (m.group(4) or "").upper()
     value = int(re.sub(r"\D", "", digits)) / 100
-    mark = "-" if lead in ("-", "(") or close or tail in ("-", "DR") else "+" if lead == "+" or tail in ("+", "CR") else ""
+    mark = "-" if lead in ("-", "−", "(") or close or tail in ("-", "−", "DR") else "+" if lead == "+" or tail in ("+", "CR") else ""
     return value, mark
 
 
@@ -97,7 +132,7 @@ def _date(text: str, order: str, default_year: Optional[int]) -> Optional[str]:
             day, month = (int(a), int(b)) if order == "dmy" else (int(b), int(a))
             year = _year(c, default_year)
             return date(year, month, day).isoformat() if year else None
-        m = _NAMED_DATE.match(text)
+        m = _NAMED_DATE.match(_plain(text))
         name = m.group(2).lower() if m else ""
         month = _MONTHS.get(name) or (_MONTHS.get(name[:3]) if len(name) > 4 else None)  # January, Januari
         if month:
@@ -119,6 +154,10 @@ def _lead_date(words: list[dict], order: str, default_year: Optional[int]) -> tu
             iso = _date(text, order, default_year)
             if iso:
                 _, more = _lead_date(words[n:], order, default_year)
+                if not more and len(words) > n and re.match(r"^\d{2}\.\d{2}$", words[n]["text"]):
+                    # "2 mei  02.05": the value date as day.month. Alone it would read as an amount.
+                    day, month = words[n]["text"].split(".")
+                    more = 1 if 1 <= int(month) <= 12 and 1 <= int(day) <= 31 else 0
                 return iso, n + more
     return None, 0
 
@@ -138,10 +177,16 @@ def _headings(rows: list[dict]) -> dict:
     """Where the column headings are: {'debit': x, 'credit': x, 'balance': x, 'amount': x} (right edges)."""
     for r in rows:
         found: dict = {}
+        last = None  # the heading the word before belonged to
         for w in r["words"]:
-            key = re.sub(r"[^a-z]", "", w["text"].lower())
+            key = re.sub(r"[^a-z]", "", _plain(w["text"]).lower())
+            if last and (not key or _CURRENCY.match(w["text"].strip("()"))) and w["x1"] - found[last] < 0.08:
+                found[last] = w["x1"]  # "Solde ($)": the unit is part of the heading
+                continue
+            last = next((name for name, forms in _HEAD.items() if key in forms), None)
             for name, forms in _HEAD.items():
-                if key in forms and name not in found:
+                # "Dépôts et crédits": the heading ends at its last word, where the amounts line up
+                if key in forms and (name not in found or w["x1"] - found[name] < 0.15):
                     found[name] = w["x1"]
         if "balance" in found and len(found) >= 2:
             return found
@@ -167,16 +212,26 @@ def _follows(txns: list[dict], start: Optional[float], owed: bool = False) -> in
     return hits
 
 
+def _reaches(txns: list[dict], opening: Optional[float], closing: Optional[float], owed: bool = False) -> bool:
+    """Do the amounts take the opening balance to the closing one? Tells money in from money out
+    on a statement that prints no balance on each line."""
+    if opening is None or closing is None or not txns:
+        return False
+    move = sum((t["credit"] or 0) - (t["debit"] or 0) for t in txns)
+    return _near(opening + (-move if owed else move), closing)
+
+
 def _printed_total(rows: list[dict], label: re.Pattern) -> tuple[Optional[float], Optional[int]]:
     """The total a statement prints for one side, and the number of items when it prints that too."""
     for r in reversed(rows):
-        m = label.search(r["text"])
+        m = label.search(_plain(r["text"]))
         if not m:
             continue
         count = None
-        for word in r["text"][m.end():].split():
-            if _money(word):
-                return _money(word)[0], count
+        for w in r.get("words") or [{"text": word} for word in r["text"][m.end():].split()]:
+            if _money(w["text"]):
+                return _money(w["text"])[0], count
+            word = w["text"].strip("()")
             if word.isdigit() and count is None and int(word) < 1000:  # a small count, never a year
                 count = int(word)
     return None, None
@@ -230,10 +285,24 @@ def parse(pages: list[dict], order: str = "dmy", owed: bool = False) -> dict:
         if side and r["money"] and r["money"][0][2] == "":
             first = r["money"][0]
             r["money"][0] = (first[0], first[1], side)
-        r["kind"] = ("opening" if _OPENING.search(r["text"]) and r["money"] else
-                     "closing" if _CLOSING.search(r["text"]) and r["money"] else
-                     "summary" if _SUMMARY.search(r["text"]) else
+        plain = _plain(r["text"])
+        r["kind"] = ("opening" if _OPENING.search(plain) and r["money"] else
+                     "closing" if _CLOSING.search(plain) and r["money"] else
+                     "summary" if _SUMMARY.search(plain) else
                      "dated" if r["date"] and r["money"] else "other")
+
+    # "Balance as of 01.05.2025" and "Balance as of 31.05.2025": the earlier is the opening balance
+    dated_balances = []
+    for r in rows:
+        if r["kind"] in ("dated", "other") and r["money"] and _AS_OF.search(_plain(r["text"])):
+            day = next((d for d in (_date(w["text"].strip(":;,"), order, default_year) for w in r["words"]) if d), None)
+            if day:
+                dated_balances.append((day, r))
+    if len({day for day, _ in dated_balances}) >= 2 and not any(r["kind"] in ("opening", "closing") for r in rows):
+        dated_balances.sort(key=lambda pair: pair[0])
+        dated_balances[0][1]["kind"], dated_balances[-1][1]["kind"] = "opening", "closing"
+        for _, r in dated_balances[1:-1]:
+            r["kind"] = "summary"
 
     # A watermark or stamp printed across the page can land in front of a row's date. Where the dates
     # of the other rows line up, a date at that place further into a row is that row's date.
@@ -335,12 +404,16 @@ def parse(pages: list[dict], order: str = "dmy", owed: bool = False) -> dict:
         return txns
 
     # which amount column is money out: the headings say, and the printed balances prove it
-    prior = {i: (-1 if role.get(i) == "debit" else 1 if role.get(i) == "credit" else -1) for i in amount_cols}
+    # One column of amounts where money out carries a minus: an amount without one is money in.
+    signed = {c for r in rows if r["kind"] == "dated" for c, _, _, mark in ((column_of(w), w, v, mark) for w, v, mark in r["money"])
+              if mark == "-" and c is not None}
+    prior = {i: (-1 if role.get(i) == "debit" else 1 if role.get(i) == "credit" or (i in signed and len(amount_cols) == 1) else -1)
+             for i in amount_cols}
     best, best_score = build(prior), None
     for combo in product((-1, 1), repeat=len(amount_cols)) if len(amount_cols) <= 4 else []:
         signs = dict(zip(amount_cols, combo))
         txns = build(signs)
-        score = (_follows(txns, opening, owed), signs == prior)
+        score = (_follows(txns, opening, owed), _reaches(txns, opening, closing, owed), signs == prior)
         if best_score is None or score > best_score:
             best, best_score = txns, score
 
@@ -358,12 +431,39 @@ def parse(pages: list[dict], order: str = "dmy", owed: bool = False) -> dict:
             by_account.append({"opening_balance": -value if mark == "-" else value,
                                "closing_balance": None if end is None else (-end[0] if end[1] == "-" else end[0]),
                                "first_transaction": mine[0] + 1 if mine else None, "transactions": len(mine)})
+    if not by_account:
+        # No opening balance per account, but each account's table has its own title with the
+        # account number above its column headings ("USD Savings Account — 817-890692-002").
+        titles: list[tuple[int, str, str]] = []
+        for i, r in enumerate(rows):
+            named = {name for w in r["words"] for name, forms in _HEAD.items()
+                     if re.sub(r"[^a-z]", "", _plain(w["text"]).lower()) in forms}
+            if "balance" not in named or len(named) < 2:
+                continue
+            for above in reversed(rows[max(i - 2, 0):i]):
+                number = _ACCOUNT_NO.search(above["text"])
+                if number and not above.get("money") and len(above["words"]) <= 12:
+                    name = re.sub(r"\(continued\)|[—–:-]+\s*$", "", above["text"].replace(number.group(), ""), flags=re.I)
+                    titles.append((i, number.group(), " ".join(name.split()).strip(" —–-:") or None))
+                    break
+        if len({number for _, number, _ in titles}) > 1:
+            for n, (at, number, name) in enumerate(titles):
+                if by_account and by_account[-1]["account_number"] == number:
+                    continue  # the same account, continued on the next page
+                later = [row for row, other, _ in titles[n + 1:] if other != number]
+                last = later[0] if later else len(rows)
+                mine = [i for i, t in enumerate(best) if at < t["_row"] < last]
+                by_account.append({"account_number": number, "name": name, "opening_balance": None, "closing_balance": None,
+                                   "first_transaction": mine[0] + 1 if mine else None, "transactions": len(mine)})
+            if sum(a["transactions"] for a in by_account) != len(best):
+                by_account = []  # a transaction outside every titled table: the titles are not the whole story
     for t in best:
         for k in [k for k in t if k.startswith("_")]:
             del t[k]
     out_total, out_count = _printed_total(rows, _TOTAL_OUT)
     in_total, in_count = _printed_total(rows, _TOTAL_IN)
-    return {"transactions": best, "opening_balance": opening, "closing_balance": closing, "accounts": max(openings, 1),
+    return {"transactions": best, "opening_balance": opening, "closing_balance": closing,
+            "accounts": max(openings, len(by_account), 1),
             "by_account": by_account,
             "printed": {"total_debits": out_total, "debit_count": out_count,
                         "total_credits": in_total, "credit_count": in_count}}

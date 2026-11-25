@@ -11,6 +11,8 @@ httpx>=0.27,<1
 # On a CPU without AVX (Celeron NAS) set OCR_ENGINE=openvino and add: openvino
 rapidocr==3.10.0
 onnxruntime>=1.18
+# Reading order of Arabic lines for engine=arabic (LGPL-3.0, used as a library)
+python-bidi>=0.6
 # QR codes and barcodes (Apache-2.0). OpenCV's own readers missed most 1D barcodes in testing.
 zxing-cpp>=2.2,<3; python_version < "3.10"   # the last line with ready-built packages for Python 3.9
 zxing-cpp>=2.2; python_version >= "3.10"

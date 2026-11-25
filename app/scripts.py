@@ -1,0 +1,324 @@
+"""Reads lines in Arabic, Tamil or Thai with the PP-OCRv5 model for that script (Apache-2.0,
+8 MB each), on this machine.
+
+The standard reader finds where the lines are; here each line is read again by the model of the
+script that was asked for, and kept when it reads as that script. A model file is fetched once,
+on first use or with scripts/get_models.sh, and checked against a known fingerprint."""
+from __future__ import annotations
+
+import hashlib
+import logging
+import re
+import threading
+import urllib.request
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+
+from .config import get_settings
+
+log = logging.getLogger("ocr.scripts")
+_BASE = "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv5/rec/"
+# name asked for -> the library's language code, the model's fingerprint, the letters of the script
+SCRIPTS: dict = {
+    "arabic": {"lang": "arabic", "sha256": "c1192e632d0baa9146ae5b756a0e635e3dc63c1733737ebfd1629e87144e9295",
+               "letters": re.compile(r"[؀-ۿݐ-ݿ]"), "right_to_left": True},
+    "tamil": {"lang": "ta", "sha256": "a42448808b7dea87597336f12438935f40353f1949e8360acd9e06b4da21bfe1",
+              "letters": re.compile(r"[஀-௿]"), "right_to_left": False},
+    "thai": {"lang": "th", "sha256": "de541dd83161c241ff426f7ecfd602a0ba77d686cf3ab9a6c255ea82fd08006e",
+             "letters": re.compile(r"[฀-๿]"), "right_to_left": False},
+}
+MARGIN = 0.2  # the standard reader's boxes cut close: Thai tone marks were lost with less. The empty edge is trimmed again
+LONGEST = 5  # a line wider than this many times its height is read in stretches
+MIN_SHARE = 0.6  # a line is of the script when this share of its letters are
+MIN_LETTERS = 3
+MIN_CONFIDENCE = 0.6
+SHORT, SHORT_CONFIDENCE = 6, 0.8  # a few letters only: ticks and pen strokes read as letters too
+_LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
+_MARK = re.compile(r"[ஂா-்ௗัิ-ฺ็-๎ً-ْ]")  # counted with their letter
+_NUMBER = re.compile(r"^[0-9][0-9.,/:%\-]*$")
+_engines: dict = {}
+_failed: set = set()
+_lock = threading.Lock()
+
+
+def name(script: str) -> str:
+    return SCRIPTS[script]["lang"] + "-pp-ocrv5"
+
+
+def model_path(script: str) -> Path:
+    return Path(get_settings().data_dir) / "models" / (SCRIPTS[script]["lang"] + "_PP-OCRv5_rec_mobile.onnx")
+
+
+def _fetch(script: str) -> Path:
+    """The model file, fetched if it is not there. Raises when it cannot be had or is not the expected file."""
+    path, want = model_path(script), SCRIPTS[script]["sha256"]
+    if path.exists() and hashlib.sha256(path.read_bytes()).hexdigest() == want:
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with urllib.request.urlopen(_BASE + path.name, timeout=60) as answer:  # noqa: S310 - a fixed https address
+        data = answer.read(40_000_000)
+    if hashlib.sha256(data).hexdigest() != want:
+        raise ValueError("the downloaded model is not the expected file")
+    part = path.with_suffix(".part")
+    part.write_bytes(data)
+    part.replace(path)
+    return path
+
+
+def _load(script: str):
+    if script not in SCRIPTS:
+        return None
+    with _lock:
+        if script not in _engines and script not in _failed:
+            try:
+                if SCRIPTS[script]["right_to_left"]:
+                    import bidi  # noqa: F401 - the library needs it for right-to-left lines and says so only when reading
+                from rapidocr import LangRec, ModelType, OCRVersion, RapidOCR
+                logging.getLogger("RapidOCR").setLevel(logging.ERROR)
+                _engines[script] = RapidOCR(params={
+                    "Rec.lang_type": LangRec(SCRIPTS[script]["lang"]), "Rec.ocr_version": OCRVersion.PPOCRV5,
+                    "Rec.model_type": ModelType.MOBILE, "Rec.model_path": str(_fetch(script)),
+                    "Global.log_level": "error"})
+            except Exception as exc:  # noqa: BLE001
+                log.info("reading %s is off: %s", script, exc)
+                _failed.add(script)
+    return _engines.get(script)
+
+
+def available(script: str) -> bool:
+    return _load(script) is not None
+
+
+def share(text: str, script: str) -> float:
+    """How much of a text's letters belong to the script."""
+    letters = _LETTER.findall(_MARK.sub("", text))
+    return len(SCRIPTS[script]["letters"].findall(_MARK.sub("", text))) / len(letters) if letters else 0.0
+
+
+def is_script(text: str, confidence: float, script: str) -> bool:
+    letters = len(SCRIPTS[script]["letters"].findall(_MARK.sub("", text)))
+    return (share(text, script) >= MIN_SHARE and letters >= MIN_LETTERS
+            and confidence >= (SHORT_CONFIDENCE if letters < SHORT else MIN_CONFIDENCE))
+
+
+def _read_piece(crop: np.ndarray, script: str) -> tuple:
+    eng = _load(script)
+    crop = _trim(crop)
+    if eng is None or crop.size == 0 or min(crop.shape[:2]) < 4:
+        return "", 0.0
+    with _lock:
+        got = eng(crop, use_det=False, use_cls=False, use_rec=True)
+    if got is None or not got.txts:
+        return "", 0.0
+    return str(got.txts[0]).strip(), float(got.scores[0])
+
+
+def _read(crop: np.ndarray, script: str) -> tuple:
+    """Read a line, a long one in stretches cut at gaps between words. Measured on 60 Arabic lines
+    of about 85 characters made by others: read whole, 24% of characters wrong (a third of the
+    lines came out as nothing like the text); cut blindly in three, 7% to 18% on those lines."""
+    crop = _trim(crop)
+    if crop.size == 0 or min(crop.shape[:2]) < 4:
+        return "", 0.0
+    h, w = crop.shape[:2]
+    count = int(np.ceil(w / (LONGEST * h)))
+    if count < 2:
+        return _read_piece(crop, script)
+    # Arabic words stand close together: any gap will do, the widest near the place wanted.
+    # Tamil is cut between words only; Thai has no spaces and its letters stand apart, so it is not cut.
+    runs = _words(crop, 0.1 if SCRIPTS[script]["right_to_left"] else 0.3)
+    gaps = [((a[1] + b[0]) // 2, b[0] - a[1]) for a, b in zip(runs, runs[1:])]
+    cuts = []
+    for k in range(1, count):
+        near = [g for g in gaps if abs(g[0] - k * w / count) < 0.35 * w / count and g[0] not in cuts]
+        if near:
+            cuts.append(max(near, key=lambda g: (g[1], -abs(g[0] - k * w / count)))[0])
+    if not cuts:
+        return _read_piece(crop, script)  # no gap to cut at (Thai is written without spaces)
+    edges = [0] + sorted(cuts) + [w]
+    pieces = [_read_piece(crop[:, x0:x1], script) for x0, x1 in zip(edges, edges[1:])]
+    if SCRIPTS[script]["right_to_left"]:
+        pieces = pieces[::-1]
+    pieces = [p for p in pieces if p[0]]
+    if not pieces:
+        return "", 0.0
+    lengths = [len(p[0]) for p in pieces]
+    return " ".join(p[0] for p in pieces), float(sum(p[1] * n for p, n in zip(pieces, lengths)) / sum(lengths))
+
+
+def read_lines(crops: list, script: str) -> list:
+    """Cropped lines (BGR pictures) to (text in reading order, confidence) each."""
+    out = []
+    for crop in crops:
+        text, conf = _read(crop, script)
+        if SCRIPTS[script]["right_to_left"] and text:
+            try:
+                text, conf = _with_numbers(_trim(crop), text, conf, script)
+            except Exception:  # noqa: BLE001 - the line as the Arabic model read it is still an answer
+                log.debug("numbers in a line could not be looked for", exc_info=True)
+        out.append((text, conf))
+    return out
+
+
+def _words(crop: np.ndarray, share: float = 0.3) -> list:
+    """Where the words of a line are: (left, right) of each run of ink, split at gaps wider than
+    this share of the line's height."""
+    import cv2
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+    _, ink = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    if 2 * int((ink == 0).sum()) > ink.size:
+        ink = 255 - ink
+    filled = (ink == 0).any(axis=0)
+    gap = max(int(share * crop.shape[0]), 2)
+    runs, start, last = [], None, None
+    for x, on in enumerate(filled):
+        if not on:
+            continue
+        if start is None:
+            start = x
+        elif x - last > gap:
+            runs.append((start, last + 1))
+            start = x
+        last = x
+    if start is not None:
+        runs.append((start, last + 1))
+    return runs
+
+
+def _with_numbers(crop: np.ndarray, text: str, conf: float, script: str) -> tuple:
+    """The Arabic model loses Western digits inside a line ("250" came out as "5", a date as
+    nothing). The standard reader reads them and skips the Arabic: find the words in which it
+    reads a number, cut the number out of each, read the Arabic between the numbers with the
+    Arabic model, and put the pieces together right to left."""
+    from . import engine
+    std = engine._engine()
+    runs = _words(crop)
+    if std is None or len(runs) < 2 or len(runs) > 40:
+        return text, conf
+
+    def standard(x0: int, x1: int) -> tuple:
+        piece = _trim(crop[:, max(x0 - 2, 0):x1 + 2])
+        if piece.size == 0 or min(piece.shape[:2]) < 4:
+            return "", 0.0
+        with engine._run_lock:  # the library remembers its last switches: name them all
+            got = std(piece, use_det=False, use_cls=False, use_rec=True, text_score=0.5)
+        return (str(got.txts[0]).strip(), float(got.scores[0])) if got is not None and got.txts else ("", 0.0)
+
+    pieces = []  # (left, right, the number or None), left to right
+    for x0, x1 in runs:
+        word, score = standard(x0, x1) if x1 - x0 >= 0.5 * crop.shape[0] else ("", 0.0)
+        if not (score >= 0.9 and _NUMBER.match(word) and sum(c.isdigit() for c in word) >= 2):
+            pieces.append((x0, x1, None))
+            continue
+        # the number may share its run of ink with an Arabic word: find the shortest stretch of
+        # it in which the standard reader still reads the same number
+        bits = [(x0 + a, x0 + b) for a, b in _words(crop[:, x0:x1], 0.08)]
+        lo, hi = 0, len(bits) - 1
+        for end in range(len(bits)):  # the shortest stretch from the left that holds the whole number
+            if standard(bits[0][0], bits[end][1])[0] == word:
+                hi = end
+                break
+        for start in range(hi, -1, -1):  # and the shortest from its right end
+            if standard(bits[start][0], bits[hi][1])[0] == word:
+                lo = start
+                break
+        n0, n1 = bits[lo][0], bits[hi][1]
+        if SCRIPTS[script]["letters"].search(_read(crop[:, max(n0 - 2, 0):n1 + 2], script)[0]):
+            pieces.append((x0, x1, None))  # Arabic letters are still in it: leave the line to the Arabic model
+            continue
+        if lo > 0:
+            pieces.append((x0, bits[lo - 1][1], None))
+        pieces.append((n0, n1, (word, score)))
+        if hi + 1 < len(bits):
+            pieces.append((bits[hi + 1][0], x1, None))
+    if not any(p[2] for p in pieces):
+        return text, conf
+    parts, scores, i = [], [], len(pieces) - 1
+    while i >= 0:  # from the right
+        if pieces[i][2]:
+            parts.append(pieces[i][2][0])
+            scores.append(pieces[i][2][1])
+            i -= 1
+            continue
+        j = i
+        while j >= 0 and not pieces[j][2]:
+            j -= 1
+        piece, score = _read(crop[:, max(pieces[j + 1][0] - 2, 0):pieces[i][1] + 2], script)
+        if piece:
+            parts.append(piece)
+            scores.append(score)
+        i = j
+    return " ".join(parts), float(np.mean(scores)) if scores else conf
+
+
+def _trim(crop: np.ndarray) -> np.ndarray:
+    """Cut the empty edge off a line. Measured on 160 Arabic lines: with 2 pixels of white around
+    the ink 5% of characters were wrong, with 12 pixels 15%, with 24 pixels 32%."""
+    import cv2
+    if crop.size == 0:
+        return crop
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+    _, ink = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    if 2 * int((ink == 0).sum()) > ink.size:
+        ink = 255 - ink  # light text on dark: the ink is the smaller part
+    ys, xs = np.where(ink == 0)
+    if not len(ys):
+        return crop
+    pad = 2
+    y0, y1 = max(int(ys.min()) - pad, 0), min(int(ys.max()) + 1 + pad, crop.shape[0])
+    x0, x1 = max(int(xs.min()) - pad, 0), min(int(xs.max()) + 1 + pad, crop.shape[1])
+    return crop[y0:y1, x0:x1] if (y1 - y0) >= 4 and (x1 - x0) >= 4 else crop
+
+
+def _crop(img: np.ndarray, box: list) -> np.ndarray:
+    """Cut a line out along its own slant, with a little room above and below."""
+    import cv2
+    tl, tr, br, bl = (np.array(p, np.float32) for p in box)
+    down_l, down_r = (bl - tl) * MARGIN, (br - tr) * MARGIN
+    quad = np.array([tl - down_l, tr - down_r, br + down_r, bl + down_l], np.float32)
+    w = int(round(max(np.linalg.norm(quad[1] - quad[0]), np.linalg.norm(quad[2] - quad[3]))))
+    h = int(round(max(np.linalg.norm(quad[3] - quad[0]), np.linalg.norm(quad[2] - quad[1]))))
+    if w < 4 or h < 4:
+        return np.zeros((0, 0, 3), np.uint8)
+    to = np.array([[0, 0], [w, 0], [w, h], [0, h]], np.float32)
+    return cv2.warpPerspective(img, cv2.getPerspectiveTransform(quad, to), (w, h),
+                               flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+
+
+def reread(img: np.ndarray, lines: list, script: Optional[str]) -> list:
+    """Take the standard reader's lines (every one it found, however unsure, the unread ones with
+    empty text) and read again with the model of the script. A line that reads as that script comes
+    back with "script": its name; the others are returned as they were."""
+    if not lines or script not in SCRIPTS or not available(script):
+        return lines
+    if img.ndim == 2:
+        import cv2
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    out = []
+    for line, (text, conf) in zip(lines, read_lines([_crop(img, ln["box"]) for ln in lines], script)):
+        ours = is_script(text, conf, script)
+        # The standard reader knows Latin letters, digits and Chinese. Where it is sure of what it
+        # read, and surer than this model, the line is its own.
+        theirs = (line["confidence"] >= 0.9 and line["confidence"] > conf and share(line["text"], script) < 0.5
+                  and len(text) < 2 * len(line["text"]))  # not a long line it read as a letter or two
+        if ours and not theirs:
+            out.append({"text": text, "confidence": round(conf, 4), "box": line["box"], "script": script})
+        else:
+            out.append(line)
+    # The line finder sometimes gives a piece of a line a box of its own, and the standard reader
+    # reads the piece as a Latin letter or two: drop what lies inside a line that was read here.
+    read = [_span(ln["box"]) for ln in out if ln.get("script")]
+    return [ln for ln in out if ln.get("script") or not any(_inside(_span(ln["box"]), big) for big in read)]
+
+
+def _span(box: list) -> tuple:
+    xs, ys = [p[0] for p in box], [p[1] for p in box]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _inside(small: tuple, big: tuple) -> bool:
+    both = max(0.0, min(small[2], big[2]) - max(small[0], big[0])) * max(0.0, min(small[3], big[3]) - max(small[1], big[1]))
+    area = (small[2] - small[0]) * (small[3] - small[1])
+    return area > 0 and both > 0.7 * area and area < 0.5 * (big[2] - big[0]) * (big[3] - big[1])
