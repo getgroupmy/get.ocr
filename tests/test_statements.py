@@ -94,3 +94,58 @@ def test_transactions_in_the_layouts_accounting_systems_import():
     assert bank_csv(result, "quickbooks-3").splitlines() == ["Date,Description,Amount", "02/01/2026,RENT JAN,-1200.00", "05/01/2026,SALARY,3000.50"]
     assert bank_csv(result, "quickbooks-4").splitlines() == ["Date,Description,Credit,Debit", "02/01/2026,RENT JAN,,1200.00", "05/01/2026,SALARY,3000.50,"]
     assert bank_csv(result, "generic").splitlines()[1] == "02/01/2026,RENT JAN,,1200.00,,2800.00"
+
+
+def test_a_dutch_statement_with_european_numbers_and_one_signed_column():
+    rows = [[("Balance as of 01.05.2025:", 30), ("15.320,00", 330, True), ("€", 345)],
+            [("Balance as of 31.05.2025:", 30), ("15.216,28", 330, True), ("€", 345)],
+            [("Total incoming:", 30), ("114,83", 330, True), ("€", 345)],
+            [("Total outgoing:", 30), ("218,55", 330, True), ("€", 345)],
+            [("Date", 30), ("Interest Date", 90), ("Counterparty", 170), ("Description", 300), ("Amount", 560, True)],
+            [("1 mei", 30), ("01.05", 90), ("THOMAS DE GROOT", 170), ("OVERBOEKING", 300), ("114,83", 550, True), ("€", 562)],
+            [("NL17THOM6025479805", 170)],
+            [("7 mei", 30), ("07.05", 90), ("Jumbo", 170), ("SEPA DEBIT", 300), ("-218,55", 550, True), ("€", 562)]]
+    got = statement.parse([table_page(rows)])
+    assert [(t["date"], t["debit"], t["credit"]) for t in got["transactions"]] == [
+        ("2025-05-01", None, 114.83), ("2025-05-07", 218.55, None)]  # no minus: money in
+    assert got["transactions"][0]["description"] == "THOMAS DE GROOT OVERBOEKING NL17THOM6025479805"  # no value date, no sign
+    assert got["opening_balance"] == 15320.0 and got["closing_balance"] == 15216.28
+    assert got["printed"]["total_credits"] == 114.83 and got["printed"]["total_debits"] == 218.55
+    assert [c["passed"] for c in extract.statement_checks(got, got["printed"])] == [None, True, True]
+
+
+def test_a_french_statement_with_spaced_thousands_and_month_names():
+    rows = [[("Solde D'ouverture 1 janvier 2025", 30), ("10", 520, True), ("750,00", 556, True), ("$", 565)],
+            [("Total Crédits (1)", 30), ("+", 500), ("1", 520, True), ("010,33", 556, True), ("$", 565)],
+            [("Total Débits (1)", 30), ("-", 500), ("151,30", 556, True), ("$", 565)],
+            [("Solde De Fermeture 31 janvier 2025", 30), ("=", 500), ("11", 520, True), ("609,03", 556, True), ("$", 565)],
+            [("Détails", 30), ("Chèques et débits", 330, True), ("Dépôts et crédits ($)", 450, True), ("Solde ($)", 565, True)],
+            [("02 janv. 25", 30), ("SKIP PLATS", 110), ("151,30", 310, True), ("$", 320),
+             ("10", 520, True), ("598,70", 556, True), ("$", 565)],
+            [("03 févr. 25", 30), ("DEPOT PAIE", 110), ("1", 404, True), ("010,33", 440, True), ("$", 450),
+             ("11", 520, True), ("609,03", 556, True), ("$", 565)]]
+    got = statement.parse([table_page(rows)])
+    assert [(t["date"], t["description"], t["debit"], t["credit"], t["balance"]) for t in got["transactions"]] == [
+        ("2025-01-02", "SKIP PLATS", 151.3, None, 10598.7), ("2025-02-03", "DEPOT PAIE", None, 1010.33, 11609.03)]
+    assert got["opening_balance"] == 10750.0 and got["closing_balance"] == 11609.03
+    assert got["printed"] == {"total_debits": 151.3, "debit_count": 1, "total_credits": 1010.33, "credit_count": 1}
+    assert [c["passed"] for c in extract.statement_checks(got, got["printed"])] == [True, True, True]
+    assert statement._money("1.250,80") == (1250.8, "") and statement._money("1'250.80") == (1250.8, "")
+    assert statement._date("15 août 2025", "dmy", None) == "2025-08-15" and statement._date("3 mrt", "dmy", 2025) == "2025-03-03"
+
+
+def test_accounts_are_told_apart_by_the_title_over_each_table():
+    head = [("Date", 30), ("Transaction Details", 100), ("Deposit", 380, True), ("Withdrawal", 460, True), ("Balance", 560, True)]
+    one = [[("HKD Current Account — 817-890692-838", 30)], head,
+           [("1 Sep 2025", 30), ("Faster payment", 100), ("153.01", 460, True), ("42,426.99", 560, True)]]
+    two = [[("HKD Current Account — 817-890692-838 (Continued)", 30)], head,
+           [("2 Sep 2025", 30), ("Fps payment", 100), ("1,932.00", 460, True), ("40,494.99", 560, True)],
+           [("USD Savings Account — 817-890692-002", 30)], head,
+           [("20 Sep 2025", 30), ("Fps transfer", 100), ("181.04", 460, True), ("149,818.96", 560, True)],
+           [("21 Sep 2025", 30), ("Interest", 100), ("1.04", 380, True), ("149,820.00", 560, True)]]
+    got = statement.parse([table_page(one), table_page(two, 2)])
+    assert got["accounts"] == 2 and [(a["account_number"], a["name"], a["first_transaction"], a["transactions"]) for a in got["by_account"]] == [
+        ("817-890692-838", "HKD Current Account", 1, 2), ("817-890692-002", "USD Savings Account", 3, 2)]
+    # one account number over every page is one account
+    same = statement.parse([table_page(one), table_page(two[:3], 2)])
+    assert same["accounts"] == 1 and same["by_account"] == []
