@@ -12,7 +12,7 @@ from datetime import timedelta
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from . import codes, crypto, engine, extract, jawi, marks, scripts, signatures, storage, vision, webhooks
+from . import codes, crypto, engine, extract, jawi, lists, marks, scripts, signatures, storage, vision, webhooks
 from .config import get_settings
 from .db import ApiClient, Correction, Job, Route, Seen, Usage, session_scope, utcnow
 from .documents import Document, parse_pages
@@ -98,6 +98,9 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
                 scale = page.width / image.shape[1]  # a text page is measured in points, its picture in pixels
                 out["codes"] = [{**c, "box": [[round(x * scale, 1), round(y * scale, 1)] for x, y in c["box"]]}
                                 for c in codes.find(image)]
+            if page.image is not None and options.get("extract") in ("order", "auto") and any(
+                    ln.get("struck") or ln["text"][:1].isdigit() for ln in lines):
+                out["list_marks"] = lists.brackets(page.image, lines)  # for an order list: which rows are ticked
             if options.get("marks") or options.get("preview"):
                 image = page.image if page.image is not None else doc.page(n, use_text_layer=False).image
                 scale = out["width"] / image.shape[1]
@@ -106,7 +109,8 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
                     return [[round(x * scale, 1), round(y * scale, 1)] for x, y in box]
                 if options.get("marks"):
                     seen_lines = lines if page.image is not None else []  # a text page's lines are in points, not pixels
-                    out["checkboxes"] = [{**c, "box": to_page(c["box"])} for c in marks.checkboxes(image, seen_lines)] \
+                    out["checkboxes"] = [{**c, "box": to_page(c["box"])} for c in
+                                         marks.checkboxes(image, seen_lines) + lists.brackets(image, seen_lines)] \
                         if page.image is not None else []
                     out["stamps"] = [{**st, "box": to_page(st["box"])} for st in marks.stamps(image)]
                     if signatures.available():

@@ -574,6 +574,18 @@ with `quantity`, `name`, `short_name`, `notes`). `auto` takes a document for an 
 names a table or how it is served and prints no prices. Its one check, `item_quantities`, says
 whether every item has a quantity; there are no amounts to add up.
 
+Three things on such a slip come from the paper, not from the model:
+
+- **A quantity standing alone** in front of an item ("1   Siu Mai King") is often missed by the
+  line finder. The place in front of each line is read on its own and the quantity put back; it
+  is in the plain text of `/v1/ocr` too.
+- **A pen stroke through a quantity** (the kitchen crossing an item off): the line gets
+  `"struck": true` and the item `"struck": true`. The digit under the stroke is told by
+  comparing it with the digits printed cleanly on the same slip.
+- **The `[ ]` printed at the end of a row:** each item gets `"ticked"` true or false (null when
+  the slip prints no such box). With `marks=true` they are also listed under `checkboxes` with
+  `"kind": "brackets"`.
+
 **Statements are read as a table, not by the model.** The transactions are taken from where the words
 sit on the page: a row starts with a date, its amounts are placed in the deposit, withdrawal or
 balance column by their position, and following lines without a date are added to the description.
@@ -749,6 +761,14 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
   setting for small lone characters were tuned on a single photo of an order list, where they
   recovered a quantity that was missed in the shadow. Other photos are untested.
 - **Order lists** are read by the model and have only been run against a stand-in, not the real model.
+  The quantities, pen strokes and `[ ]` were built on one real photo of a slip (4 missing
+  quantities put back, 2 strokes and 5 empty brackets found) and a made-up one. On 52 other
+  documents (50 scanned forms, a card statement, a receipt; 2,794 lines) no line changed. Limits:
+  the pen must be of another colour than the print (a black pen on black print is not seen); a
+  struck digit is only told when the same digit stands clean elsewhere on the slip, otherwise
+  the item is left without a quantity and fails `item_quantities`; a quantity column needs two
+  digits under each other to be believed; what a stroke or a tick means is for your app to say.
+  A missing space inside a name ("VegeHong") is the reader's and is not corrected.
 - **The review view is a viewer.** In Try it, the first three pages are shown as they were read, with
   every found value outlined. Corrections are made through the API, not in this view.
 - **What was measured on public documents** (not on yours, and none of it involves the model):

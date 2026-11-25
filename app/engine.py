@@ -15,6 +15,7 @@ from .config import get_settings
 
 NAME = "pp-ocr"
 BLURRY, DARK = 40.0, 50.0  # below these a picture is reported as blurry or dark; first guesses, not tuned
+_STROKES = "一丨丿乙亅｜|—–-_~^`'‘’,.·"  # alone on a line: the edge of a box or a bracket, a rule, a speck
 LONE_CHARACTER = 0.75  # a line of one character is kept only when the model is this sure of it
 _rapid = None
 _failed = False
@@ -175,6 +176,7 @@ def read(img: np.ndarray, script: Optional[str] = None) -> list[dict]:
     eng = _engine()
     if eng is None:
         raise RuntimeError("OCR engine is not available")
+    original = img
     if get_settings().even_lighting:
         evened = even_lighting(img)
         img = img if evened is None else evened
@@ -208,9 +210,12 @@ def read(img: np.ndarray, script: Optional[str] = None) -> list[dict]:
             continue
         if score < floor or not txt.strip():
             continue
-        if len(txt.strip()) == 1 and score < LONE_CHARACTER:
+        if len(txt.strip()) == 1 and (score < LONE_CHARACTER or txt.strip() in _STROKES):
             continue  # a speck or half a bracket read as a character
         lines.append(line)
+    from . import lists
+    lines = lists.without_bracket_scraps(original, lines)  # a printed [ ] read as "L" and "1"
+    lines = lists.leading_quantities(original, lines)  # "1  Siu Mai King": the lone 1 the line finder missed
     return [line for row in _rows(lines) for line in row]
 
 

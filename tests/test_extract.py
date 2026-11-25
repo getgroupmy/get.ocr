@@ -357,7 +357,8 @@ def test_extracts_an_order_list(client, api_key, need_engine, fake_model):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["document_type"] == "order" and body["model_calls"] == 1 and "order list" in prompts[0][1]
-    assert body["fields"]["items"][1] == {"quantity": 2.0, "name": "THAI ICED TEA", "short_name": None, "notes": "NO SUGAR"}
+    assert body["fields"]["items"][1] == {"quantity": 2.0, "name": "THAI ICED TEA", "short_name": None, "notes": "NO SUGAR",
+                                           "struck": False, "ticked": None}
     assert body["fields"]["date"] == "2026-11-24" and body["fields"]["table"] == "01"
     assert body["checks"] == [{"name": "item_quantities", "passed": True, "detail": "all 2 item(s) have a quantity"}]
     assert body["checks_passed"] is True and body["not_found_in_text"] == []

@@ -398,6 +398,8 @@ def ground(fields: dict, list_key: Optional[str], pages: list[dict], check_rows:
             sources[list_key] = rows_at
     for i, row in enumerate(fields[list_key] if check_rows and list_key else []):
         for key, value in row.items():
+            if isinstance(value, bool):
+                continue  # read off the paper (a pen stroke, a tick), not out of the words
             if value is None or key in ("kind", "role") or "date" in key:
                 continue
             if not _found(value, whole):
@@ -450,10 +452,36 @@ def order_checks(f: dict) -> list[dict]:
                    f"all {len(f['items'])} item(s) have a quantity")]
 
 
+def _order_marks(fields: dict, pages: list[dict]) -> None:
+    """What the paper says beside each item, which the model does not see: a pen stroke through
+    its quantity (struck) and whether the [ ] at the end of its row is filled (ticked; None when
+    the slip prints no such box). A quantity the model left out is taken from the item's line."""
+    lines = [ln for p in pages for ln in p.get("lines") or []]
+    ticks = {b["label"]: b["checked"] for p in pages for b in p.get("list_marks") or [] if b.get("label")}
+    used: set = set()
+    for item in fields.get("items") or []:
+        name = " ".join(str(item.get("name") or "").lower().split())
+        item["struck"], item["ticked"] = False, None
+        if not name:
+            continue
+        for n, ln in enumerate(lines):
+            m = re.match(r"^(\d{1,3})\s+(.*)$", ln["text"])
+            rest = " ".join((m.group(2) if m else ln["text"]).lower().split()).lstrip("* ")
+            if n in used or not (rest == name or rest.startswith(name) or name.startswith(rest) and len(rest) >= 4):
+                continue
+            used.add(n)
+            item["struck"] = bool(ln.get("struck"))
+            item["ticked"] = ticks.get(ln["text"])
+            if item.get("quantity") is None and m:
+                item["quantity"] = float(m.group(1))
+            break
+
+
 def _order(pages: list[dict], texts: list[str]) -> dict:
     limit = get_settings().llm_context * 2
     text = "\n\n".join(f"--- page {p['page']} ---\n{t}" for p, t in zip(pages, texts))
     fields, bad_dates = _ask(_ORDER, ORDER_SCHEMA, text[:limit])
+    _order_marks(fields, pages)
     return {"document_type": "order", "fields": fields, "checks": order_checks(fields), "attempts": 1,
             "bad_dates": bad_dates, "truncated": len(text) > limit, "list_key": "items", "repaired": 0}
 

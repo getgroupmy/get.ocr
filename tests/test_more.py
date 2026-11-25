@@ -405,3 +405,43 @@ def test_a_scrap_read_inside_an_unread_line_does_not_hide_the_line():
     assert engine._same_place(long_line, scrap) is False  # the long line is still to be read
     assert engine._same_place(scrap, long_line) is True
     assert engine._same_place(long_line, [[12, 9], [498, 9], [498, 41], [12, 41]]) is True
+
+
+def test_an_order_slip_keeps_its_quantities_strokes_and_tick_brackets(client, api_key, need_engine, fake_model):  # noqa: F811
+    slip = synth.order_slip(struck=(0, 2), ticked=(3,))
+    r = client.post("/v1/ocr", files={"file": ("slip.png", slip, "image/png")}, data={"marks": "true"}, headers=api_key)
+    assert r.status_code == 200, r.text
+    page = r.json()["pages"][0]
+    rows = page["text"].split("\n")
+    # every item with its quantity, also the two whose "1" has a pen stroke through it; no stray "L" from a bracket
+    assert rows[3:8] == ["1 Stir-Fried Vege Sawi", "1 Vegetarian Fried Rice", "1 Quarter Roasted Chicken",
+                         "1 Siu Mai King", "2 Filtered Water"]
+    assert [ln["text"] for ln in page["lines"] if ln.get("struck")] == ["1 Stir-Fried Vege Sawi", "1 Quarter Roasted Chicken"]
+    boxes = [c for c in page["checkboxes"] if c.get("kind") == "brackets"]
+    assert len(boxes) == 5 and [c["checked"] for c in boxes] == [False, False, False, True, False]
+    assert "Siu Mai King" in boxes[3]["label"] and "Filtered Water" in boxes[4]["label"]
+    # as fields: the model reads the text; the stroke and the tick come from the paper
+    answers, _ = fake_model
+    answers.append({"title": "Order List", "order_number": None, "table": "2A", "guests": None, "date": "2026-11-25",
+                    "time": "8:19 PM", "staff": None, "service_type": None,
+                    "items": [{"quantity": 1, "name": "Stir-Fried Vege Sawi", "short_name": None, "notes": None},
+                              {"quantity": 1, "name": "Vegetarian Fried Rice", "short_name": None, "notes": None},
+                              {"quantity": None, "name": "Quarter Roasted Chicken", "short_name": None, "notes": None},
+                              {"quantity": 1, "name": "Siu Mai King", "short_name": None, "notes": None},
+                              {"quantity": 2, "name": "Filtered Water", "short_name": None, "notes": None}]})
+    body = client.post("/v1/extract", files={"file": ("slip.png", slip, "image/png")}, data={"type": "order"}, headers=api_key).json()
+    items = body["fields"]["items"]
+    assert [(it["quantity"], it["struck"], it["ticked"]) for it in items] == [
+        (1, True, False), (1, False, False), (1, True, False), (1, False, True), (2, False, False)]
+    assert body["checks"][0]["passed"] is True  # the quantity the model left out was taken from the line
+
+
+def test_a_plain_page_gets_no_quantities_or_strokes(need_engine):
+    import cv2
+    import numpy as np
+    img = cv2.imdecode(np.frombuffer(synth.image_bytes(LINES), np.uint8), cv2.IMREAD_COLOR)
+    lines = engine.read(img)
+    assert not any(ln.get("struck") for ln in lines)
+    from app import lists
+    assert [ln["text"] for ln in lists.leading_quantities(img, lines)] == [ln["text"] for ln in lines]
+    assert lists.brackets(img, lines) == []
