@@ -20,13 +20,17 @@ _MONTHS = {m: i for i, names in enumerate(
     for m in names.split()}
 _NUMERIC_DATE = re.compile(r"^(\d{1,4})[-/.](\d{1,2})(?:[-/.](\d{2,4}))?$")
 _NAMED_DATE = re.compile(r"^(\d{1,2})[-/ ]?([A-Za-z]{3,9})[-/ ,]*(\d{2,4})?$")
-_YEAR = re.compile(r"\b\d{1,2}[-/.](?:\d{1,2}|[A-Za-z]{3,9})[-/.]((?:19|20)?\d{2})\b|\b[A-Za-z]{3,9} ((?:19|20)\d{2})\b")
+_YEAR = re.compile(r"\b\d{1,2}[-/.](?:\d{1,2}|[A-Za-z]{3,9})[-/.]((?:19|20)?\d{2})\b|\b[A-Za-z]{3,9} ((?:19|20)\d{2})\b|"
+                   r"\b\d{1,2} [A-Za-z]{3,9} (\d{2})\b")
+_ID_LIKE = re.compile(r"^[A-Z0-9][A-Z0-9/-]{0,13}$")  # a serial number or transaction id printed before the date
+_SIDE = {"dr": "-", "debit": "-", "cr": "+", "credit": "+"}  # a column that says which way each line goes
+_CURRENCY = re.compile(r"^(?:rs\.?|rm|myr|sgd|s\$|usd|hkd|inr|\$|€)$", re.I)
 
 _OPENING = re.compile(r"balance from previous|previous statement|opening balance|beginning balance|balance b/?f\b|"
-                      r"brought forward|previous balance|baki terdahulu|baki lepas|baki awal|baki bawa|baki mula|baki permulaan|baki penyata lepas", re.I)
+                      r"brought forward|previous bal(?:ance)?\b|baki terdahulu|baki lepas|baki awal|baki bawa|baki mula|baki permulaan|baki penyata lepas", re.I)
 _CLOSING = re.compile(r"closing balance|ending balance|balance c/?f\b|carried forward|new balance|statement balance|current balance|baki semasa|baki baru|baki akhir|baki penutup|"
                       r"baki hantar", re.I)
-_SUMMARY = re.compile(r"\btotal\b|\bjumlah\b|\bsubtotal\b|end of statement|penyata tamat|\bpage\b|muka ?surat", re.I)
+_SUMMARY = re.compile(r"\btotal\b|\bjumlah\b|\bsub-?total\b|minimum payment|credit limit|had kredit|end of statement|penyata tamat|\bpage\b|muka ?surat", re.I)
 _HEAD = {"debit": ("withdrawal", "withdrawals", "debit", "debits", "dr", "pengeluaran", "keluar", "payments"),
          "credit": ("deposit", "deposits", "credit", "credits", "cr", "simpanan", "masuk", "receipts"),
          "balance": ("balance", "baki"),
@@ -184,7 +188,7 @@ def parse(pages: list[dict], order: str = "dmy", owed: bool = False) -> dict:
     statement prints (None when it prints none); the list is empty when the
     pages do not look like a table of dated amounts."""
     whole = "\n".join(p.get("text") or "" for p in pages)
-    years = Counter(_year(a or b, None) for a, b in _YEAR.findall(whole))
+    years = Counter(_year(a or b or c, None) for a, b, c in _YEAR.findall(whole))
     default_year = years.most_common(1)[0][0] if years else None
 
     def rows_of(right_limit: Optional[float]) -> list[dict]:
@@ -201,7 +205,11 @@ def parse(pages: list[dict], order: str = "dmy", owed: bool = False) -> dict:
         return found
 
     rows = rows_of(None)
-    heads = _headings(rows)
+    # The column headings are the ones just above the first transaction: a statement often has a
+    # summary box higher up with its own "balance", "debit" and "credit" headings.
+    first = next((i for i, r in enumerate(rows) if _lead_date(r["words"], order, default_year)[0]
+                  and any(_money(w["text"]) for w in r["words"])), len(rows))
+    heads = _headings(rows[max(first - 6, 0):first][::-1]) if first < len(rows) else _headings(rows)
     if "balance" in heads:
         # Anything printed to the right of the balance column (a barcode or a reference
         # running up the margin) is not part of the table and would break up its rows.
@@ -210,15 +218,42 @@ def parse(pages: list[dict], order: str = "dmy", owed: bool = False) -> dict:
     # first pass: what each row is
     for r in rows:
         r["date"], r["date_words"] = _lead_date(r["words"], order, default_year)
-        r["money"] = [(w, *_money(w["text"])) for w in r["words"][r["date_words"]:] if _money(w["text"])]
+        for skip in (1, 2):  # a serial number or an id before the date
+            if r["date"] is None and len(r["words"]) > skip and all(_ID_LIKE.match(w["text"]) for w in r["words"][:skip]):
+                found, used = _lead_date(r["words"][skip:], order, default_year)
+                if found:
+                    r["date"], r["date_words"] = found, skip + used
+        rest = r["words"][r["date_words"]:]
+        # "DR 475,617.41": a word that says which way the line goes marks the amount after it
+        side = next((_SIDE[w["text"].lower()] for w in rest if w["text"].lower() in _SIDE), "")
+        r["money"] = [(w, *_money(w["text"])) for w in rest if _money(w["text"])]
+        if side and r["money"] and r["money"][0][2] == "":
+            first = r["money"][0]
+            r["money"][0] = (first[0], first[1], side)
         r["kind"] = ("opening" if _OPENING.search(r["text"]) and r["money"] else
                      "closing" if _CLOSING.search(r["text"]) and r["money"] else
                      "summary" if _SUMMARY.search(r["text"]) else
                      "dated" if r["date"] and r["money"] else "other")
 
+    # A watermark or stamp printed across the page can land in front of a row's date. Where the dates
+    # of the other rows line up, a date at that place further into a row is that row's date.
+    starts = sorted(r["words"][0]["x0"] for r in rows if r["kind"] == "dated" and _date(r["words"][0]["text"], order, default_year))
+    if len(starts) >= 3:
+        column = starts[len(starts) // 2]
+        for r in rows:
+            if r["date"] is not None or r["kind"] != "other" or not r["money"]:
+                continue
+            for i, w in enumerate(r["words"][:12]):
+                if i and abs(w["x0"] - column) <= 0.03:
+                    found, used = _lead_date(r["words"][i:], order, default_year)
+                    if found:
+                        r["date"], r["date_words"], r["kind"] = found, i + used, "dated"
+                        r["money"] = [m for m in r["money"] if m[0]["x0"] > w["x0"]]
+                    break
+
     dated = [r for r in rows if r["kind"] == "dated"]
     if not dated:
-        return {"transactions": [], "opening_balance": None, "closing_balance": None, "printed": {}}
+        return {"transactions": [], "opening_balance": None, "closing_balance": None, "printed": {}, "accounts": 1}
 
     # the columns: where amounts end, named by the headings above them
     columns = _clusters([w["x1"] for r in dated for w, _, _ in r["money"]])
@@ -246,11 +281,16 @@ def parse(pages: list[dict], order: str = "dmy", owed: bool = False) -> dict:
     balance_col = next((i for i in keep if role.get(i) == "balance"), None)
 
     def column_of(w: dict) -> Optional[int]:
+        if not columns:
+            return None
         best = min(range(len(columns)), key=lambda i: abs(columns[i] - w["x1"]))
         return best if best in keep and abs(columns[best] - w["x1"]) <= _GAP * 2 else None
 
     opening = closing = None
+    openings = 0  # more than one opening balance: several accounts in one statement
     for r in rows:
+        if r["kind"] == "opening":
+            openings += 1
         if r["kind"] == "opening" and opening is None:
             value, mark = r["money"][-1][1:]
             opening = -value if mark == "-" else value
@@ -269,7 +309,11 @@ def parse(pages: list[dict], order: str = "dmy", owed: bool = False) -> dict:
                         and len(r["words"]) > len(r["money"]))  # a date printed once for several lines
             if (r["kind"] == "dated" and (amounts or balance)) or same_day:
                 used = {id(w) for c, w, _, _ in placed if c is not None}
-                desc = " ".join(w["text"] for w in r["words"][r["date_words"]:] if id(w) not in used)
+                rest = r["words"][r["date_words"]:]
+                # a currency sign printed in front of a column's amount, or the DR/CR that marks it, is not description
+                drop = {id(w) for w, nxt in zip(rest, rest[1:]) if id(nxt) in used
+                        and ((_CURRENCY.match(w["text"]) and nxt["x0"] - w["x1"] < 0.03) or w["text"].lower() in _SIDE)}
+                desc = " ".join(w["text"] for w in rest if id(w) not in used and id(w) not in drop)
                 t = {"date": r["date"] or txns[-1]["date"], "description": desc or None, "reference": None,
                      "debit": None, "credit": None, "balance": None, "_page": r["page"], "_bottom": r["bottom"],
                      "_height": r["bottom"] - r["top"], "_lines": 0,
@@ -305,6 +349,6 @@ def parse(pages: list[dict], order: str = "dmy", owed: bool = False) -> dict:
             del t[k]
     out_total, out_count = _printed_total(rows, _TOTAL_OUT)
     in_total, in_count = _printed_total(rows, _TOTAL_IN)
-    return {"transactions": best, "opening_balance": opening, "closing_balance": closing,
+    return {"transactions": best, "opening_balance": opening, "closing_balance": closing, "accounts": max(openings, 1),
             "printed": {"total_debits": out_total, "debit_count": out_count,
                         "total_credits": in_total, "credit_count": in_count}}

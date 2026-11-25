@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Optional
 
 import base64
+import re
 import binascii
 import secrets
 
@@ -223,9 +224,48 @@ async def extract_now(request: Request, client: ApiClient = Depends(require_clie
     data, options, _ = await read_input(request)
     options["extract"] = options["extract"] or "auto"
     result = await _now(db, client, data, options, "extract")
-    if "text/csv" in request.headers.get("accept", "").lower():
-        return Response(rows_csv(result), media_type="text/csv; charset=utf-8")
+    accept = request.headers.get("accept", "").lower()
+    if "text/csv" in accept:
+        layout = re.search(r"profile=\"?([a-z0-9-]+)", accept)
+        text = bank_csv(result, layout.group(1)) if layout else rows_csv(result)
+        return Response(text, media_type="text/csv; charset=utf-8")
     return result
+
+
+def bank_csv(result: dict, layout: str) -> str:
+    """A statement's transactions in a layout an accounting system imports.
+    quickbooks-3: Date, Description, Amount (money out negative). quickbooks-4: Date, Description,
+    Credit, Debit. Both as QuickBooks Online documents them: dates dd/mm/yyyy, no zeros, no thousands
+    separators. generic: Date, Description, Reference, Money out, Money in, Balance, for systems whose
+    import lets you map the columns (SQL Account, AutoCount, Xero, Bukku)."""
+    import csv
+    import io
+    if layout not in ("quickbooks-3", "quickbooks-4", "generic"):
+        raise ApiError(422, "bad_profile", "profile must be quickbooks-3, quickbooks-4 or generic")
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\r\n")
+    head = {"quickbooks-3": ["Date", "Description", "Amount"], "quickbooks-4": ["Date", "Description", "Credit", "Debit"],
+            "generic": ["Date", "Description", "Reference", "Money out", "Money in", "Balance"]}[layout]
+    writer.writerow(head)
+
+    def money(v) -> str:  # noqa: ANN001
+        return "" if v in (None, 0) else f"{v:.2f}"
+
+    for doc in result.get("documents") or [result]:
+        for t in (doc.get("fields") or {}).get("transactions") or []:
+            day = t.get("date") or ""
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+                day = f"{day[8:]}/{day[5:7]}/{day[:4]}"
+            text = " ".join(str(t.get("description") or "").split())
+            if layout == "quickbooks-3":
+                amount = (t.get("credit") or 0) - (t.get("debit") or 0)
+                writer.writerow([day, text, money(amount)])
+            elif layout == "quickbooks-4":
+                writer.writerow([day, text, money(t.get("credit")), money(t.get("debit"))])
+            else:
+                writer.writerow([day, text, t.get("reference") or "", money(t.get("debit")), money(t.get("credit")),
+                                 money(t.get("balance"))])
+    return out.getvalue()
 
 
 def rows_csv(result: dict) -> str:

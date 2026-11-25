@@ -238,3 +238,22 @@ def test_barcodes_of_several_kinds_are_read():
         found = codes.find(page)
         assert [c["text"] for c in found] == [text], kind
         assert len(found[0]["box"]) == 4 and found[0]["kind"]
+
+
+def test_merged_cells_are_placed_in_the_grid():
+    from app import tablegrid
+    html = ('<html><body><table><tr><td rowspan="2">Subject</td><td colspan="2">Age (years)</td></tr>'
+            '<tr><td>Mean</td><td>Range</td></tr><tr><td>With OA</td><td>64.8</td><td>45 - 83</td></tr></table></body></html>')
+    cells = tablegrid.cells_of(html)
+    assert cells[0] == {"row": 0, "column": 0, "rowspan": 2, "colspan": 1, "text": "Subject"}
+    assert cells[1] == {"row": 0, "column": 1, "rowspan": 1, "colspan": 2, "text": "Age (years)"}
+    assert [(c["row"], c["column"]) for c in cells[2:]] == [(1, 1), (1, 2), (2, 0), (2, 1), (2, 2)]  # the cell reaching down pushes the next row along
+
+
+def test_signature_detection_is_off_until_its_model_is_fetched(client, api_key, need_engine):
+    from app import signatures
+    assert signatures.available() is False and client.get("/health").json()["signatures"] is False
+    page = client.post("/v1/ocr", files={"file": ("a.png", synth.image_bytes(LINES), "image/png")}, data={"marks": "true"},
+                       headers=api_key).json()["pages"][0]
+    assert "signatures" not in page and "checkboxes" in page
+    assert signatures._overlap((0, 0, 10, 10), (5, 0, 15, 10)) == 5 * 10 / 150

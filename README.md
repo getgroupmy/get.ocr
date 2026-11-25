@@ -142,6 +142,7 @@ On the Mac mini, from `~/get.ocr`:
 | Update to the latest `main` and restart | `./scripts/update.sh` |
 | Back up the database (to `./backups`, or a folder you name) | `./scripts/backup.sh /Volumes/NAS/ocr` |
 | Replace the admin token | `./scripts/rotate_admin_token.sh` |
+| Fetch optional models (signature detection) | `./scripts/get_models.sh` |
 | Measure accuracy on your own documents | `.venv/bin/python scripts/evaluate.py eval` (see `eval/README.md`) |
 
 - **Backups** hold the encrypted database and queued files. They are useless without
@@ -454,6 +455,14 @@ together with the checks and `not_found_in_text`.
 **Rows for a spreadsheet.** Send `Accept: text/csv` to `POST /v1/extract` to get the list of lines
 as CSV.
 
+**Transactions for an accounting system.** For a statement, add a profile to the same header:
+`Accept: text/csv; profile=quickbooks-3` (Date, Description, Amount, money out negative),
+`profile=quickbooks-4` (Date, Description, Credit, Debit) or `profile=generic` (Date, Description,
+Reference, Money out, Money in, Balance). The two QuickBooks layouts follow QuickBooks Online's
+published format: dates as dd/mm/yyyy, empty cells in place of zeros, no thousands separators.
+Xero, AutoCount and Bukku publish their column headers only inside a signed-in account, and SQL
+Account maps columns by hand, so for those use `generic` and map the columns at import.
+
 **Turned pages.** A page that is sideways or upside down is turned upright before reading; the page
 then carries `rotated` (90, 180 or 270) and its positions are on the upright page.
 
@@ -468,6 +477,23 @@ itself.
 and `edited_with` when they name an editing program (Photoshop, an online PDF editor, …). This is a
 hint to look closer, not proof either way: a clean file can be forged and an honest one can pass
 through an editor.
+
+**Signatures.** With `marks=true`, each page also lists `signatures`: where a handwritten signature
+is and how sure the detector is. It does not say whose it is or whether it is genuine. It needs a
+26 MB model (YOLOS-tiny, Apache-2.0), fetched once with `./scripts/get_models.sh`; `/health` shows
+`"signatures": true` when it is in place. Measured on a public test set of 74 pages: 84% of the
+signatures found, 73% of what it reported was a signature. On 49 pages without signatures
+(statements, receipts) it reported none, but on statements with a large diagonal watermark it
+reported one on 7 of 9 pages: a watermark across the page is taken for a signature.
+
+**Tables with merged cells.** `type=table_grid` reads a table's structure from its picture with a
+small model (SLANet-plus, Apache-2.0, fetched on first use): `cells` with `row`, `column`,
+`rowspan`, `colspan` and `text`, the same as `html`, and a `grid` in which a spanning cell is
+repeated wherever it reaches. On 100 tables of the PubTabNet benchmark the structure scored 0.94
+(TEDS, structure only) and merged cells were found in 41 of the 46 tables that have them, at about
+2 s a table. Those are clean, printed tables from scientific papers; scans and photos will do
+worse, and the text in the cells is only as good as the reading. For a plain table with a totals
+row, `type=table` is exact and checks itself.
 
 **Tick boxes and stamps (experimental).** With `marks=true`, each page read from a picture lists
 `checkboxes` (the text beside each box and whether it is `checked`) and `stamps` (patches of red,
@@ -650,10 +676,34 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
   - *Barcodes:* on ZXing's own test images, 6/6 Code 128, 4/4 Code 39, 5/5 ITF, 6/6 EAN-13, 5/5 QR;
     UPC-A codes are reported as the equivalent EAN-13 with a leading 0. OpenCV's readers, used
     before, read none of the Code 128, Code 39 or ITF and 2 of the 5 QR codes.
-  - *Not measured:* tick boxes (14 were reported on the 50 forms; nobody checked them), bundle
-    splitting, and the statement and table readers on other banks' layouts, for want of public samples.
+  - *Statements from other banks:* 14 public sample statements (Singapore, Hong Kong, India, the
+    US, the Netherlands, Canada, three made-up banks and a UOB Malaysia card statement image). At
+    first 4 passed their checks, 1 crashed the reader and 5 gave no transactions. After the fixes:
+    4 pass (single-account statements with a running balance); 2 are read (161 and 162
+    transactions) and fail the balance check because the documents' own printed balances do not
+    follow, which is what the check is for; 2 card statements are read (19 and 30 transactions):
+    nobody verified those rows against the pages, and the 30-row one fails its opening-to-closing
+    check for a reason not looked into; 2 hold several
+    accounts and are read as one list, now reported by a failing `one_account` check; 1 scanned
+    copy finds 147 of 162 rows; 3 give nothing (Dutch and French layouts with European numbers or
+    the date inside the description, and a one-row example). No Malaysian bank account statement
+    other than Hong Leong was found to test.
+  - *Not measured:* tick boxes (14 were reported on the 50 forms; nobody checked them) and bundle
+    splitting.
+- **Tried and not shipped, with the measurements:**
+  - *Jawi.* The Arabic-script model that comes with the reader lists the six Jawi letters in its
+    alphabet, but on clean rendered Jawi sentences it got 19% of the characters wrong and gave only
+    5 of the 11 Jawi-only letters (ڠ always came out as غ), and on a real Jawi newspaper page it
+    read at 0.76 confidence without one Jawi-only letter. A model trained on Jawi exists
+    (budaya-lab/Jawi-OCR-Kraken-v1, Apache-2.0, about 4% character errors on old newspaper print by
+    its own account); it needs PyTorch and line segmentation and was not built in.
+  - *Tampering from the picture.* On 35 forged and 35 genuine receipts of the public "Find it
+    again!" set, error-level analysis told them apart with an AUC of 0.69 and a noise measure with
+    0.60, where 0.50 is a coin toss. That is too weak to put a verdict on a document, and it would
+    do worse on a re-scan or a screenshot. `file.edited_with` (the file's own metadata) stays the
+    only hint. The stronger published models are licensed for research only, or have no ready build.
 - **Not built.** Detecting an edited picture from its pixels (only the file's own metadata is
-  reported); signatures; export to an accounting system; tables with merged cells; Jawi;
+  reported); whether a signature is genuine or whose it is;
   the model's own confidence in a field.
 - **Also not built.** Handwriting; Jawi, Tamil and Thai; whether a tick box is ticked; whether a signature or
   a stamp is present; identity documents (get.ekyc does those). 

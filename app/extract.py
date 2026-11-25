@@ -17,7 +17,7 @@ from .errors import ApiError
 
 SALE_TYPES = ("invoice", "receipt", "credit_note", "debit_note", "quotation", "purchase_order", "delivery_order")
 STATEMENT_TYPES = ("bank_statement", "card_statement", "ewallet_statement")
-TYPES = ("auto", *SALE_TYPES, *STATEMENT_TYPES, "order", "payslip", "utility_bill", *doctypes.DOCS, "table", "custom")
+TYPES = ("auto", *SALE_TYPES, *STATEMENT_TYPES, "order", "payslip", "utility_bill", *doctypes.DOCS, "table", "table_grid", "custom")
 TOLERANCE = 0.05  # receipts round to 5 sen
 
 _NUM = {"type": ["number", "null"]}
@@ -574,6 +574,8 @@ def catalogue() -> list[dict]:
              "checks": [c[1] for c in d["checks"]]} for t, d in doctypes.DOCS.items()]
     out.append({"type": "table", "label": "Any table (read by position, no model)", "fields": ["columns", "totals"],
                 "rows": "rows", "checks": ["column_totals"]})
+    out.append({"type": "table_grid", "label": "A table with merged cells (structure model, pictures only)",
+                "fields": ["html", "cells", "merged_cells"], "rows": "grid", "checks": []})
     out.append({"type": "custom", "label": "My own list of fields", "fields": [], "rows": None, "checks": []})
     return out
 
@@ -592,8 +594,13 @@ def _statement(pages: list[dict], texts: list[str], kind: str = "bank_statement"
     fields = {**head, "opening_balance": table["opening_balance"], "closing_balance": table["closing_balance"],
               "transactions": table["transactions"]}
     repaired = repair_balances(fields["transactions"], fields["opening_balance"], owed)
+    checks = statement_checks(fields, table["printed"], owed=owed)
+    if table.get("accounts", 1) > 1:
+        # several accounts in one statement are read as one list, so their balances cannot follow each other
+        checks.append(_check("one_account", False, f"the statement prints {table['accounts']} opening balances: it holds "
+                             "several accounts, read here as one list. Send each account's pages on their own."))
     return {"document_type": kind, "fields": fields,
-            "checks": statement_checks(fields, table["printed"], owed=owed), "attempts": 1,
+            "checks": checks, "attempts": 1,
             "bad_dates": bad_dates, "truncated": False, "list_key": "transactions", "repaired": repaired,
             "method": "table"}
 
