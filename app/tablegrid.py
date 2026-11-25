@@ -80,7 +80,7 @@ def read(img: np.ndarray) -> Optional[dict]:
         raise ApiError(503, "engine_unavailable", "the OCR engine is not loaded on this server")
     table = _model()
     with engine._run_lock:
-        seen = eng(img)
+        seen = eng(img, use_det=True, use_cls=True, use_rec=True, text_score=0.5)  # the library remembers its last switches
         if seen is None or seen.txts is None:
             return None
         result = table(img, ocr_results=[(seen.boxes, seen.txts, seen.scores)])

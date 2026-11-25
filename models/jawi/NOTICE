@@ -1,0 +1,14 @@
+jawi.onnx and labels.json
+
+A conversion of the Jawi line recognition model "Jawi-OCR-Kraken-v1" by budaya-lab
+(https://huggingface.co/budaya-lab/Jawi-OCR-Kraken-v1), licensed under the Apache License 2.0
+(https://www.apache.org/licenses/LICENSE-2.0).
+
+Changes made: the published Kraken model file (real_plus_synth_200_best_250326.mlmodel,
+SHA-256 00153e3f89c6428473887aa45dd85b5d187ee5e43c0a3c0872c4bbeba3b1d334) was exported unchanged
+in its weights to the ONNX format, and its alphabet was written out as labels.json, with
+scripts/convert_jawi_model.py. The outputs of the two files were compared on random lines of five
+widths and differ by less than 0.00002.
+
+That model was in turn fine-tuned by its authors from the Kraken printed Arabic base model
+(https://zenodo.org/records/7050270).

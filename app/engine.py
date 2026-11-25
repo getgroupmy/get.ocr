@@ -106,22 +106,46 @@ def upside_down(img: np.ndarray, lines: list[dict]) -> bool:
     return sum(label == "180" for label in labels) >= 0.7 * len(labels)
 
 
-def read_upright(img: np.ndarray) -> tuple[list[dict], np.ndarray, int]:
+def _weight(lines: list[dict]) -> float:
+    return sum(ln["confidence"] * len(ln["text"]) for ln in lines)
+
+
+def _may_be_on_its_head(lines: list[dict], jawi: int) -> bool:
+    """Asked for Jawi and the page did not read as sure Jawi: is it worth reading it turned? Yes
+    when some Jawi was read, when next to nothing was, or when what was read is unsure."""
+    return bool(jawi) or len(lines) < 3 or sum(ln["confidence"] for ln in lines) < 0.85 * len(lines)
+
+
+def read_upright(img: np.ndarray, script: Optional[str] = None) -> tuple[list[dict], np.ndarray, int]:
     """Read a picture, turning it first when it lies on its side. Returns the lines, the picture
     as it was read, and how far it was turned clockwise (0, 90 or 270 degrees)."""
-    lines = read(img)
+    lines = read(img, script)
     if not sideways(lines):
         # An upside-down page is read line by line all the same, but the lines come out bottom first.
-        if upside_down(img, lines):
-            turned = np.ascontiguousarray(np.rot90(img, 2))
-            got = read(turned)
-            if not upside_down(turned, got):  # turned, it must read as upright, or the first call was wrong
-                return got, turned, 180
+        ours = [ln for ln in lines if ln.get("script") == "jawi"]
+        jawi = len(ours)
+        if 2 * jawi > len(lines) and sum(ln["confidence"] for ln in ours) >= 0.8 * jawi:
+            # The line classifier was trained on Latin and Chinese print and called a real upright
+            # Jawi newspaper page upside down. A page that reads as sure Jawi is upright.
+            return lines, img, 0
+        if script != "jawi" or not _may_be_on_its_head(lines, jawi):
+            if upside_down(img, lines):
+                turned = np.ascontiguousarray(np.rot90(img, 2))
+                got = read(turned, script)
+                if not upside_down(turned, got):  # turned, it must read as upright, or the first call was wrong
+                    return got, turned, 180
+            return lines, img, 0
+        # Measured on 8 real Jawi newspaper pages and 12 made ones: on its head a page gave a few
+        # unsure Jawi lines and unsure scraps of Latin; upright, 5 to 30 times the sure text.
+        turned = np.ascontiguousarray(np.rot90(img, 2))
+        got = read(turned, script)
+        if sum(1 for ln in got if ln.get("script") == "jawi") > jawi and _weight(got) > 1.3 * _weight(lines):
+            return got, turned, 180
         return lines, img, 0
     best = (0.0, lines, img, 0)  # kept only if neither turn reads as an upright page
     for quarter, angle in ((1, 270), (3, 90)):  # np.rot90 turns anticlockwise
         turned = np.ascontiguousarray(np.rot90(img, quarter))
-        got = read(turned)
+        got = read(turned, script)
         score = sum(ln["confidence"] * len(ln["text"]) for ln in got) if not sideways(got) else 0
         if score > best[0]:
             best = (score, got, turned, angle)
@@ -143,10 +167,10 @@ def quality(img: np.ndarray) -> dict:
     return {"sharpness": round(sharpness, 1), "brightness": round(brightness, 1), "issues": issues}
 
 
-def read(img: np.ndarray) -> list[dict]:
+def read(img: np.ndarray, script: Optional[str] = None) -> list[dict]:
     """Text lines on a BGR image in reading order. Each line has its text, the
     model's confidence (0 to 1) and its four corners in image pixels, clockwise
-    from the top left."""
+    from the top left. With script="jawi" the lines in Jawi are read by the Jawi model."""
     eng = _engine()
     if eng is None:
         raise RuntimeError("OCR engine is not available")
@@ -154,23 +178,48 @@ def read(img: np.ndarray) -> list[dict]:
         evened = even_lighting(img)
         img = img if evened is None else evened
     with _run_lock:
-        r = eng(img)
-    if r is None or r.txts is None:
+        # The library remembers the switches of its last call, so every call names them all.
+        r = eng(img, use_det=True, use_cls=True, use_rec=True, text_score=0.5)
+        # It gives no line at all where it could read nothing, which is every Jawi line: ask
+        # again for only where the lines are.
+        where = eng(img, use_det=True, use_cls=False, use_rec=False).boxes if script == "jawi" else None
+    if (r is None or r.txts is None) and (where is None or not len(where)):
         return []
+    boxes, txts, scores = (r.boxes, r.txts, r.scores) if r is not None and r.txts is not None else ([], [], [])
     floor = get_settings().min_confidence
+    found = [{"text": txt, "confidence": round(float(score), 4),
+              "box": [[round(float(x), 1), round(float(y), 1)] for x, y in box]}
+             for box, txt, score in zip(boxes, txts, scores)]
+    if script == "jawi":
+        from . import jawi
+        unread = [[[round(float(x), 1), round(float(y), 1)] for x, y in box] for box in (where if where is not None else [])]
+        unread = [box for box in unread if not any(_same_place(box, ln["box"]) for ln in found)]
+        found = jawi.reread(img, found + [{"text": "", "confidence": 0.0, "box": box} for box in unread])
     lines = []
-    for box, txt, score in zip(r.boxes, r.txts, r.scores):
+    for line in found:
+        txt, score = line["text"], line["confidence"]
+        if line.get("script"):
+            lines.append(line)
+            continue
         if score < floor or not txt.strip():
             continue
         if len(txt.strip()) == 1 and score < LONE_CHARACTER:
             continue  # a speck or half a bracket read as a character
-        lines.append({"text": txt, "confidence": round(float(score), 4),
-                      "box": [[round(float(x), 1), round(float(y), 1)] for x, y in box]})
+        lines.append(line)
     return [line for row in _rows(lines) for line in row]
 
 
+def _same_place(a: list, b: list) -> bool:
+    """Two boxes that cover the same line."""
+    ax0, ay0, ax1, ay1 = min(p[0] for p in a), min(p[1] for p in a), max(p[0] for p in a), max(p[1] for p in a)
+    bx0, by0, bx1, by1 = min(p[0] for p in b), min(p[1] for p in b), max(p[0] for p in b), max(p[1] for p in b)
+    both = max(0.0, min(ax1, bx1) - max(ax0, bx0)) * max(0.0, min(ay1, by1) - max(ay0, by0))
+    return both > 0.7 * min((ax1 - ax0) * (ay1 - ay0), (bx1 - bx0) * (by1 - by0))
+
+
 def _rows(lines: list[dict]) -> list[list[dict]]:
-    """Group lines that sit on the same row, rows top to bottom, each left to right."""
+    """Group lines that sit on the same row, rows top to bottom, each left to right (a row
+    that is mostly Jawi: right to left)."""
     def mid_height(line: dict) -> tuple[float, float]:
         ys = [p[1] for p in line["box"]]
         return (min(ys) + max(ys)) / 2, max(ys) - min(ys)
@@ -182,7 +231,11 @@ def _rows(lines: list[dict]) -> list[list[dict]]:
             rows[-1][2].append(line)
         else:
             rows.append((cy, h, [line]))
-    return [sorted(row, key=lambda ln: min(p[0] for p in ln["box"])) for _, _, row in rows]
+
+    def in_order(row: list[dict]) -> list[dict]:
+        row = sorted(row, key=lambda ln: min(p[0] for p in ln["box"]))
+        return row[::-1] if 2 * sum(1 for ln in row if ln.get("script") == "jawi") > len(row) else row
+    return [in_order(row) for _, _, row in rows]
 
 
 def layout_text(lines: list[dict]) -> str:

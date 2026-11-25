@@ -121,6 +121,7 @@
             </select></div>
             <div><label for="t-engine">Reader</label><select id="t-engine">
               <option value="standard">Standard (fast, with positions)</option>
+              <option value="jawi">Standard, with Jawi (Malay in Arabic script)</option>
               <option value="glm">Vision model (handwriting, hard photos)</option>
               <option value="glm:table">Vision model: a table</option>
             </select></div>
@@ -152,7 +153,7 @@
           <button type="button" data-dl="generic">accounting, generic</button>
           <button type="button" data-dl="searchable">searchable PDF</button>
         </p>
-        <pre id="try-text"></pre>
+        <pre id="try-text" style="unicode-bidi: plaintext"></pre>
         <details><summary class="muted small">Full JSON answer</summary><pre id="try-json"></pre></details>
       </div>
     </section>
