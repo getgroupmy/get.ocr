@@ -754,6 +754,15 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
   - *Jawi with the model that comes with the reader.* It lists the six Jawi letters in its
     alphabet, but on clean rendered Jawi sentences it got 19% of the characters wrong and gave only
     5 of the 11 Jawi-only letters (ڠ always came out as غ). The dedicated model above replaced it.
+  - *Comparing two signatures (is it the same person's).* Tried on two public sets, CEDAR and
+    BHSig260-Bengali, 8 genuine and 8 forged signatures from each of 120 writers; half the writers
+    set the threshold and the other half are reported. The best method (stroke-direction
+    histograms) told one person's signature from another's with 8% to 10% errors only when tuned
+    for each set; with one setting it rejected 22% of genuine signatures on one set and accepted
+    14% of other people's on the other, and it accepted 31% to 75% of practised forgeries. A
+    general vision model (DINOv2-small) did worse (14% to 20%), a published Apache-2.0 verifier
+    far worse. The published models that do better (SigNet) are licensed for research only.
+    Whether a signature is genuine cannot be told without a reference at all.
   - *Tampering from the picture.* On 35 forged and 35 genuine receipts of the public "Find it
     again!" set, error-level analysis told them apart with an AUC of 0.69 and a noise measure with
     0.60, where 0.50 is a coin toss. That is too weak to put a verdict on a document, and it would
