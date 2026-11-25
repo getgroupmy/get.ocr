@@ -689,7 +689,8 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
     out exactly as without the option. (Lower than the single lines because these sentences have
     no Latin words in them.)
   - *Ordinary documents read with the option on* (50 scanned English forms, 2,582 lines; the
-    rules were set on the first 25): 2 lines wrongly taken for Jawi, both in the second 25.
+    rules were set on the first 25): 4 lines wrongly taken for Jawi, 1 in the first 25 and 3 in
+    the second. It was 2 before lines that mix Jawi with Latin names were recognised.
   - *Turned pages:* all 48 of the made pages (upright, upside down, both sides) and all 8 real
     newspaper pages turned on their head came out upright.
   - *Real newspaper pages* (8 from the public jawi-layout-v1 set): read as Jawi with an average

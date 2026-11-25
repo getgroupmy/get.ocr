@@ -118,7 +118,10 @@ def read_lines(crops: list, script: str) -> list:
     for crop in crops:
         text, conf = _read(crop, script)
         if SCRIPTS[script]["right_to_left"] and text:
-            text, conf = _with_numbers(_trim(crop), text, conf, script)
+            try:
+                text, conf = _with_numbers(_trim(crop), text, conf, script)
+            except Exception:  # noqa: BLE001 - the line as the Arabic model read it is still an answer
+                log.debug("numbers in a line could not be looked for", exc_info=True)
         out.append((text, conf))
     return out
 
@@ -189,10 +192,10 @@ def _with_numbers(crop: np.ndarray, text: str, conf: float, script: str) -> tupl
         if SCRIPTS[script]["letters"].search(_read(crop[:, max(n0 - 2, 0):n1 + 2], script)[0]):
             pieces.append((x0, x1, None))  # Arabic letters are still in it: leave the line to the Arabic model
             continue
-        if n0 > x0:
+        if lo > 0:
             pieces.append((x0, bits[lo - 1][1], None))
         pieces.append((n0, n1, (word, score)))
-        if n1 < x1:
+        if hi + 1 < len(bits):
             pieces.append((bits[hi + 1][0], x1, None))
     if not any(p[2] for p in pieces):
         return text, conf
