@@ -301,7 +301,7 @@ def parse(pages: list[dict], order: str = "dmy", owed: bool = False) -> dict:
     def build(signs: dict[int, int]) -> list[dict]:
         txns: list[dict] = []
         open_row: Optional[dict] = None  # the transaction a following line of description belongs to
-        for r in rows:
+        for at, r in enumerate(rows):
             placed = [(column_of(w), w, v, mark) for w, v, mark in r["money"]] if r["kind"] in ("dated", "other") else []
             amounts = [(c, v, mark) for c, _, v, mark in placed if c in amount_cols]
             balance = next(((v, mark) for c, _, v, mark in placed if c == balance_col and c is not None), None)
@@ -315,7 +315,7 @@ def parse(pages: list[dict], order: str = "dmy", owed: bool = False) -> dict:
                         and ((_CURRENCY.match(w["text"]) and nxt["x0"] - w["x1"] < 0.03) or w["text"].lower() in _SIDE)}
                 desc = " ".join(w["text"] for w in rest if id(w) not in used and id(w) not in drop)
                 t = {"date": r["date"] or txns[-1]["date"], "description": desc or None, "reference": None,
-                     "debit": None, "credit": None, "balance": None, "_page": r["page"], "_bottom": r["bottom"],
+                     "debit": None, "credit": None, "balance": None, "_page": r["page"], "_bottom": r["bottom"], "_row": at,
                      "_height": r["bottom"] - r["top"], "_lines": 0,
                      "_x": next((w["x0"] for w in r["words"][r["date_words"]:] if id(w) not in used), 0.0)}
                 for c, v, mark in amounts:
@@ -344,11 +344,26 @@ def parse(pages: list[dict], order: str = "dmy", owed: bool = False) -> dict:
         if best_score is None or score > best_score:
             best, best_score = txns, score
 
+    # Several accounts in one statement: each starts at its own opening balance. Say which
+    # transactions belong to which, so each can be checked against its own balances.
+    by_account = []
+    starts = [i for i, r in enumerate(rows) if r["kind"] == "opening"]
+    if len(starts) > 1:
+        for n, first in enumerate(starts):
+            last = starts[n + 1] if n + 1 < len(starts) else len(rows)
+            mine = [i for i, t in enumerate(best) if first < t["_row"] < last]
+            value, mark = rows[first]["money"][-1][1:]
+            ends = [r for r in rows[first:last] if r["kind"] == "closing"]
+            end = ends[-1]["money"][-1][1:] if ends else None
+            by_account.append({"opening_balance": -value if mark == "-" else value,
+                               "closing_balance": None if end is None else (-end[0] if end[1] == "-" else end[0]),
+                               "first_transaction": mine[0] + 1 if mine else None, "transactions": len(mine)})
     for t in best:
         for k in [k for k in t if k.startswith("_")]:
             del t[k]
     out_total, out_count = _printed_total(rows, _TOTAL_OUT)
     in_total, in_count = _printed_total(rows, _TOTAL_IN)
     return {"transactions": best, "opening_balance": opening, "closing_balance": closing, "accounts": max(openings, 1),
+            "by_account": by_account,
             "printed": {"total_debits": out_total, "debit_count": out_count,
                         "total_credits": in_total, "credit_count": in_count}}

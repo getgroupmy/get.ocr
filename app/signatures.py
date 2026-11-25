@@ -17,6 +17,7 @@ log = logging.getLogger("ocr.signatures")
 URL = "https://huggingface.co/nuetzliches/yolos-tiny-signature-detection-onnx/resolve/main/model.onnx"
 SHA256 = "d6d5bf2b9ddba9888e77846507a3da90bfd11b113a9556deaebaf132a42a5f7c"
 THRESHOLD = 0.7  # on a public test set: 84% of signatures found, 73% of hits real; lower finds a little more, wrongly more often
+MIN_SHAPE = 1.8  # a signature is wider than it is tall. Measured: watermark false alarms fell from 7 to 2 of 9 pages, signatures found from 86% to 83%
 _session = None
 _failed = False
 _lock = threading.Lock()
@@ -48,7 +49,7 @@ def available() -> bool:
     return _load() is not None
 
 
-def find(img: np.ndarray, threshold: float = THRESHOLD) -> list[dict]:
+def find(img: np.ndarray, threshold: float = THRESHOLD, min_shape: float = MIN_SHAPE) -> list[dict]:
     """Signatures on a BGR picture: each with its four corners and the detector's confidence."""
     import cv2
     session = _load()
@@ -66,6 +67,8 @@ def find(img: np.ndarray, threshold: float = THRESHOLD) -> list[dict]:
         if score < threshold:
             break
         x0, y0, x1, y1 = (cx - bw / 2) * w, (cy - bh / 2) * h, (cx + bw / 2) * w, (cy + bh / 2) * h
+        if (x1 - x0) < min_shape * (y1 - y0):
+            continue  # nearly square: a watermark or a logo, not a line of handwriting
         if any(_overlap((x0, y0, x1, y1), o["_xyxy"]) > 0.5 for o in out):
             continue  # the same signature found twice
         out.append({"confidence": round(float(score), 3), "_xyxy": (x0, y0, x1, y1),

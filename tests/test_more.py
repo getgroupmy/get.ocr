@@ -257,3 +257,33 @@ def test_signature_detection_is_off_until_its_model_is_fetched(client, api_key, 
                        headers=api_key).json()["pages"][0]
     assert "signatures" not in page and "checkboxes" in page
     assert signatures._overlap((0, 0, 10, 10), (5, 0, 15, 10)) == 5 * 10 / 150
+
+
+def test_the_console_can_download_a_searchable_pdf_and_a_viewer_may_too(client, need_engine):
+    scan = synth.scanned_pdf([LINES])
+    r = client.post("/admin/api/searchable", files={"file": ("s.pdf", scan, "application/pdf")}, headers=ADMIN)
+    assert r.status_code == 200 and r.content[:5] == b"%PDF-"
+    viewer = client.post("/admin/api/users", json={"name": "Looks only", "role": "viewer"}, headers=ADMIN).json()
+    again = client.post("/admin/api/searchable", files={"file": ("s.pdf", scan, "application/pdf")},
+                        headers={"X-Admin-Token": viewer["token"]})
+    assert again.status_code == 200
+    assert client.post("/admin/api/searchable", files={"file": ("s.pdf", scan, "application/pdf")}).status_code == 401
+
+
+def test_a_nearly_square_hit_is_not_a_signature(monkeypatch):
+    import numpy as np
+    from app import signatures
+
+    class Fake:
+        def run(self, _, feed):
+            logits = np.full((1, 100, 2), [-9.0, 9.0], np.float32)
+            logits[0, 0], logits[0, 1] = [9.0, -9.0], [9.0, -9.0]
+            boxes = np.zeros((1, 100, 4), np.float32)
+            boxes[0, 0] = [0.5, 0.8, 0.30, 0.06]   # wide and short: a signature
+            boxes[0, 1] = [0.5, 0.4, 0.20, 0.20]   # square: a watermark or a logo
+            return logits, boxes
+
+    monkeypatch.setattr(signatures, "_load", lambda: Fake())
+    found = signatures.find(np.full((1000, 800, 3), 255, np.uint8))
+    assert len(found) == 1 and found[0]["box"][0] == [280.0, 770.0] and found[0]["confidence"] > 0.99
+    assert len(signatures.find(np.full((1000, 800, 3), 255, np.uint8), min_shape=0)) == 2

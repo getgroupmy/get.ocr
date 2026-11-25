@@ -60,19 +60,30 @@ def test_a_currency_sign_before_an_amount_is_not_description():
     assert statement.parse([page])["transactions"][0]["description"] == "PAID 12.50 USD TO SHOP"
 
 
-def test_a_statement_of_several_accounts_says_so(client, api_key, need_engine, fake_model):  # noqa: F811
-    answers, _ = fake_model
-    answers.append({"bank_name": None, "account_holder": None, "account_number": None, "currency": None,
-                    "period_start": None, "period_end": None})
-    lines = ["Date        Description        Withdrawal    Deposit    Balance", "Balance Brought Forward        1,000.00",
-             "02/01/2026    FEES    10.00        990.00", "Balance Brought Forward        5,000.00",
-             "03/01/2026    RENT    500.00        4,500.00"]
-    r = client.post("/v1/extract", files={"file": ("m.png", synth.image_bytes(lines), "image/png")},
-                    data={"type": "bank_statement"}, headers=api_key)
-    body = r.json()
-    if body.get("read_by") == "table":  # the picture's columns were found
-        one = [c for c in body["checks"] if c["name"] == "one_account"]
-        assert one and one[0]["passed"] is False and body["checks_passed"] is False
+def test_a_statement_of_several_accounts_is_split_and_each_is_checked():
+    page = table_page([
+        [("Date", 30), ("Description", 150), ("Withdrawal", 400, True), ("Deposit", 480, True), ("Balance", 580, True)],
+        [("Savings account", 30)],
+        [("Balance Brought Forward", 150), ("1,000.00", 580, True)],
+        [("02/01/2026", 30), ("FEES", 150), ("10.00", 400, True), ("990.00", 580, True)],
+        [("03/01/2026", 30), ("INTEREST", 150), ("5.00", 480, True), ("995.00", 580, True)],
+        [("Closing Balance", 150), ("995.00", 580, True)],
+        [("Current account", 30)],
+        [("Balance Brought Forward", 150), ("5,000.00", 580, True)],
+        [("03/01/2026", 30), ("RENT", 150), ("500.00", 400, True), ("4,500.00", 580, True)],
+        [("Closing Balance", 150), ("4,500.00", 580, True)],
+    ])
+    got = statement.parse([page])
+    assert got["accounts"] == 2 and got["by_account"] == [
+        {"opening_balance": 1000.0, "closing_balance": 995.0, "first_transaction": 1, "transactions": 2},
+        {"opening_balance": 5000.0, "closing_balance": 4500.0, "first_transaction": 3, "transactions": 1}]
+    # read as one list the balances cannot follow; account by account they do
+    assert extract.broken_balances(got["transactions"], got["opening_balance"]) == [3]
+    for a in got["by_account"]:
+        part = got["transactions"][a["first_transaction"] - 1:a["first_transaction"] - 1 + a["transactions"]]
+        checks = extract.statement_checks({"transactions": part, "opening_balance": a["opening_balance"],
+                                           "closing_balance": a["closing_balance"]})
+        assert [c["passed"] for c in checks] == [True, True]
 
 
 def test_transactions_in_the_layouts_accounting_systems_import():
