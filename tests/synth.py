@@ -181,7 +181,7 @@ def qr_page(text: str, lines: list[str]) -> bytes:
     return buf.getvalue()
 
 
-def order_slip(struck=(0, 2), ticked=(3,)):
+def order_slip(struck=(0, 2), ticked=(3,), pen=(170, 70, 30)):
     """A kitchen order slip as a photo would show it: each quantity stands alone in front of its
     item, a blue pen stroke crosses some, and a [ ] ends every row. Returns the PNG bytes."""
     import cv2
@@ -199,9 +199,9 @@ def order_slip(struck=(0, 2), ticked=(3,)):
         cv2.putText(img, "[", (760, y), font, 1.0, ink, 2, cv2.LINE_AA)
         cv2.putText(img, "]", (830, y), font, 1.0, ink, 2, cv2.LINE_AA)
         if n in struck:
-            cv2.line(img, (30, y + 22), (105, y - 40), (170, 70, 30), 4, cv2.LINE_AA)  # a blue pen
+            cv2.line(img, (30, y + 22), (105, y - 40), pen, 4, cv2.LINE_AA)  # a blue pen, unless told otherwise
         if n in ticked:
-            cv2.line(img, (785, y - 12), (797, y), (170, 70, 30), 4, cv2.LINE_AA)
-            cv2.line(img, (797, y), (820, y - 28), (170, 70, 30), 4, cv2.LINE_AA)
+            cv2.line(img, (785, y - 12), (797, y), pen, 4, cv2.LINE_AA)
+            cv2.line(img, (797, y), (820, y - 28), pen, 4, cv2.LINE_AA)
     cv2.putText(img, "END", (380, 600), font, 1.0, ink, 2, cv2.LINE_AA)
     return cv2.imencode(".png", img)[1].tobytes()

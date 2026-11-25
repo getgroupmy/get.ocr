@@ -121,6 +121,7 @@
             </select></div>
             <div><label for="t-engine">Reader</label><select id="t-engine">
               <option value="standard">Standard (fast, with positions)</option>
+              <option value="detect">Standard, with Jawi, Arabic, Tamil or Thai (found by itself)</option>
               <option value="jawi">Standard, with Jawi (Malay in Arabic script)</option>
               <option value="arabic">Standard, with Arabic</option>
               <option value="tamil">Standard, with Tamil</option>
@@ -153,6 +154,7 @@
           <button type="button" data-dl="rows">rows (CSV)</button>
           <button type="button" data-dl="quickbooks-3">QuickBooks, 3 columns</button>
           <button type="button" data-dl="quickbooks-4">QuickBooks, 4 columns</button>
+          <button type="button" data-dl="xero">Xero</button>
           <button type="button" data-dl="generic">accounting, generic</button>
           <button type="button" data-dl="searchable">searchable PDF</button>
         </p>
@@ -426,7 +428,7 @@ $("#try-downloads").addEventListener("click", async (ev) => {
   const f = lastResult.fields || {};
   if (kind === "searchable") {
     const fd = new FormData(); fd.append("file", $("#t-file").files[0]);
-    if (["jawi", "arabic", "tamil", "thai"].includes($("#t-engine").value)) fd.append("engine", $("#t-engine").value);
+    if (["detect", "jawi", "arabic", "tamil", "thai"].includes($("#t-engine").value)) fd.append("engine", $("#t-engine").value);
     try {
       const r = await fetch("/admin/api/searchable", { method: "POST", body: fd, headers: { "X-Admin-Token": token } });
       if (!r.ok) throw new Error(((await r.json().catch(() => null)) || {}).message || "could not make the PDF");
@@ -443,6 +445,7 @@ $("#try-downloads").addEventListener("click", async (ev) => {
   } else {
     const t = f.transactions || [];
     rows = kind === "quickbooks-3" ? [["Date", "Description", "Amount"], ...t.map((x) => [day(x.date), x.description, money((x.credit || 0) - (x.debit || 0))])]
+      : kind === "xero" ? [["*Date", "*Amount", "Payee", "Description", "Reference", "Check Number"], ...t.map((x) => [day(x.date), ((x.credit || 0) - (x.debit || 0)).toFixed(2), "", x.description, x.reference, ""])]
       : kind === "quickbooks-4" ? [["Date", "Description", "Credit", "Debit"], ...t.map((x) => [day(x.date), x.description, money(x.credit), money(x.debit)])]
       : [["Date", "Description", "Reference", "Money out", "Money in", "Balance"], ...t.map((x) => [day(x.date), x.description, x.reference, money(x.debit), money(x.credit), money(x.balance)])];
   }

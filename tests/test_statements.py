@@ -94,6 +94,8 @@ def test_transactions_in_the_layouts_accounting_systems_import():
     assert bank_csv(result, "quickbooks-3").splitlines() == ["Date,Description,Amount", "02/01/2026,RENT JAN,-1200.00", "05/01/2026,SALARY,3000.50"]
     assert bank_csv(result, "quickbooks-4").splitlines() == ["Date,Description,Credit,Debit", "02/01/2026,RENT JAN,,1200.00", "05/01/2026,SALARY,3000.50,"]
     assert bank_csv(result, "generic").splitlines()[1] == "02/01/2026,RENT JAN,,1200.00,,2800.00"
+    assert bank_csv(result, "xero").splitlines() == ["*Date,*Amount,Payee,Description,Reference,Check Number",
+                                                     "02/01/2026,-1200.00,,RENT JAN,,", "05/01/2026,3000.50,,SALARY,X1,"]
 
 
 def test_a_dutch_statement_with_european_numbers_and_one_signed_column():

@@ -48,6 +48,25 @@ def _ink(img: np.ndarray, gray: np.ndarray, box: tuple, like: tuple) -> tuple:
     return dark & ~near, pen
 
 
+def _slanted_line(gray: np.ndarray, box: tuple, height: float) -> np.ndarray:
+    """A pen stroke of the print's own colour: a straight slanted line longer than any stroke of a
+    printed letter. Returns where it runs inside the box."""
+    import cv2
+    x0, y0, x1, y1 = box
+    part = gray[y0:y1, x0:x1]
+    mask = np.zeros(part.shape, np.uint8)
+    if part.size == 0:
+        return mask > 0
+    dark = (part.astype(np.int16) < float(np.percentile(part, 80)) - 45).astype(np.uint8) * 255
+    found = cv2.HoughLinesP(dark, 1, np.pi / 180, threshold=int(1.2 * height), minLineLength=int(1.5 * height),
+                            maxLineGap=int(0.25 * height))
+    for ax, ay, bx, by in (found.reshape(-1, 4) if found is not None else []):
+        slant = abs(np.degrees(np.arctan2(by - ay, bx - ax))) % 180
+        if 20 <= min(slant, 180 - slant) <= 75:  # not a ruled line, not the stem of a letter
+            cv2.line(mask, (int(ax), int(ay)), (int(bx), int(by)), 255, max(int(0.14 * height), 2))
+    return (mask > 0) & (cv2.dilate(dark, np.ones((3, 3), np.uint8)) > 0)
+
+
 def _is_stroke(pen: np.ndarray, height: float) -> bool:
     """A pen stroke is long; a speck of colour at the edge of a letter is not."""
     if not pen.any():
@@ -215,7 +234,16 @@ def leading_quantities(img: np.ndarray, lines: list[dict]) -> list[dict]:
             wide = (max(cx0 - reach, 0), max(cy0 - reach, 0), min(cx1 + reach, W), min(cy1 + reach, H))
             # a stroke through the quantity: long, and on the digit itself, not passing beside it
             core = (int(col0), int(mid - 0.45 * h), int(col1) + 1, int(mid + 0.45 * h))
-            if _ink(img, gray, core, text_of(i))[1].sum() >= 0.03 * h * h and _is_stroke(_ink(img, gray, wide, text_of(i))[1], h):
+            reach2 = int(1.2 * h)  # a dark pen is known by its length: look further out for it
+            far = (max(cx0 - reach2, 0), max(cy0 - reach2, 0), min(cx1 + reach2, W), min(cy1 + reach2, H))
+            line = _slanted_line(gray, far, h)
+
+            def pen_in(box: tuple) -> np.ndarray:  # coloured ink, or a long slanted line of any colour
+                part = line[box[1] - far[1]:box[3] - far[1], box[0] - far[0]:box[2] - far[0]]
+                coloured = _ink(img, gray, box, text_of(i))[1]
+                return coloured | part if part.shape == coloured.shape else coloured
+            dark_pen = line.any() and (i not in anchors or len(anchors[i][0]) <= 2)  # "205 River Ridge" is no quantity
+            if pen_in(core).sum() >= 0.03 * h * h and (_is_stroke(_ink(img, gray, wide, text_of(i))[1], h) or dark_pen):
                 struck.add(i)
             if i in anchors:
                 continue
@@ -225,7 +253,8 @@ def leading_quantities(img: np.ndarray, lines: list[dict]) -> list[dict]:
                            for j, (sx0, _, sx1, _) in enumerate(spans)):
                     struck.discard(i)  # other text stands there ("Date" before ": 25/11/2026"), not a quantity
                 continue
-            printed, pen = _ink(img, gray, (cx0, cy0, cx1, cy1), text_of(i))
+            printed = _ink(img, gray, (cx0, cy0, cx1, cy1), text_of(i))[0]
+            pen = pen_in((cx0, cy0, cx1, cy1))
             if printed.sum() + pen.sum() < 0.05 * h * h:
                 continue  # nothing stands there
             if i not in struck and not _is_stroke(pen, 0.6 * h):
@@ -235,7 +264,7 @@ def leading_quantities(img: np.ndarray, lines: list[dict]) -> list[dict]:
                            if pat.size and pat.shape[0] <= cy1 - cy0 and pat.shape[1] <= cx1 - cx0), reverse=True)
             log.debug("at the quantity column of %r: %s", lines[i]["text"][:20], [(d, round(f, 2)) for f, d in fits])
             if fits and fits[0][0] >= ALIKE and (len(fits) == 1 or fits[0][1] == fits[1][1] or fits[0][0] - max(
-                    f for f, d in fits if d != fits[0][1]) >= 0.1 if any(d != fits[0][1] for f, d in fits) else True):
+                    f for f, d in fits if d != fits[0][1]) >= 0.04 if any(d != fits[0][1] for f, d in fits) else True):
                 found[i] = (fits[0][1], round(fits[0][0], 4), col0, col1)
                 known.append(mid)
     out = []

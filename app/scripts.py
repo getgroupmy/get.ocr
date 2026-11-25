@@ -322,3 +322,52 @@ def _inside(small: tuple, big: tuple) -> bool:
     both = max(0.0, min(small[2], big[2]) - max(small[0], big[0])) * max(0.0, min(small[3], big[3]) - max(small[1], big[1]))
     area = (small[2] - small[0]) * (small[3] - small[1])
     return area > 0 and both > 0.7 * area and area < 0.5 * (big[2] - big[0]) * (big[3] - big[1])
+
+
+JAWI_LETTERS = re.compile(r"[چڠڤݢڽۏ]")  # the letters Jawi has and Arabic does not
+SAMPLES = 6
+
+
+def detect(img: np.ndarray, lines: list) -> Optional[str]:
+    """Which script the lines the standard reader could not read are in: "jawi", "arabic", "tamil",
+    "thai", or None for none of them. A few of the longest unread lines are read by every model
+    that is installed, and the script whose model reads them best and most surely is taken. One
+    script for the page: a page in two of these scripts is read as the one that wins."""
+    from . import jawi
+    if img.ndim == 2:
+        import cv2
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+
+    def width(ln: dict) -> float:
+        xs = [p[0] for p in ln["box"]]
+        return max(xs) - min(xs)
+    def doubtful(ln: dict) -> bool:
+        # read unsurely, or read with gaps: the Latin names in a line of another script come out
+        # sure, with a run of spaces where the words it could not read stand
+        return ln["confidence"] < 0.8 or "  " in ln["text"].strip() or (ln["text"].endswith(" ") and len(ln["text"]) > 8)
+    unsure = sorted((ln for ln in lines if doubtful(ln)), key=width, reverse=True)[:SAMPLES]
+    if not unsure:
+        return None
+    crops = [_crop(img, ln["box"]) for ln in unsure]
+    scores: dict = {}
+    for script in SCRIPTS:
+        if available(script):
+            scores[script] = sum(conf * len(text) for text, conf in read_lines(crops, script) if is_script(text, conf, script))
+    jawi_letters = 0
+    if jawi.available():
+        import cv2
+        read = [jawi._read(cv2.cvtColor(c, cv2.COLOR_BGR2GRAY), latin=False) for c in crops if c.size]
+        ours = [(text, conf) for text, conf, sure in read if jawi.is_jawi(text, conf, sure)]
+        scores["jawi"] = sum(conf * len(text) for text, conf in ours)
+        jawi_letters = sum(len(JAWI_LETTERS.findall(text)) for text, _ in ours)
+        letters = sum(len(text) for text, _ in ours)
+        # Jawi and Arabic are the same script and both models read both. Malay in Jawi uses its
+        # own six letters all the time (about one letter in twelve here); Arabic never does.
+        if "arabic" in scores and scores["jawi"] and scores["arabic"]:
+            if jawi_letters >= max(2, letters / 40):
+                scores["arabic"] = 0.0
+            else:
+                scores["jawi"] = 0.0
+    best = max(scores, key=lambda k: scores[k]) if scores else None
+    log.debug("script scores %s", {k: round(v, 1) for k, v in scores.items()})
+    return best if best and scores[best] > 0 else None

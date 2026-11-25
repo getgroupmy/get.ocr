@@ -13,14 +13,17 @@ from .documents import Document, parse_pages
 from .errors import ApiError
 
 
-HIDDEN_FONT = Path(__file__).resolve().parent.parent / "models" / "fonts" / "hidden-text.ttf"
+_FONTS = Path(__file__).resolve().parent.parent / "models" / "fonts"
+# the font that carries the hidden text of each script (Latin script uses a standard PDF font)
+HIDDEN_FONTS = {"jawi": _FONTS / "hidden-text.ttf", "arabic": _FONTS / "hidden-text.ttf",
+                "tamil": _FONTS / "hidden-text-tamil.ttf", "thai": _FONTS / "hidden-text-thai.ttf"}
 
 
 def build(data: bytes, pages: Optional[str], max_pages: int, script: Optional[str] = None) -> tuple[bytes, int]:
     """The searchable PDF and how many pages it has. A PDF whose pages all carry text already is
     returned as it is. The invisible text uses a standard PDF font for Latin script; with
-    script "jawi" or "arabic" those lines are read and carried by a small font put into the file.
-    Tamil and Thai lines are read but not carried: the file would need a font for each."""
+    a script ("jawi", "arabic", "tamil", "thai") those lines are read and carried by a small font
+    put into the file."""
     import cv2
     import pypdfium2 as pdfium
     import pypdfium2.raw as raw
@@ -35,7 +38,7 @@ def build(data: bytes, pages: Optional[str], max_pages: int, script: Optional[st
             return data, doc.page_count
         out = pdfium.PdfDocument.new()
         font = raw.FPDFText_LoadStandardFont(out, b"Helvetica")
-        arabic = None  # loaded when the first Jawi line needs it: it adds 55 KB to the file
+        loaded: dict = {}  # a script's font is put into the file when its first line needs it: 20 to 55 KB each
         for n in numbers:
             source = doc.page(n, use_text_layer=False)
             lines, image, _ = engine.read_upright(source.image, script)
@@ -54,14 +57,16 @@ def build(data: bytes, pages: Optional[str], max_pages: int, script: Optional[st
             for ln in lines:
                 xs, ys = [p[0] * scale for p in ln["box"]], [p[1] * scale for p in ln["box"]]
                 use = font
-                if ln.get("script") in ("jawi", "arabic"):
-                    if arabic is None:
-                        glyphs = HIDDEN_FONT.read_bytes()
-                        arabic = raw.FPDFText_LoadFont(out, (ctypes.c_uint8 * len(glyphs)).from_buffer_copy(glyphs), len(glyphs),
-                                                       raw.FPDF_FONT_TRUETYPE, 1)
-                    # A PDF holds the letters where they sit on the paper, left to right; a reader
-                    # of the file turns them back into reading order. logical() undoes itself.
-                    use, text = arabic, jawi.logical(ln["text"])
+                path = HIDDEN_FONTS.get(ln.get("script") or "")
+                if path is not None:
+                    if path not in loaded:
+                        glyphs = path.read_bytes()
+                        loaded[path] = raw.FPDFText_LoadFont(out, (ctypes.c_uint8 * len(glyphs)).from_buffer_copy(glyphs),
+                                                             len(glyphs), raw.FPDF_FONT_TRUETYPE, 1)
+                    # A PDF holds the letters where they sit on the paper, left to right; a reader of
+                    # the file turns right-to-left script back into reading order. logical() undoes itself.
+                    use = loaded[path]
+                    text = jawi.logical(ln["text"]) if ln["script"] in ("jawi", "arabic") else ln["text"]
                 else:
                     text = ln["text"].encode("latin-1", "ignore").decode("latin-1")  # what the standard font can carry
                 if not text.strip() or not use:
