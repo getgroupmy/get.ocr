@@ -149,3 +149,36 @@ def test_accounts_are_told_apart_by_the_title_over_each_table():
     # one account number over every page is one account
     same = statement.parse([table_page(one), table_page(two[:3], 2)])
     assert same["accounts"] == 1 and same["by_account"] == []
+
+
+def test_a_card_statement_with_us_dates_a_minus_for_payments_and_note_rows():
+    rows = [[("Previous Balance", 30), ("1,847.32", 560, True)],
+            [("New Balance", 30), ("2,370.36", 560, True)],
+            [("Opening/Closing Date 09/01/2025 - 09/30/2025", 30)],
+            [("Post Date", 30), ("Trans Date", 130), ("Merchant Name or Transaction Description", 230), ("$ Amount", 560, True)],
+            [("09/01", 30), ("09/01", 130), ("UBER TRIP", 230), ("531.56", 560, True)],
+            [("Chevron station #0441 premium", 230), ("0.00", 560, True)],  # a note under the line, with a zero beside it
+            [("09/12", 30), ("09/11", 130), ("REWARDS REDEMPTION", 230), ("-13.84", 560, True)],
+            [("09/13", 30), ("09/13", 130), ("STARBUCKS COFFEE", 230), ("5.32", 560, True)]]
+    got = statement.parse([table_page(rows)], "dmy", owed=True)
+    # 09/13 can only be month/day, so the whole page is; a minus on a card is a payment
+    assert [(t["date"], t["debit"], t["credit"]) for t in got["transactions"]] == [
+        ("2025-09-01", 531.56, None), ("2025-09-12", None, 13.84), ("2025-09-13", 5.32, None)]
+    assert got["transactions"][0]["description"] == "UBER TRIP Chevron station #0441 premium"
+    checks = extract.statement_checks(got, got["printed"], owed=True)
+    assert checks[1]["name"] == "balance_reconciles" and checks[1]["passed"] is True
+
+
+def test_a_currency_glued_to_an_amount_is_still_an_amount():
+    assert statement._money("Rs.19,429.50") == (19429.5, "") and statement._money("S$1,250.00") == (1250.0, "")
+    assert statement._money("HK$88.00") == (88.0, "") and statement._money("Rs.") is None
+
+
+def test_a_rebate_brought_forward_is_not_a_second_account():
+    rows = [[("Date", 30), ("Description", 100), ("Withdrawal", 380, True), ("Deposit", 460, True), ("Balance", 560, True)],
+            [("Balance from previous statement", 100), ("500.00", 560, True)],
+            [("03-01-2026", 30), ("CARD PAYMENT", 100), ("60.00", 380, True), ("440.00", 560, True)],
+            [("04-01-2026", 30), ("REFUND", 100), ("10.00", 460, True), ("450.00", 560, True)],
+            [("Rebates Brought Forward", 30), ("100.00", 300, True)]]
+    got = statement.parse([table_page(rows)])
+    assert got["accounts"] == 1 and got["by_account"] == [] and len(got["transactions"]) == 2
