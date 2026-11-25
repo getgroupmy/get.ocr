@@ -29,13 +29,14 @@ SCRIPTS: dict = {
     "thai": {"lang": "th", "sha256": "de541dd83161c241ff426f7ecfd602a0ba77d686cf3ab9a6c255ea82fd08006e",
              "letters": re.compile(r"[฀-๿]"), "right_to_left": False},
 }
-MARGIN = 0.1  # the standard reader's boxes cut close: marks above and below the letters need room
+MARGIN = 0.2  # the standard reader's boxes cut close: Thai tone marks were lost with less. The empty edge is trimmed again
 MIN_SHARE = 0.6  # a line is of the script when this share of its letters are
 MIN_LETTERS = 3
 MIN_CONFIDENCE = 0.6
 SHORT, SHORT_CONFIDENCE = 6, 0.8  # a few letters only: ticks and pen strokes read as letters too
 _LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
 _MARK = re.compile(r"[ஂா-்ௗัิ-ฺ็-๎ً-ْ]")  # counted with their letter
+_NUMBER = re.compile(r"^[0-9][0-9.,/:%\-]*$")
 _engines: dict = {}
 _failed: set = set()
 _lock = threading.Lock()
@@ -99,22 +100,118 @@ def is_script(text: str, confidence: float, script: str) -> bool:
             and confidence >= (SHORT_CONFIDENCE if letters < SHORT else MIN_CONFIDENCE))
 
 
+def _read(crop: np.ndarray, script: str) -> tuple:
+    eng = _load(script)
+    crop = _trim(crop)
+    if eng is None or crop.size == 0 or min(crop.shape[:2]) < 4:
+        return "", 0.0
+    with _lock:
+        got = eng(crop, use_det=False, use_cls=False, use_rec=True)
+    if got is None or not got.txts:
+        return "", 0.0
+    return str(got.txts[0]).strip(), float(got.scores[0])
+
+
 def read_lines(crops: list, script: str) -> list:
     """Cropped lines (BGR pictures) to (text in reading order, confidence) each."""
-    eng = _load(script)
     out = []
     for crop in crops:
-        crop = _trim(crop)
-        if eng is None or crop.size == 0 or min(crop.shape[:2]) < 4:
-            out.append(("", 0.0))
-            continue
-        with _lock:
-            got = eng(crop, use_det=False, use_cls=False, use_rec=True)
-        if got is None or not got.txts:
-            out.append(("", 0.0))
-        else:
-            out.append((str(got.txts[0]).strip(), float(got.scores[0])))
+        text, conf = _read(crop, script)
+        if SCRIPTS[script]["right_to_left"] and text:
+            text, conf = _with_numbers(_trim(crop), text, conf, script)
+        out.append((text, conf))
     return out
+
+
+def _words(crop: np.ndarray, share: float = 0.3) -> list:
+    """Where the words of a line are: (left, right) of each run of ink, split at gaps wider than
+    this share of the line's height."""
+    import cv2
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+    _, ink = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    if 2 * int((ink == 0).sum()) > ink.size:
+        ink = 255 - ink
+    filled = (ink == 0).any(axis=0)
+    gap = max(int(share * crop.shape[0]), 2)
+    runs, start, last = [], None, None
+    for x, on in enumerate(filled):
+        if not on:
+            continue
+        if start is None:
+            start = x
+        elif x - last > gap:
+            runs.append((start, last + 1))
+            start = x
+        last = x
+    if start is not None:
+        runs.append((start, last + 1))
+    return runs
+
+
+def _with_numbers(crop: np.ndarray, text: str, conf: float, script: str) -> tuple:
+    """The Arabic model loses Western digits inside a line ("250" came out as "5", a date as
+    nothing). The standard reader reads them and skips the Arabic: find the words in which it
+    reads a number, cut the number out of each, read the Arabic between the numbers with the
+    Arabic model, and put the pieces together right to left."""
+    from . import engine
+    std = engine._engine()
+    runs = _words(crop)
+    if std is None or len(runs) < 2 or len(runs) > 40:
+        return text, conf
+
+    def standard(x0: int, x1: int) -> tuple:
+        piece = _trim(crop[:, max(x0 - 2, 0):x1 + 2])
+        if piece.size == 0 or min(piece.shape[:2]) < 4:
+            return "", 0.0
+        with engine._run_lock:  # the library remembers its last switches: name them all
+            got = std(piece, use_det=False, use_cls=False, use_rec=True, text_score=0.5)
+        return (str(got.txts[0]).strip(), float(got.scores[0])) if got is not None and got.txts else ("", 0.0)
+
+    pieces = []  # (left, right, the number or None), left to right
+    for x0, x1 in runs:
+        word, score = standard(x0, x1) if x1 - x0 >= 0.5 * crop.shape[0] else ("", 0.0)
+        if not (score >= 0.9 and _NUMBER.match(word) and sum(c.isdigit() for c in word) >= 2):
+            pieces.append((x0, x1, None))
+            continue
+        # the number may share its run of ink with an Arabic word: find the shortest stretch of
+        # it in which the standard reader still reads the same number
+        bits = [(x0 + a, x0 + b) for a, b in _words(crop[:, x0:x1], 0.08)]
+        lo, hi = 0, len(bits) - 1
+        for end in range(len(bits)):  # the shortest stretch from the left that holds the whole number
+            if standard(bits[0][0], bits[end][1])[0] == word:
+                hi = end
+                break
+        for start in range(hi, -1, -1):  # and the shortest from its right end
+            if standard(bits[start][0], bits[hi][1])[0] == word:
+                lo = start
+                break
+        n0, n1 = bits[lo][0], bits[hi][1]
+        if SCRIPTS[script]["letters"].search(_read(crop[:, max(n0 - 2, 0):n1 + 2], script)[0]):
+            pieces.append((x0, x1, None))  # Arabic letters are still in it: leave the line to the Arabic model
+            continue
+        if n0 > x0:
+            pieces.append((x0, bits[lo - 1][1], None))
+        pieces.append((n0, n1, (word, score)))
+        if n1 < x1:
+            pieces.append((bits[hi + 1][0], x1, None))
+    if not any(p[2] for p in pieces):
+        return text, conf
+    parts, scores, i = [], [], len(pieces) - 1
+    while i >= 0:  # from the right
+        if pieces[i][2]:
+            parts.append(pieces[i][2][0])
+            scores.append(pieces[i][2][1])
+            i -= 1
+            continue
+        j = i
+        while j >= 0 and not pieces[j][2]:
+            j -= 1
+        piece, score = _read(crop[:, max(pieces[j + 1][0] - 2, 0):pieces[i][1] + 2], script)
+        if piece:
+            parts.append(piece)
+            scores.append(score)
+        i = j
+    return " ".join(parts), float(np.mean(scores)) if scores else conf
 
 
 def _trim(crop: np.ndarray) -> np.ndarray:
