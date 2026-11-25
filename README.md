@@ -694,12 +694,20 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
     newspaper pages turned on their head came out upright.
   - *Real newspaper pages* (8 from the public jawi-layout-v1 set): read as Jawi with an average
     confidence of 0.83 to 0.97 a page. There is no transcription to count mistakes against.
-  - **Not read:** handwritten Jawi (not tried; the model was trained on print); Latin words inside a Jawi line (the model knows only some
-    capital letters, so "RM", a name or a web address inside the line comes out wrong; a line
-    wholly in Latin letters is fine); Arabic vowel marks. Decorative and poster typefaces read
-    badly. Whether "kg 250" on the paper was typed "250 kg" cannot be told from the paper and is
-    left as printed. The searchable PDF carries Latin text only. Field extraction from Jawi text
-    by the language model has not been tried.
+  - *Latin words inside a Jawi line.* The Jawi model knows only some capital letters, so each
+    word it read in Latin letters, or was unsure of, is read again by the standard reader and
+    taken when that reader is sure. On the 36 test lines in text typefaces that hold Latin words
+    (names, "RM2", web addresses), 34 of 59 such words now come out exactly, from none before, and
+    the characters wrong on those lines fell from 18.6% to 11.1%. Lines without Latin words read
+    as before (1.6%). So about four Latin words in ten inside a Jawi line are still wrong.
+  - *Searchable PDF.* With `engine=jawi` the Jawi lines are carried in the PDF (a 55 KB font is
+    put into the file for them) and are found by a search for the word as typed; checked with two
+    PDF text extractors.
+  - **Not read:** handwritten Jawi. No model for it could be built in: the only one found is a
+    9 GB vision model with no licence stated, and no transcribed handwriting was found to test
+    with. Arabic vowel marks. Decorative and poster typefaces read badly. Whether "kg 250" on the
+    paper was typed "250 kg" cannot be told from the paper and is left as printed. Field
+    extraction from Jawi text by the language model has not been tried.
 - **Rotated pages.** On a page that is upside down or on its side the lines are still read, but
   they come out in the wrong order (bottom line first, or all on one row). Rotate it upright before sending.
 - **How good the model is.** On the Mac mini `qwen2.5:7b` answers in 30 to 40 seconds per call. It
@@ -730,11 +738,16 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
     transactions) and fail the balance check because the documents' own printed balances do not
     follow, which is what the check is for; 2 card statements are read (19 and 30 transactions):
     nobody verified those rows against the pages, and the 30-row one fails its opening-to-closing
-    check for a reason not looked into; 2 hold several
-    accounts and are read as one list, now reported by a failing `one_account` check; 1 scanned
-    copy finds 147 of 162 rows; 3 give nothing (Dutch and French layouts with European numbers or
-    the date inside the description, and a one-row example). No Malaysian bank account statement
-    other than Hong Leong was found to test.
+    check for a reason not looked into; the Hong Kong statement with two accounts is split into
+    them by the title over each table (15 and 10 transactions) and each passes its running-balance
+    check; the Dutch one (European numbers, one signed amount column, no running balance: 22
+    transactions) passes its opening-to-closing and printed-totals checks; the French-Canadian one
+    (thousands set apart by a space, French month names: 25 transactions) passes all three; 1
+    scanned copy finds 147 of 162 rows; 1 is a bank's illustrated guide to its consolidated
+    statement, not a statement, and reads as 13 rows that fail the checks; 1 is a one-row example
+    and gives nothing. Those three European and multi-account samples are synthetic benchmark
+    documents, one of each kind: other Dutch, French or German banks' layouts are untested. No
+    Malaysian bank account statement other than Hong Leong was found to test.
   - *Not measured:* tick boxes (14 were reported on the 50 forms; nobody checked them) and bundle
     splitting.
 - **Tried and not shipped, with the measurements:**
@@ -753,7 +766,10 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
   a stamp is present; identity documents (get.ekyc does those). 
 - **Statement layouts.** The table reader was checked against one real 20-page Hong Leong Bank
   statement (192 transactions, equal to the totals the bank prints) and made-up ones. It expects a
-  date at the start of each transaction and right-aligned amount columns. Other banks' layouts are
+  date at the start of each transaction and right-aligned amount columns. Amounts may be written
+  1,250.00, 1.250,00, 1 250,00 or 1'250.00; month names may be English, Malay, Dutch, French or
+  German; one column of signed amounts is read as money in and out. A statement of several
+  accounts is split where each account has its own opening balance or its own titled table. Other banks' layouts are
   untested; the three checks say when a reading does not add up.
 - **Which kinds were tried for real.** Only bank statements have run on real documents with the real
   model. Every other kind, including the whole catalogue, was built from general knowledge of what
