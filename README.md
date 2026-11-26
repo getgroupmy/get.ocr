@@ -182,6 +182,14 @@ What to know:
   signed in"; five wrong passwords for a name from one address lock that pair for 15 minutes;
   passwords are stored hashed (scrypt); rotating the owner's token signs everyone out. An admin
   can do everything except manage console users, which stays with the owner's token.
+- **Two-step sign-in.** Anyone who signs in with a username and password can add a second step
+  under **People > Your sign-in**: scan the QR code with an authenticator app (Google
+  Authenticator, Microsoft Authenticator, Authy, 1Password) and confirm with the code it shows.
+  From then on the sign-in asks for the app's six-digit code after the password; a code works
+  once. Someone who loses their phone: the owner turns it off for them in the People list, or
+  `./scripts/add_console_user.sh <name>` on the Mac sets a new password and turns it off. It
+  covers password sign-ins only: the owner's token and a user's own token sign in without it, so
+  keep those out of everyday use.
 - **The console is on the internet**, at `https://ocr.getcdn.link/admin`, as get.ekyc's and
   get.route's are. What stands between it and anyone is the admin token and the console users'
   tokens, which are long random values; an address that sends `OCR_ADMIN_TRIES` (default 10) wrong
@@ -229,7 +237,13 @@ On the Mac mini, from `~/get.ocr`:
 
 - **Backups** hold the encrypted database and queued files. They are useless without
   `OCR_STORAGE_KEY`: keep that key in a password manager, never beside the backups. To run the
-  backup nightly: `crontab -e`, then `15 2 * * * cd ~/get.ocr && ./scripts/backup.sh /path >> backup.log 2>&1`.
+  backup every night on the Mac: `./scripts/install_backup.sh /Volumes/NAS/ocr` (or no folder,
+  for `./backups`). It makes a first backup at once, then one at 02:15 every night whether or not
+  anyone is logged in, and writes `backup.log`; `--uninstall` stops it. `/health` then shows
+  `last_backup_at`, and a night that is missed is reported like any other problem (`OCR_ALERT_WEBHOOK`).
+  A folder on another disk or the NAS survives the Mac's disk failing; `./backups` does not.
+  **The installer has not been run on a Mac yet**; the backup script itself has. On Linux:
+  `crontab -e`, then `15 2 * * * cd ~/get.ocr && ./scripts/backup.sh /path >> backup.log 2>&1`.
 - **Accuracy.** `scripts/evaluate.py` runs every document in a folder against its expected answer and
   prints, per kind, how many fields were right, how often the checks passed and the time per
   document. `--models a,b` compares installed models; `--engine glm` reads with the vision model.

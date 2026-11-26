@@ -144,6 +144,18 @@ class AdminPassword(Base):
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
 
 
+class AdminTotp(Base):
+    """The second step of a console user's sign-in: the secret their authenticator app holds,
+    encrypted. confirmed: they have proved the app shows the right codes. last_step: the last
+    code used, so the same code cannot be used twice."""
+    __tablename__ = "admin_totp"
+    user_id: Mapped[str] = mapped_column(ForeignKey("admin_users.id"), primary_key=True)
+    secret: Mapped[bytes] = mapped_column(LargeBinary)
+    confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_step: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class Audit(Base):
     """What was done in the console and when. Names and ids only, never keys or document content."""
     __tablename__ = "audit"

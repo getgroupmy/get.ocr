@@ -7,7 +7,8 @@ import queue
 import re
 import threading
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
+from pathlib import Path
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -381,6 +382,15 @@ def start() -> None:
     threading.Thread(target=_keep_house, daemon=True, name="ocr-housekeeping").start()
 
 
+def last_backup() -> Optional[datetime]:
+    """When scripts/backup.sh last finished (it leaves the time in the data folder), or None."""
+    try:
+        text = (Path(get_settings().data_dir) / "last_backup").read_text().strip()
+        return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ")
+    except (OSError, ValueError):
+        return None
+
+
 def problems() -> dict:
     """What is wrong right now, by name. Empty when all is well."""
     import shutil
@@ -397,6 +407,9 @@ def problems() -> dict:
             found["disk"] = f"only {free:.1f} GB free where the data is kept"
     except OSError:
         found["disk"] = "the data folder cannot be read"
+    last = last_backup()
+    if (Path(s.data_dir) / "backup_scheduled").exists() and (last is None or utcnow() - last > timedelta(hours=36)):
+        found["backup"] = "the nightly backup has not run for more than a day" if last else "the nightly backup has never run"
     with session_scope() as db:
         oldest = db.scalar(select(Job.created_at).where(Job.status.in_(("queued", "processing")))
                            .order_by(Job.created_at).limit(1))

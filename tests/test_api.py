@@ -373,3 +373,84 @@ def test_passwords_are_hashed_without_the_function_the_macs_python_lacks(monkeyp
     stored = auth.hash_password("kata-laluan-panjang")
     assert stored.startswith("scrypt$") and auth.check_password("kata-laluan-panjang", stored)
     assert not auth.check_password("kata-laluan-lain", stored) and not auth.check_password("x", "rosak")
+
+
+def test_two_step_sign_in_with_an_authenticator_app(client, monkeypatch):
+    import base64
+    import time
+
+    from app import auth
+    from app.routers import session
+    session._failures.clear()
+    client.post("/admin/api/users", json={"name": "Siti", "role": "admin", "username": "siti", "password": "kata-laluan-siti"}, headers=ADMIN)
+    signed = {"X-Admin-Token": client.post("/admin/api/login", json={"username": "siti", "password": "kata-laluan-siti"}).json()["token"]}
+    assert client.get("/admin/api/2fa", headers=signed).json() == {"on": False}
+    assert client.get("/admin/api/2fa", headers=ADMIN).status_code == 401  # a token sign-in has no second step to set
+    setup = client.post("/admin/api/2fa/setup", headers=signed).json()
+    assert setup["address"].startswith("otpauth://totp/GET%20OCR:siti?secret=" + setup["key"]) and setup["qr"].startswith("data:image/png;base64,")
+    secret = base64.b32decode(setup["key"] + "=" * (-len(setup["key"]) % 8))
+    now = int(time.time() // 30)
+    # RFC 6238's own test value, to know the codes are the ones every authenticator app makes
+    assert auth.totp_code(b"12345678901234567890", 59 // 30) == "287082"
+    # until the app is proved to have the secret, the password alone still signs in
+    assert client.post("/admin/api/login", json={"username": "siti", "password": "kata-laluan-siti"}).status_code == 200
+    assert client.post("/admin/api/2fa/confirm", json={"code": "000000"}, headers=signed).status_code == 422
+    assert client.post("/admin/api/2fa/confirm", json={"code": auth.totp_code(secret, now)}, headers=signed).json() == {"on": True}
+    # now the password is not enough
+    need = client.post("/admin/api/login", json={"username": "siti", "password": "kata-laluan-siti"})
+    assert need.status_code == 401 and need.json()["error"] == "code_required"
+    assert client.post("/admin/api/login", json={"username": "siti", "password": "salah-salah-salah", "code": auth.totp_code(secret, now + 1)}).json()["error"] == "unauthorized"
+    assert client.post("/admin/api/login", json={"username": "siti", "password": "kata-laluan-siti", "code": "123456"}).status_code == 401
+    # the code just used to confirm cannot be used again; the next one works, once
+    assert client.post("/admin/api/login", json={"username": "siti", "password": "kata-laluan-siti", "code": auth.totp_code(secret, now)}).status_code == 401
+    good = client.post("/admin/api/login", json={"username": "siti", "password": "kata-laluan-siti", "code": auth.totp_code(secret, now + 1)})
+    assert good.status_code == 200 and good.json()["two_step"] is True
+    assert client.post("/admin/api/login", json={"username": "siti", "password": "kata-laluan-siti", "code": auth.totp_code(secret, now + 1)}).status_code == 401
+    session._failures.clear()
+    assert next(u for u in client.get("/admin/api/users", headers=ADMIN).json()["users"] if u["username"] == "siti")["two_step"] is True
+    # setting it up again needs it off first; off needs the password
+    assert client.post("/admin/api/2fa/setup", headers=signed).status_code == 409
+    assert client.post("/admin/api/2fa/off", json={"password": "bukan"}, headers=signed).status_code == 403
+    assert client.post("/admin/api/2fa/off", json={"password": "kata-laluan-siti"}, headers=signed).json() == {"on": False}
+    assert client.post("/admin/api/login", json={"username": "siti", "password": "kata-laluan-siti"}).status_code == 200
+    # lost phone: the owner turns it off
+    setup = client.post("/admin/api/2fa/setup", headers=signed).json()
+    secret = base64.b32decode(setup["key"] + "=" * (-len(setup["key"]) % 8))
+    client.post("/admin/api/2fa/confirm", json={"code": auth.totp_code(secret, now)}, headers=signed)
+    uid = next(u for u in client.get("/admin/api/users", headers=ADMIN).json()["users"] if u["username"] == "siti")["id"]
+    assert client.delete(f"/admin/api/users/{uid}/2fa", headers=signed).status_code == 403
+    assert client.delete(f"/admin/api/users/{uid}/2fa", headers=ADMIN).status_code == 204
+    assert client.post("/admin/api/login", json={"username": "siti", "password": "kata-laluan-siti"}).status_code == 200
+    session._failures.clear()
+
+
+def test_a_phones_clock_may_be_half_a_minute_out_but_no_more():
+    from app import auth
+    secret, now = b"12345678901234567890", 1_800_000_000.0
+    step = int(now // 30)
+    assert auth.totp_step_for(secret, auth.totp_code(secret, step), now=now) == step
+    assert auth.totp_step_for(secret, " " + auth.totp_code(secret, step - 1)[:3] + " " + auth.totp_code(secret, step - 1)[3:], now=now) == step - 1
+    assert auth.totp_step_for(secret, auth.totp_code(secret, step + 1), now=now) == step + 1
+    assert auth.totp_step_for(secret, auth.totp_code(secret, step - 2), now=now) is None
+    assert auth.totp_step_for(secret, auth.totp_code(secret, step), after=step, now=now) is None  # used already
+    assert auth.totp_step_for(secret, "12345", now=now) is None
+
+
+def test_health_says_when_the_last_backup_was_and_a_missed_night_is_a_problem(client):
+    from datetime import timedelta
+    from pathlib import Path
+
+    from app import service
+    from app.config import get_settings
+    from app.db import utcnow
+    data = Path(get_settings().data_dir)
+    assert client.get("/health").json()["last_backup_at"] is None and "backup" not in service.problems()
+    (data / "backup_scheduled").touch()
+    assert "never run" in service.problems()["backup"]
+    (data / "last_backup").write_text(utcnow().strftime("%Y-%m-%dT%H:%M:%SZ") + "\n")
+    assert client.get("/health").json()["last_backup_at"].endswith("Z") and "backup" not in service.problems()
+    (data / "last_backup").write_text((utcnow() - timedelta(hours=40)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    assert "more than a day" in service.problems()["backup"]
+    (data / "backup_scheduled").unlink()
+    (data / "last_backup").unlink()
+    assert "backup" not in service.problems()
