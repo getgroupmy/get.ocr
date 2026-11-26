@@ -733,3 +733,38 @@ def test_a_text_pdf_without_pictures_is_left_as_it_is(client, api_key, need_engi
     page = client.post("/v1/ocr", files={"file": ("a.pdf", synth.text_pdf("Invoice 2026-0042 for the goods delivered"),
                                                   "application/pdf")}, headers=api_key).json()["pages"][0]
     assert "added_lines" not in page and page["text"] == "Invoice 2026-0042 for the goods delivered"
+
+
+def test_a_text_pdf_gives_the_place_of_each_line_and_of_the_added_ones(client, api_key, need_engine):
+    pdf = synth.letterhead_pdf(["NORTHWIND TRADING"], "Invoice 2026-0042 for the goods delivered")
+    page = client.post("/v1/ocr", files={"file": ("a.pdf", pdf, "application/pdf")}, headers=api_key).json()["pages"][0]
+    stored = [ln for ln in page["lines"] if not ln.get("added")]
+    assert [ln["text"] for ln in stored] == ["Invoice 2026-0042 for the goods delivered"] and stored[0]["confidence"] is None
+    assert 45 < stored[0]["box"][0][0] < 55 and 270 < stored[0]["box"][0][1] < 300  # points from the top left
+    added = [ln for ln in page["lines"] if ln.get("added")]
+    assert [ln["text"] for ln in added] == ["NORTHWIND TRADING"]
+    assert 40 < added[0]["box"][0][0] < 300 and 40 < added[0]["box"][0][1] < 140  # inside the picture at the top
+    brief = client.post("/v1/ocr", files={"file": ("a.pdf", pdf, "application/pdf")}, data={"detail": "text"},
+                        headers=api_key).json()["pages"][0]
+    assert "lines" not in brief and brief["added_lines"][0]["text"] == "NORTHWIND TRADING"
+
+
+def test_pieces_far_apart_and_off_the_same_baseline_are_separate_lines():
+    from app.documents import _apart
+
+    def piece(text, x0, y0, x1, y1):
+        return {"text": text, "confidence": None, "box": [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]}
+    address = [piece("68100 KAJANG", 19, 222.5, 120, 229.1), piece("KETUA PENGARAH", 323, 224.0, 391, 229.6)]
+    assert _apart("68100 KAJANG KETUA PENGARAH", address, 419) == "68100 KAJANG\nKETUA PENGARAH"
+    row = [piece("Widget A4", 19, 222.5, 120, 229.1), piece("RM 120.00", 323, 222.5, 391, 229.1)]  # a table row
+    assert _apart("Widget A4 RM 120.00", row, 419) == "Widget A4 RM 120.00"
+
+
+def test_a_table_read_by_the_vision_model_lists_what_else_is_on_the_page(client, api_key, need_engine, monkeypatch):
+    monkeypatch.setattr(llm, "vision_ready", lambda *a, **k: True)
+    monkeypatch.setattr(llm, "read_image", lambda *a, **k: "<fcel>Widget<fcel>120.00<nl>")
+    png = synth.image_bytes(["NORTHWIND TRADING", "Widget 120.00"])
+    page = client.post("/v1/ocr", files={"file": ("a.png", png, "image/png")}, data={"engine": "vision", "task": "table"},
+                       headers=api_key).json()["pages"][0]
+    assert page["text"].startswith("<table>") and "NORTHWIND" not in page["text"]
+    assert [a["text"] for a in page["other_lines"]] == ["NORTHWIND TRADING"] and "added_lines" not in page

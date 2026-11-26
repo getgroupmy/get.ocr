@@ -471,6 +471,8 @@ $("#try-form").addEventListener("submit", async (ev) => {
     $("#try-out").hidden = false;
     $("#try-meta").textContent = r.pages.length + " of " + r.page_count + " page(s) in " + (r.duration_ms / 1000).toFixed(2) + " s";
     $("#try-text").textContent = r.text || "(no text found)";
+    const added = (r.pages || []).flatMap((p) => p.added_lines || []).map((a) => a.text);
+    if (added.length) $("#try-meta").textContent += " · " + added.length + " line(s) the reader left out were added by the standard reader: " + added.join(" | ");
     showFields(r);
     $("#try-json").textContent = JSON.stringify(r, (k, v) => (k === "preview" ? "(picture)" : v), 2);
     showFound(r); lastResult = r;
