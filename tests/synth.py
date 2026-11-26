@@ -64,6 +64,39 @@ def text_pdf(text: str) -> bytes:
     return bytes(out)
 
 
+def letterhead_pdf(picture_lines: list[str], text: str) -> bytes:
+    """A one-page PDF with stored text and, above it, a picture that holds words of its own."""
+    im = page_image(picture_lines).convert("RGB")
+    im = im.crop((0, 0, im.width, min(im.height, 160)))
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=92)
+    jpeg = buf.getvalue()
+    w = 500
+    h = round(w * im.height / im.width)
+    stream = f"q {w} 0 0 {h} 50 {740 - h} cm /Im1 Do Q BT /F1 14 Tf 50 500 Td ({text}) Tj ET".encode()
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> /XObject << /Im1 6 0 R >> >> >>",
+        b"<< /Length %d >>\nstream\n%s\nendstream" % (len(stream), stream),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceRGB /BitsPerComponent 8 "
+        b"/Filter /DCTDecode /Length %d >>\nstream\n%s\nendstream" % (im.width, im.height, len(jpeg), jpeg),
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for i, body in enumerate(objs, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n%s\nendobj\n" % (i, body)
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1)
+    for off in offsets:
+        out += b"%010d 00000 n \n" % off
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)
+    return bytes(out)
+
+
 def _pdf(streams: list[bytes]) -> bytes:
     """A PDF with one page per content stream (Helvetica as F1, A4)."""
     n = len(streams)

@@ -15,7 +15,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 ME="$(id -un)"
 JOB=my.getride.ocr.backup
 DIR=/Library/LaunchDaemons
-DATA="$(grep -E '^OCR_DATA_DIR=' "$REPO/.env" 2>/dev/null | tail -1 | cut -d= -f2-)"; DATA="${DATA:-./data}"
+DATA="$({ grep -E '^OCR_DATA_DIR=' "$REPO/.env" 2>/dev/null || true; } | tail -1 | cut -d= -f2-)"; DATA="${DATA:-./data}"
 case "$DATA" in /*) ;; *) DATA="$REPO/${DATA#./}" ;; esac
 
 stop() {

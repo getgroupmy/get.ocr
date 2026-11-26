@@ -127,6 +127,15 @@ also `seal` (the words of a stamp) and `chart` (a chart as a table). A table com
 with merged cells. Like GLM-OCR it gives the text of the whole page: no line positions, no
 confidence, and an order slip's pen strokes and tick boxes are not reported.
 
+**Lines a reader left out are added.** A vision model can skip a heading in a coloured button or
+the small print under a crest, and the stored text of a PDF has no words that are part of a
+picture on the page (a letterhead, a logo). In both cases the standard reader looks at the same
+page, and what it read clearly (90% sure or more) and the other left out is put into the text
+near where it sits on the page. Those lines are also listed per page as `added_lines`, so an app
+can tell which came this way. This applies to `task=text`; for a PDF with stored text the
+pictures on up to `OCR_PICTURE_TEXT_PAGES` pages per request are read (default 10, 0 turns it
+off), which adds about a second for a page that is one large picture.
+
 GET.ocr Vision is the name of the reader in this service. The model behind it is
 [MiniCPM-OCR 1.0](https://github.com/OpenBMB/MiniCPM-OCR) by OpenBMB, licensed under Apache-2.0 and
 run here unchanged; that credit stays with the model wherever the reader is described.

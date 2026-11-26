@@ -6,7 +6,7 @@
 # (a password manager), never beside the backups. Archives older than 30 days in the folder are removed.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-DATA="$(grep -E '^OCR_DATA_DIR=' .env | tail -1 | cut -d= -f2-)"; DATA="${DATA:-./data}"
+DATA="$({ grep -E '^OCR_DATA_DIR=' .env 2>/dev/null || true; } | tail -1 | cut -d= -f2-)"; DATA="${DATA:-./data}"
 DEST="${1:-./backups}"
 [ -d "$DATA" ] || { echo "No data folder at $DATA"; exit 1; }
 mkdir -p "$DEST"

@@ -570,7 +570,7 @@ def test_vision_reader_is_off_until_its_model_is_installed(client, api_key, need
 
 
 def test_vision_reader_reads_the_picture_of_each_page(client, api_key, need_engine, fake_vision):
-    r = client.post("/v1/ocr", files={"file": ("a.png", synth.image_bytes(["anything"]), "image/png")},
+    r = client.post("/v1/ocr", files={"file": ("a.png", synth.image_bytes(["Kepada Encik Ali,", "Bayaran RM 250.00 diterima."]), "image/png")},
                     data={"engine": "glm"}, headers=api_key)
     assert r.status_code == 200, r.text
     body = r.json()
@@ -693,3 +693,43 @@ def test_a_table_in_cell_marks_becomes_html():
     from app import tablegrid
     cells = tablegrid.cells_of(html)
     assert any(c["text"] == "Amount (RM)" and c["colspan"] == 2 for c in cells)
+
+
+# --- words one reader left out, taken from the standard reader --------------------------------
+def test_vision_reading_gets_the_printed_lines_the_model_left_out(client, api_key, need_engine, fake_vision):
+    png = synth.image_bytes(["MINISTRY OF TRANSPORT", "Kepada Encik Ali,", "Bayaran RM 250.00 diterima."])
+    r = client.post("/v1/ocr", files={"file": ("a.png", png, "image/png")}, data={"engine": "vision"}, headers=api_key)
+    assert r.status_code == 200, r.text
+    page = r.json()["pages"][0]
+    assert [a["text"] for a in page["added_lines"]] == ["MINISTRY OF TRANSPORT"]
+    assert page["text"].split("\n") == ["MINISTRY OF TRANSPORT", "Kepada Encik Ali,", "Bayaran RM 250.00 diterima."]
+
+
+def test_nothing_is_added_when_the_vision_model_read_it_all(client, api_key, need_engine, fake_vision):
+    png = synth.image_bytes(["Kepada Encik Ali,", "Bayaran RM 250.00 diterima."])
+    page = client.post("/v1/ocr", files={"file": ("a.png", png, "image/png")}, data={"engine": "vision"},
+                       headers=api_key).json()["pages"][0]
+    assert "added_lines" not in page and page["text"].split("\n") == ["Kepada Encik Ali,", "Bayaran RM 250.00 diterima."]
+
+
+def test_a_line_the_model_read_a_little_differently_is_not_added_twice():
+    from app import gaps
+    lines = [{"text": "Bayaran RM 25O.00 diterima", "confidence": 0.99, "box": [[0, 0], [300, 0], [300, 20], [0, 20]]},
+             {"text": "ab", "confidence": 0.99, "box": [[0, 40], [30, 40], [30, 60], [0, 60]]},
+             {"text": "TIDAK PASTI", "confidence": 0.6, "box": [[0, 80], [200, 80], [200, 100], [0, 100]]}]
+    assert gaps.fill("Bayaran RM 250.00 diterima.", lines) == ("Bayaran RM 250.00 diterima.", [])
+
+
+def test_words_in_a_picture_on_a_text_pdf_are_read_too(client, api_key, need_engine):
+    pdf = synth.letterhead_pdf(["NORTHWIND TRADING"], "Invoice 2026-0042 for the goods delivered")
+    r = client.post("/v1/ocr", files={"file": ("a.pdf", pdf, "application/pdf")}, headers=api_key)
+    assert r.status_code == 200, r.text
+    page = r.json()["pages"][0]
+    assert page["source"] == "text_layer" and [a["text"] for a in page["added_lines"]] == ["NORTHWIND TRADING"]
+    assert page["text"].split("\n") == ["NORTHWIND TRADING", "Invoice 2026-0042 for the goods delivered"]
+
+
+def test_a_text_pdf_without_pictures_is_left_as_it_is(client, api_key, need_engine):
+    page = client.post("/v1/ocr", files={"file": ("a.pdf", synth.text_pdf("Invoice 2026-0042 for the goods delivered"),
+                                                  "application/pdf")}, headers=api_key).json()["pages"][0]
+    assert "added_lines" not in page and page["text"] == "Invoice 2026-0042 for the goods delivered"
