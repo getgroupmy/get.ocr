@@ -3,7 +3,8 @@ it says. They run on the model server on this machine, like the extraction model
 handwriting and difficult pictures the standard reader cannot, but give the text of the whole
 page with no position or confidence for each line, and they are slower.
 
-Two can be installed side by side: GLM-OCR ("glm") and MiniCPM-OCR 1.0 ("minicpm")."""
+Two can be installed side by side: GLM-OCR ("glm") and GET.ocr Vision ("vision"). The model
+behind GET.ocr Vision is MiniCPM-OCR 1.0 by OpenBMB (Apache-2.0), run here unchanged."""
 from __future__ import annotations
 
 import html
@@ -18,14 +19,14 @@ NAME = "glm-ocr"
 # The prompts the models were trained on, as their model cards give them. Both take the first three.
 TASKS = {"text": "Text Recognition:", "table": "Table Recognition:", "formula": "Formula Recognition:",
          "seal": "Seal Recognition:", "chart": "Chart to Table:"}
-ONLY_MINICPM = ("seal", "chart")
+ONLY_SECOND = ("seal", "chart")  # tasks only the second reader was trained for
 _FENCE = re.compile(r"^\s*```[a-zA-Z]*\s*\n(.*?)\n?\s*```\s*$", re.S)
 _OTSL = re.compile(r"<(fcel|ecel|lcel|ucel|xcel|ched|rhed|srow|nl)>")
 
 
 def model(reader: str = "glm") -> str:
     s = get_settings()
-    return s.vlm2_model if reader == "minicpm" else s.vlm_model
+    return s.vlm2_model if reader == "vision" else s.vlm_model
 
 
 def available(reader: str = "glm") -> bool:
@@ -33,7 +34,7 @@ def available(reader: str = "glm") -> bool:
 
 
 def otsl_to_html(text: str) -> str:
-    """MiniCPM-OCR writes a table as a run of cell marks (OTSL): <fcel>text for a cell, <ecel> for
+    """GET.ocr Vision's model writes a table as a run of cell marks (OTSL): <fcel>text for a cell, <ecel> for
     an empty one, <lcel> and <ucel> for a place taken by the cell to its left or above, <nl> at
     the end of a row. Turned into an HTML table here, which is what GLM-OCR gives and what the
     rest of the service reads."""

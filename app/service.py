@@ -21,8 +21,8 @@ from .errors import ApiError
 
 log = logging.getLogger("ocr.service")
 DETAILS = ("lines", "text")
-READERS = ("standard", "detect", "jawi", "arabic", "tamil", "thai", "glm", "minicpm")
-VISION = ("glm", "minicpm")
+READERS = ("standard", "detect", "jawi", "arabic", "tamil", "thai", "glm", "vision")
+VISION = ("glm", "vision")
 
 
 def clean_options(pages: Optional[str], detail: Optional[str], force_ocr: bool, extract_type: Optional[str] = None,
@@ -34,8 +34,8 @@ def clean_options(pages: Optional[str], detail: Optional[str], force_ocr: bool, 
     task = (task or "text").strip().lower()
     if task not in vision.TASKS:
         raise ApiError(422, "bad_task", "task must be one of: " + ", ".join(vision.TASKS))
-    if task in vision.ONLY_MINICPM and reader != "minicpm":
-        raise ApiError(422, "bad_task", f"task={task} is read by engine=minicpm only")
+    if task in vision.ONLY_SECOND and reader != "vision":
+        raise ApiError(422, "bad_task", f"task={task} is read by engine=vision only")
     detail = (detail or "lines").lower()
     if detail not in DETAILS:
         raise ApiError(422, "bad_detail", "detail must be 'lines' or 'text'")
@@ -58,7 +58,7 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
         raise ApiError(503, "reader_unavailable",
                        "the vision reader is not available: the model server on this machine is not answering, or "
                        + (f"its model is not installed (ollama pull {get_settings().vlm_model})" if reader == "glm"
-                          else "its model is not installed (./scripts/get_minicpm.sh)"))
+                          else "its model is not installed (./scripts/get_vision_model.sh)"))
     if not glm and not engine.available():
         raise ApiError(503, "engine_unavailable", "the OCR engine is not loaded on this server")
     script = options.get("engine") if options.get("engine") in ("detect", "jawi") + tuple(scripts.SCRIPTS) else None

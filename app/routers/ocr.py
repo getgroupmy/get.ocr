@@ -37,15 +37,15 @@ _FILE_BODY = {
             "fields": {"type": "string",
                        "description": "With type=custom: the values to find. Names separated by commas, or JSON "
                                       '{"name": "string|number|date"} or {"name": {"type": ..., "description": ...}}'},
-            "engine": {"type": "string", "enum": ["standard", "detect", "jawi", "arabic", "tamil", "thai", "glm", "minicpm"], "default": "standard",
+            "engine": {"type": "string", "enum": ["standard", "detect", "jawi", "arabic", "tamil", "thai", "glm", "vision"], "default": "standard",
                        "description": "'jawi' reads the lines in Jawi (Malay in Arabic script) with a model made "
                                       "for it and marks them \"script\": \"jawi\"; the other lines are read as usual. "
                                       "'detect' finds out by itself which of these scripts a page is in. 'arabic', 'tamil' and 'thai' do the same for those scripts (the model is fetched on first use). "
-                                      "'glm' and 'minicpm' read each page with a vision model (handwriting, hard photos): "
+                                      "'glm' and 'vision' read each page with a vision model (handwriting, hard photos): "
                                       "slower, whole-page text, no line positions"},
             "task": {"type": "string", "enum": ["text", "table", "formula", "seal", "chart"], "default": "text",
-                     "description": "With engine=glm or minicpm: what to ask the vision model for. "
-                                    "'seal' (the words of a stamp) and 'chart' (a chart as a table) are minicpm only"},
+                     "description": "With engine=glm or vision: what to ask the vision model for. "
+                                    "'seal' (the words of a stamp) and 'chart' (a chart as a table) are engine=vision only"},
             "marks": {"type": "boolean", "default": False,
                       "description": "Experimental: also report tick boxes (with the text beside each and whether "
                                      "it is ticked) and patches of stamp ink on every page"},

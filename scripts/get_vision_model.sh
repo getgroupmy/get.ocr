@@ -1,20 +1,21 @@
 #!/bin/bash
-# Install the second vision reader, MiniCPM-OCR 1.0 (Apache-2.0), into the model server on this
-# machine. About 2 GB is downloaded once; each file is checked against a known fingerprint.
-#   ./scripts/get_minicpm.sh
+# Install GET.ocr Vision, the second vision reader, into the model server on this machine.
+# The model behind it is MiniCPM-OCR 1.0 by OpenBMB (Apache-2.0, https://github.com/OpenBMB/MiniCPM-OCR),
+# used unchanged. About 2 GB is downloaded once; each file is checked against a known fingerprint.
+#   ./scripts/get_vision_model.sh
 # Needs Ollama 0.40.12 or later. Nothing is sent anywhere: the model runs here.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-NAME="$(grep -E '^OCR_VLM2_MODEL=' .env 2>/dev/null | tail -1 | cut -d= -f2-)"; NAME="${NAME:-minicpm-ocr}"
+NAME="$(grep -E '^OCR_VLM2_MODEL=' .env 2>/dev/null | tail -1 | cut -d= -f2-)"; NAME="${NAME:-get-ocr-vision}"
 DATA="$(grep -E '^OCR_DATA_DIR=' .env 2>/dev/null | tail -1 | cut -d= -f2-)"; DATA="${DATA:-./data}"
-DIR="$DATA/models/minicpm"
+DIR="$DATA/models/vision"
 NEED=0.40.12
 
 command -v ollama >/dev/null || { echo "Ollama is not installed on this machine (README, the model for field extraction)."; exit 1; }
 HAVE="$(ollama --version 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
 [ -n "$HAVE" ] || { echo "Could not tell which Ollama this is ('ollama --version')."; exit 1; }
 if [ "$(printf '%s\n%s\n' "$NEED" "$HAVE" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" != "$NEED" ]; then
-  echo "This is Ollama $HAVE; MiniCPM-OCR needs $NEED or later."
+  echo "This is Ollama $HAVE; GET.ocr Vision needs $NEED or later."
   echo "Update Ollama (on a Mac: open the Ollama app and choose Update, or download it again from ollama.com), then run this again."
   exit 1
 fi
@@ -49,4 +50,4 @@ MODELFILE
 echo "Registering it with Ollama as '$NAME'…"
 ollama create "$NAME" -f "$DIR/Modelfile"
 ollama show "$NAME" | grep -qi vision || echo "• Ollama does not list 'vision' for $NAME: reading pictures may not work. Send this output to whoever maintains the service."
-echo "✓ Done. /health shows \"minicpm\": true within half a minute; in the console choose the Reader 'MiniCPM-OCR', or send engine=minicpm."
+echo "✓ Done. /health shows \"vision\": true within half a minute; in the console choose the Reader 'GET.ocr Vision', or send engine=vision."

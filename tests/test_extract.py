@@ -650,32 +650,32 @@ def test_rows_as_csv_and_where_they_are(client, api_key, need_engine, fake_model
     assert r.text.splitlines() == ["description,quantity,unit_price,amount", "Widget,2.0,50.0,100.0", "Gasket,1.0,25.5,25.5"]
 
 
-def test_minicpm_is_a_second_vision_reader(client, api_key, need_engine, fake_vision, monkeypatch):
+def test_get_ocr_vision_is_a_second_vision_reader(client, api_key, need_engine, fake_vision, monkeypatch):
     png = synth.image_bytes(["hello"])
-    r = client.post("/v1/ocr", files={"file": ("a.png", png, "image/png")}, data={"engine": "minicpm"}, headers=api_key)
+    r = client.post("/v1/ocr", files={"file": ("a.png", png, "image/png")}, data={"engine": "vision"}, headers=api_key)
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["engine"] == "minicpm-ocr" and body["pages"][0]["source"] == "minicpm" and body["pages"][0]["lines"] == []
-    assert models[-1] == "minicpm-ocr" and fake_vision[-1][0] == "Text Recognition:"
+    assert body["engine"] == "get-ocr-vision" and body["pages"][0]["source"] == "vision" and body["pages"][0]["lines"] == []
+    assert models[-1] == "get-ocr-vision" and fake_vision[-1][0] == "Text Recognition:"
     # the first reader is still the first
     client.post("/v1/ocr", files={"file": ("a.png", png, "image/png")}, data={"engine": "glm"}, headers=api_key)
     assert models[-1] == "glm-ocr"
-    # what only MiniCPM-OCR was trained to do
-    client.post("/v1/ocr", files={"file": ("a.png", png, "image/png")}, data={"engine": "minicpm", "task": "seal"}, headers=api_key)
+    # what only the second reader was trained to do
+    client.post("/v1/ocr", files={"file": ("a.png", png, "image/png")}, data={"engine": "vision", "task": "seal"}, headers=api_key)
     assert fake_vision[-1][0] == "Seal Recognition:"
-    client.post("/v1/ocr", files={"file": ("a.png", png, "image/png")}, data={"engine": "minicpm", "task": "chart"}, headers=api_key)
+    client.post("/v1/ocr", files={"file": ("a.png", png, "image/png")}, data={"engine": "vision", "task": "chart"}, headers=api_key)
     assert fake_vision[-1][0] == "Chart to Table:"
     bad = client.post("/v1/ocr", files={"file": ("a.png", png, "image/png")}, data={"engine": "glm", "task": "seal"}, headers=api_key)
-    assert bad.status_code == 422 and "minicpm" in bad.json()["message"]
-    assert client.get("/health").json()["minicpm"] is True
+    assert bad.status_code == 422 and "engine=vision" in bad.json()["message"]
+    assert client.get("/health").json()["vision"] is True
 
 
-def test_minicpm_is_off_until_it_is_installed(client, api_key, need_engine):
+def test_get_ocr_vision_is_off_until_it_is_installed(client, api_key, need_engine):
     llm._vision_status = {}
     r = client.post("/v1/ocr", files={"file": ("a.png", synth.image_bytes(["hello"]), "image/png")},
-                    data={"engine": "minicpm"}, headers=api_key)
-    assert r.status_code == 503 and r.json()["error"] == "reader_unavailable" and "get_minicpm.sh" in r.json()["message"]
-    assert client.get("/health").json()["minicpm"] is False
+                    data={"engine": "vision"}, headers=api_key)
+    assert r.status_code == 503 and r.json()["error"] == "reader_unavailable" and "get_vision_model.sh" in r.json()["message"]
+    assert client.get("/health").json()["vision"] is False
 
 
 def test_a_table_in_cell_marks_becomes_html():
