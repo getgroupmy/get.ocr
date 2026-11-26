@@ -13,7 +13,7 @@ from pathlib import Path
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from . import codes, crypto, engine, extract, jawi, lists, marks, scripts, signatures, storage, vision, webhooks
+from . import codes, crypto, engine, extract, gaps, jawi, lists, marks, scripts, signatures, storage, vision, webhooks
 from .config import get_settings
 from .db import ApiClient, Correction, Job, Route, Seen, Usage, session_scope, utcnow
 from .documents import Document, parse_pages
@@ -77,6 +77,7 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
         if glm and doc.kind in ("docx", "xlsx"):
             raise ApiError(422, "bad_engine", "a Word or Excel file is read from its own text: leave the engine out")
         pages = []
+        looked = 0  # text pages whose pictures were read as well
         for n in numbers:
             page = doc.page(n, use_text_layer=not options.get("force_ocr") and not glm,
                             with_lines=bool(options.get("layer_lines")))
@@ -85,9 +86,22 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
                 out.update(source=reader, text=vision.read(page.image, options.get("task") or "text", reader), confidence=None,
                            quality=engine.quality(page.image))
                 lines: list[dict] = []
+                if (options.get("task") or "text") == "text" and "<table" not in out["text"] and engine.available():
+                    # a vision model can skip a heading or small print: what the standard reader
+                    # read clearly and the model left out is put in
+                    out["text"], added = gaps.fill(out["text"], engine.read(page.image))
+                    if added:
+                        out["added_lines"] = added
             elif page.text_layer is not None:
                 out.update(source="text_layer", text=page.text_layer, confidence=None)
                 lines = page.text_lines or []
+                if looked < get_settings().picture_text_pages and engine.available() and doc.kind == "pdf":
+                    picture = doc.pictures(n)  # words that are part of a picture are not in the stored text
+                    if picture is not None:
+                        looked += 1
+                        out["text"], added = gaps.fill(out["text"], engine.read(picture))
+                        if added:
+                            out["added_lines"] = added
             else:
                 lines, upright, turned = engine.read_upright(page.image, script)
                 if turned:  # the page lay on its side: positions are given on the page turned upright

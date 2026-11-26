@@ -213,6 +213,35 @@ class Document:
                 p.close()
         return Page(number, img, img.shape[1], img.shape[0])
 
+    def pictures(self, number: int) -> Optional[np.ndarray]:
+        """The part of a PDF page that holds its pictures (a letterhead, a crest, a scanned
+        form behind typed text), as a picture; None when the page has none worth reading."""
+        if self.kind != "pdf" or self._sheets:
+            return None
+        import pypdfium2.raw as pdfium_c
+        s = get_settings()
+        with _pdf_lock:
+            p = self._pdf[number - 1]
+            try:
+                w, h = p.get_size()
+                boxes = []
+                for obj in p.get_objects(filter=[pdfium_c.FPDF_PAGEOBJ_IMAGE], max_depth=4):
+                    left, bottom, right, top = (obj.get_bounds if hasattr(obj, "get_bounds") else obj.get_pos)()
+                    left, bottom, right, top = max(left, 0), max(bottom, 0), min(right, w), min(top, h)
+                    if right - left >= 20 and top - bottom >= 8:  # points: smaller holds no readable word
+                        boxes.append((left, bottom, right, top))
+                if not boxes:
+                    return None
+                scale = min(s.pdf_dpi / 72, s.max_image_side / max(w, h, 1))
+                img = _bgr(p.render(scale=scale).to_pil())
+            finally:
+                p.close()
+        x0, x1 = min(b[0] for b in boxes), max(b[2] for b in boxes)
+        y0, y1 = h - max(b[3] for b in boxes), h - min(b[1] for b in boxes)
+        pad = 4
+        return img[max(int((y0 - pad) * scale), 0):int((y1 + pad) * scale) + 1,
+                   max(int((x0 - pad) * scale), 0):int((x1 + pad) * scale) + 1]
+
     def close(self) -> None:
         if self._pdf is not None:
             with _pdf_lock:

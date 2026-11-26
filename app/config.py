@@ -67,6 +67,9 @@ class Settings(BaseSettings):
     min_confidence: float = 0.5  # lines the model is less sure of than this are dropped
     pdf_dpi: int = 200  # resolution PDF pages are rendered at before reading
     max_image_side: int = 3000  # larger images and pages are scaled down to this
+    # A PDF with stored text: the pictures on up to this many pages per request are read as well, for
+    # the words of a letterhead or crest that the stored text does not have. 0 turns it off.
+    picture_text_pages: int = 10
 
     # --- field extraction (a language model on this machine) -------------
     llm_url: str = "http://127.0.0.1:11434"  # Ollama on the same machine; "" turns extraction off
