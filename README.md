@@ -259,6 +259,12 @@ On the Mac mini, from `~/get.ocr`:
 
 ## Integrating (get-ride or any app)
 
+`sdk/get_ocr.ts` is a single-file TypeScript client with no dependencies, for a server that runs
+Deno (Supabase Edge Functions), Node 18+ or Bun: `read`, `extract`, `queue`, `job`, `wait`, `types`,
+`health`, typed results and errors, and `webhookIsGenuine` for the signed webhook. Copy the file in.
+The reading happens on this service, not in the app: a phone sends its photo to the app's own
+server, and that server calls this with the key.
+
 `examples/client.py` is a small Python client (read, extract, queue, wait, list the kinds, check a
 webhook's signature) to copy into a backend.
 
