@@ -4,7 +4,7 @@
 #   ./scripts/get_models.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
-DATA="$(grep -E '^OCR_DATA_DIR=' .env 2>/dev/null | tail -1 | cut -d= -f2-)"; DATA="${DATA:-./data}"
+DATA="$({ grep -E '^OCR_DATA_DIR=' .env 2>/dev/null || true; } | tail -1 | cut -d= -f2-)"; DATA="${DATA:-./data}"
 mkdir -p "$DATA/models"
 fetch() {  # name, url, sha256
   local out="$DATA/models/$1"

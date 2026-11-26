@@ -6,8 +6,8 @@
 # Needs Ollama 0.40.12 or later. Nothing is sent anywhere: the model runs here.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-NAME="$(grep -E '^OCR_VLM2_MODEL=' .env 2>/dev/null | tail -1 | cut -d= -f2-)"; NAME="${NAME:-get-ocr-vision}"
-DATA="$(grep -E '^OCR_DATA_DIR=' .env 2>/dev/null | tail -1 | cut -d= -f2-)"; DATA="${DATA:-./data}"
+NAME="$({ grep -E '^OCR_VLM2_MODEL=' .env 2>/dev/null || true; } | tail -1 | cut -d= -f2-)"; NAME="${NAME:-get-ocr-vision}"
+DATA="$({ grep -E '^OCR_DATA_DIR=' .env 2>/dev/null || true; } | tail -1 | cut -d= -f2-)"; DATA="${DATA:-./data}"
 DIR="$DATA/models/vision"
 NEED=0.40.12
 
