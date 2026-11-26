@@ -30,6 +30,10 @@ case "$code/$api" in
   *) say "•" "https://$HOST/admin answered $code, its API $api." ;;
 esac
 
+code="$(curl -s -m 20 -o /dev/null -w '%{http_code}' "https://$HOST/openapi.json" || echo 000)"
+if [ "$code" = 200 ]; then say "•" "The API documentation (https://$HOST/docs) is open to anyone. To close it, add a Cloudflare rule as in the README."
+else say "✓" "The API documentation is not open from outside (answers $code)."; fi
+
 code="$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST "https://$HOST/v1/ocr" || echo 000)"
 if [ "$code" = 401 ]; then say "✓" "The API asks for a key (a call without one answers 401)."
 elif [ "$ok" = 1 ]; then ok=0; say "✗" "A call without a key answered $code; 401 was expected."; fi

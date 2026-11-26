@@ -192,6 +192,13 @@ What to know:
   through the tunnel is then answered 404 and the console works on the Mac only
   (`http://localhost:8090/admin`). A Cloudflare Access policy on `/admin*` is the stronger
   middle way: a login at Cloudflare before the console is reached at all.
+- **What Cloudflare does in front** (rules on the `getcdn.link` zone, not in this repository):
+  the API documentation pages (`/docs`, `/redoc`, `/openapi.json`) are blocked at the public
+  address, as get.ekyc's are, and stay available on the Mac itself; and more than 5 sign-in
+  attempts in 10 seconds from one address are blocked for 10 seconds. That limit shares the
+  zone's one rate-limit rule (the free plan allows one) with get.ekyc's sign-in. There is no
+  general rate limit at Cloudflare for the API: the service limits each key itself, and a call
+  without a valid key is refused before anything is read.
 - **Cloudflare ends a request after 100 seconds.** A reading answers in a few seconds; field
   extraction with the model can take longer on a long document. For those, an app posts to
   `/v1/jobs` and takes the result by webhook or by polling.
@@ -203,8 +210,10 @@ What to know:
 With Docker instead, `docker compose --profile tunnel up -d` starts a tunnel of its own
 (`TUNNEL_TOKEN` in `.env`, service **HTTP** `ocr:8080`).
 
-`scripts/install_service.sh` is adapted from get.ekyc's script. **It has not been run on a Mac
-yet**: this repository was built and tested on Linux.
+`scripts/install_service.sh` is adapted from get.ekyc's script and runs the service on the office
+Mac mini. The code itself is built and tested on Linux; the Mac's own Python 3.9 has caught what
+that missed twice (type syntax, and a hashing function that Python lacks there), so the tests on
+GitHub run on 3.9 as well.
 
 ## Running it
 
@@ -507,8 +516,10 @@ thumb: check the page ranges.
 
 **A searchable PDF from a scan.** `POST /v1/searchable` answers with a PDF of the same pages with
 the text that was read laid invisibly over each line, so it can be searched and copied in any
-viewer. A PDF that already carries text comes back unchanged. Latin script only (the invisible text
-uses a standard PDF font), and pages are limited to `OCR_SYNC_MAX_PAGES`.
+viewer. A PDF that already carries text comes back unchanged. Text in Latin letters uses a standard
+PDF font; with `engine` set to `jawi`, `arabic`, `tamil`, `thai` or `detect`, the lines in those
+scripts are carried too, by a small font put into the file. Pages are limited to
+`OCR_SYNC_MAX_PAGES`.
 
 ```bash
 curl -s -X POST $BASE/v1/searchable -H "X-API-Key: $KEY" -F file=@scan.pdf -o searchable.pdf
