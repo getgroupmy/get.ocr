@@ -361,3 +361,15 @@ def test_a_console_user_can_be_made_from_the_command_line(client, monkeypatch):
     assert client.post("/admin/api/login", json={"username": "pemilik", "password": "kata-laluan-kedua"}).status_code == 200
     monkeypatch.setattr(adduser.getpass, "getpass", lambda prompt="": "pendek")
     assert adduser.main(["lain"]) == 1 and adduser.main(["x"]) == 2
+
+
+def test_passwords_are_hashed_without_the_function_the_macs_python_lacks(monkeypatch):
+    import hashlib
+
+    from app import auth
+    reference = hashlib.scrypt(b"kata-laluan-panjang", salt=b"0123456789abcdef", n=2 ** 14, r=8, p=1, dklen=32)
+    assert auth._scrypt("kata-laluan-panjang", b"0123456789abcdef") == reference  # the same hash either way
+    monkeypatch.delattr(hashlib, "scrypt")  # Python built against LibreSSL has none
+    stored = auth.hash_password("kata-laluan-panjang")
+    assert stored.startswith("scrypt$") and auth.check_password("kata-laluan-panjang", stored)
+    assert not auth.check_password("kata-laluan-lain", stored) and not auth.check_password("x", "rosak")

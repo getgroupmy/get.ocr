@@ -59,17 +59,22 @@ def require_client(x_api_key: str = Header(default=""), db: Session = Depends(ge
 SESSION_HOURS, REMEMBER_DAYS = 12, 30
 
 
+def _scrypt(password: str, salt: bytes) -> bytes:
+    # From the cryptography package, which brings its own OpenSSL. hashlib.scrypt is missing where
+    # Python was built against LibreSSL, as the Python that comes with macOS is.
+    from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
+    return Scrypt(salt=salt, length=32, n=2 ** 14, r=8, p=1).derive(password.encode())
+
+
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
-    dk = hashlib.scrypt(password.encode(), salt=salt, n=2 ** 14, r=8, p=1, dklen=32)
-    return f"scrypt${salt.hex()}${dk.hex()}"
+    return f"scrypt${salt.hex()}${_scrypt(password, salt).hex()}"
 
 
 def check_password(password: str, stored: str) -> bool:
     try:
         _, salt, dk = stored.split("$")
-        got = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), n=2 ** 14, r=8, p=1, dklen=32)
-        return hmac.compare_digest(got.hex(), dk)
+        return hmac.compare_digest(_scrypt(password, bytes.fromhex(salt)).hex(), dk)
     except Exception:  # noqa: BLE001
         return False
 
