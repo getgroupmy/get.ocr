@@ -13,7 +13,7 @@ webhooks, and data encrypted at rest.
 
 | | |
 |---|---|
-| **Input** | JPEG, PNG, WEBP, TIFF (multi-page), BMP, GIF and PDF, up to `OCR_MAX_UPLOAD_MB` |
+| **Input** | JPEG, PNG, HEIC (iPhone photos), WEBP, TIFF (multi-page), BMP, GIF, PDF (with `pdf_password` when it is locked), Word (.docx) and Excel (.xlsx), up to `OCR_MAX_UPLOAD_MB` |
 | **Read now** | `POST /v1/ocr` answers in the same request. Images and PDFs up to `OCR_SYNC_MAX_PAGES` pages. Nothing is stored |
 | **Queue** | `POST /v1/jobs` for long PDFs. Answers at once with a job id; the result comes by signed webhook or by polling |
 | **Output** | Plain text in reading order, and every line with its position and the model's confidence |
@@ -151,12 +151,57 @@ model.** Its prompts and the request format are as documented; how well it reads
 gives tables, how long a page takes on the Mac mini and the largest picture it handles well are
 unknown until it is tried there. Two models loaded together need the memory for both.
 
-**Public address.** If get.ekyc's Cloudflare tunnel already runs on that Mac, add a second public
-hostname to the same tunnel in Cloudflare Zero Trust (for example `ocr.getride.my`) with service
-**HTTP** `localhost:8090`. No second tunnel is needed. Block `/admin*` at Cloudflare with an Access
-policy, so the console is reachable only on the Mac or through Cloudflare Access. With Docker
-instead, `docker compose --profile tunnel up -d` starts a tunnel of its own (`TUNNEL_TOKEN` in
-`.env`, service **HTTP** `ocr:8080`).
+**Public address (`ocr.getcdn.link`).** Other apps reach the service the way they reach get.ekyc
+and get.route: through the Cloudflare tunnel that already runs on the Mac. No second tunnel, no
+router port, and Cloudflare provides HTTPS.
+
+This is set up: `ocr.getcdn.link` is a public hostname of the `getride-ekyc` tunnel (the one that
+also carries `ekyc.getcdn.link` from the same Mac), service `http://localhost:8090`, with a proxied
+DNS record `ocr` pointing at that tunnel. To do the same for another address, add the hostname
+under **Zero Trust > Networks > Tunnels > the tunnel > Public Hostname**.
+
+1. On the Mac: `./scripts/check_public.sh ocr.getcdn.link` says whether the address answers from
+   outside and that the API and the console ask for a key and a token.
+2. In the console (`https://ocr.getcdn.link/admin`), **API clients > New** for each app, and give
+   the app `https://ocr.getcdn.link` and its key. The key stays on the app's server.
+
+What to know:
+
+- **Signing in to the console.** With a username and password, as at get.ekyc and get.route, or
+  with a token. Create the first username on the Mac:
+
+  ```bash
+  cd ~/get.ocr && ./scripts/add_console_user.sh yourname
+  ```
+
+  It asks for a password (10 characters or more, not shown as you type) and makes an admin; add
+  `viewer` after the name for someone who may only look and try documents. Run it again with the
+  same name to set a new password. After that, more people are added in the console's People tab
+  by whoever holds the owner's token (`OCR_ADMIN_TOKEN` in `.env`, shown by
+  `grep OCR_ADMIN_TOKEN ~/get.ocr/.env`). A sign-in lasts 12 hours, or 30 days with "Keep me
+  signed in"; five wrong passwords for a name from one address lock that pair for 15 minutes;
+  passwords are stored hashed (scrypt); rotating the owner's token signs everyone out. An admin
+  can do everything except manage console users, which stays with the owner's token.
+- **The console is on the internet**, at `https://ocr.getcdn.link/admin`, as get.ekyc's and
+  get.route's are. What stands between it and anyone is the admin token and the console users'
+  tokens, which are long random values; an address that sends `OCR_ADMIN_TRIES` (default 10) wrong
+  ones within five minutes must wait five minutes. Give other people their own console user
+  (People tab), not the owner's token, and rotate the owner's token with
+  `scripts/rotate_admin_token.sh` if it was ever shown or sent. To take the console off the
+  internet, set `OCR_ADMIN_PUBLIC=false` in `.env` and restart: a request for `/admin` that comes
+  through the tunnel is then answered 404 and the console works on the Mac only
+  (`http://localhost:8090/admin`). A Cloudflare Access policy on `/admin*` is the stronger
+  middle way: a login at Cloudflare before the console is reached at all.
+- **Cloudflare ends a request after 100 seconds.** A reading answers in a few seconds; field
+  extraction with the model can take longer on a long document. For those, an app posts to
+  `/v1/jobs` and takes the result by webhook or by polling.
+- **Upload size.** Cloudflare's free plan takes uploads up to 100 MB; this service's own limit is
+  `OCR_MAX_UPLOAD_MB`.
+- Each key is limited to `OCR_RATE_PER_MINUTE` requests a minute, and the audit log records the
+  caller's address as Cloudflare reports it.
+
+With Docker instead, `docker compose --profile tunnel up -d` starts a tunnel of its own
+(`TUNNEL_TOKEN` in `.env`, service **HTTP** `ocr:8080`).
 
 `scripts/install_service.sh` is adapted from get.ekyc's script. **It has not been run on a Mac
 yet**: this repository was built and tested on Linux.
@@ -500,8 +545,30 @@ published format: dates as dd/mm/yyyy, empty cells in place of zeros, no thousan
 Xero, AutoCount and Bukku publish their column headers only inside a signed-in account, and SQL
 Account maps columns by hand, so for those use `generic` and map the columns at import.
 
-**Turned pages.** A page that is sideways or upside down is turned upright before reading; the page
-then carries `rotated` (90, 180 or 270) and its positions are on the upright page.
+**A locked PDF.** Banks often send statements as password-protected PDFs. Send the password in the
+form field `pdf_password`. It is used once, when the request arrives, to open the file; the file is
+then handled without it, and the password is not stored with a queued job, logged or returned.
+Without it, or with the wrong one, the answer is 422 `pdf_protected`.
+
+**Word and Excel files.** A `.docx` or `.xlsx` is read from its own text, which is exact: nothing
+is recognised from a picture. A Word document is one page (`"kind": "docx"`), with each table row
+on a line of its own; each sheet of a workbook is a page (`"kind": "xlsx"`), its columns kept under
+each other, dates as YYYY-MM-DD. Pages come back with `"source": "document"` and no line positions,
+so `sources` cannot point at a box, and the statement reader, which works by position, does not
+apply: a statement kept in Excel goes to the model. The old `.doc` and `.xls` formats, pictures
+placed inside a document, headers, footers and footnotes are not read; a formula gives the value
+saved with the file.
+
+**Turned and tilted pages.** A page that is sideways or upside down is turned upright before
+reading, and a page that leans (a scan fed in crooked, a photo taken at a slant of 1.5 to 40
+degrees) is made level first. The page then carries `rotated`, how far it was turned clockwise: 90,
+180 or 270, or a number in between for a tilted page (356.5 for a page that leaned 3.5 degrees),
+and its positions are on the page as it was read. The words of a tilted page were read either way;
+what straightening saves is the rows. Measured on 13 pages (12 scanned forms and a Jawi page)
+tilted by 2 to 15 degrees either way: without it 4% to 41% of a page's rows of text came out as
+the same rows as on the level page, with it 57% to 66%, and every page tilted by 4 degrees or more
+was made level to within a degree. A level page is left alone (0 of 13 touched). It does not undo
+perspective: a page photographed from the side, wider at one end than the other, stays so.
 
 **How well each value is backed.** `evidence` gives each top-level value a level: `high` (printed
 in the text, on a line the reader was sure of, and the checks pass), `medium` (printed, but the
@@ -763,9 +830,9 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
     with. Arabic vowel marks. Decorative and poster typefaces read badly. Whether "kg 250" on the
     paper was typed "250 kg" cannot be told from the paper and is left as printed. Field
     extraction from Jawi text by the language model has not been tried.
-- **Rotated pages.** A page on its side or upside down is turned upright before it is read (see
-  "Turned pages"). A page tilted by a few degrees is read as it is; a page turned by some other
-  angle, such as 45 degrees, is not handled.
+- **Rotated pages.** See "Turned and tilted pages". A page leaning by more than 40 degrees and
+  less than a quarter turn is not handled, nor is perspective. After straightening, about a third
+  of the rows still differ from the level page's: the picture is resampled once more.
 - **How good the model is.** On the Mac mini `qwen2.5:7b` answers in 30 to 40 seconds per call. It
   could not copy a dense statement table (wrong balances, invented values), which is why statements
   are now read as a table by code. Invoices and receipts are still read by the model and have not

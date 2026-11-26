@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from .. import crypto, extract, service
 from ..auth import new_api_key, require_admin
 from ..config import get_settings, resolves_to_internal
-from ..db import AdminUser, ApiClient, Audit, Job, Route, Usage, get_db
+from ..db import AdminPassword, AdminUser, ApiClient, Audit, Job, Route, Usage, get_db
 from ..errors import ApiError
 from .ocr import job_out, read_input
 
@@ -140,6 +140,13 @@ def get_routes(cid: str, db: Session = Depends(get_db)):
 class NewUser(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     role: str = Field(default="viewer", pattern="^(admin|viewer)$")
+    username: Optional[str] = Field(default=None, min_length=3, max_length=60, pattern=r"^[a-zA-Z0-9._-]+$")
+    password: Optional[str] = Field(default=None, min_length=10, max_length=200)
+
+
+class SetPassword(BaseModel):
+    username: str = Field(min_length=3, max_length=60, pattern=r"^[a-zA-Z0-9._-]+$")
+    password: str = Field(min_length=10, max_length=200)
 
 
 @router.post("/users", status_code=201)
@@ -147,19 +154,52 @@ def create_user(body: NewUser, request: Request, db: Session = Depends(get_db)):
     """A console sign-in for another person. Their token is shown this once. Only the owner's token
     (OCR_ADMIN_TOKEN) may manage users. A viewer may look and try a document; an admin may also
     create and revoke clients."""
+    if bool(body.username) != bool(body.password):
+        raise ApiError(422, "bad_request", "a sign-in with a password needs both a username and a password (10+ characters)")
+    username = body.username.lower() if body.username else None
+    if username and db.get(AdminPassword, username) is not None:
+        raise ApiError(409, "username_taken", "that username is in use")
     token = "oa_" + secrets.token_urlsafe(32)
     u = AdminUser(id="usr_" + secrets.token_hex(8), name=body.name.strip(), token_hash=crypto.sha256_hex(token),
                   role=body.role)
     db.add(u)
-    _audit(db, request, "user.created", f"{u.id} {u.name} ({u.role})")
-    return {"id": u.id, "name": u.name, "role": u.role, "token": token}
+    if username:
+        db.flush()
+        from ..auth import hash_password
+        db.add(AdminPassword(username=username, user_id=u.id, password_hash=hash_password(body.password)))
+    _audit(db, request, "user.created", f"{u.id} {u.name} ({u.role})" + (f" as {username}" if username else ""))
+    return {"id": u.id, "name": u.name, "role": u.role, "username": username, "token": token}
+
+
+@router.put("/users/{uid}/password")
+def set_user_password(uid: str, body: SetPassword, request: Request, db: Session = Depends(get_db)):
+    """Give a console user a username and password, or replace them. The owner's token only."""
+    from ..auth import hash_password
+    u = db.get(AdminUser, uid)
+    if u is None:
+        raise ApiError(404, "not_found", "user not found")
+    username = body.username.lower()
+    taken = db.get(AdminPassword, username)
+    if taken is not None and taken.user_id != uid:
+        raise ApiError(409, "username_taken", "that username is in use")
+    for old in db.scalars(select(AdminPassword).where(AdminPassword.user_id == uid)):
+        db.delete(old)
+    db.flush()
+    db.add(AdminPassword(username=username, user_id=uid, password_hash=hash_password(body.password)))
+    _audit(db, request, "user.password_set", f"{u.id} {u.name} as {username}")
+    return {"id": u.id, "name": u.name, "username": username}
 
 
 @router.get("/users")
 def list_users(db: Session = Depends(get_db)):
-    return {"users": [{"id": u.id, "name": u.name, "role": u.role, "active": u.active,
-                       "created_at": u.created_at.isoformat() + "Z"}
-                      for u in db.scalars(select(AdminUser).order_by(AdminUser.created_at.desc()))]}
+    names = {p.user_id: p for p in db.scalars(select(AdminPassword))}
+
+    def one(u: AdminUser) -> dict:
+        login = names.get(u.id)
+        return {"id": u.id, "name": u.name, "role": u.role, "active": u.active, "created_at": u.created_at.isoformat() + "Z",
+                "username": login.username if login else None,
+                "last_login_at": login.last_login_at.isoformat() + "Z" if login and login.last_login_at else None}
+    return {"users": [one(u) for u in db.scalars(select(AdminUser).order_by(AdminUser.created_at.desc()))]}
 
 
 @router.delete("/users/{uid}", status_code=204)

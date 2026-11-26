@@ -117,10 +117,65 @@ def _may_be_on_its_head(lines: list[dict], jawi: int) -> bool:
     return bool(jawi) or len(lines) < 3 or sum(ln["confidence"] for ln in lines) < 0.85 * len(lines)
 
 
-def read_upright(img: np.ndarray, script: Optional[str] = None) -> tuple[list[dict], np.ndarray, int]:
-    """Read a picture, turning it first when it lies on its side. Returns the lines, the picture
-    as it was read, and how far it was turned clockwise (0, 90 or 270 degrees)."""
-    lines = read(img, script)
+TILT_FROM, TILT_TO = 1.5, 40.0  # degrees: less is left alone, more is not a tilted page but something else
+
+
+def tilt(lines: list[dict]) -> float:
+    """By how many degrees the lines of a page slope, clockwise positive; 0 when they are level or
+    do not agree. Taken from the long lines: a short one says little about its slope."""
+    slopes = []
+    for ln in lines:
+        (x0, y0), (x1, y1), _, (x3, y3) = ln["box"]
+        if np.hypot(x1 - x0, y1 - y0) > 4 * max(np.hypot(x3 - x0, y3 - y0), 1.0) and len(ln["text"]) >= 5:
+            slopes.append(float(np.degrees(np.arctan2(y1 - y0, x1 - x0))))
+    if len(slopes) < 3:
+        return 0.0
+    middle = float(np.median(slopes))
+    spread = float(np.percentile(slopes, 75) - np.percentile(slopes, 25))
+    return middle if TILT_FROM <= abs(middle) <= TILT_TO and spread <= 3.0 else 0.0
+
+
+def straighten(img: np.ndarray, degrees: float) -> np.ndarray:
+    """The picture turned back by its tilt, on a canvas large enough to keep its corners."""
+    import cv2
+    h, w = img.shape[:2]
+    m = cv2.getRotationMatrix2D((w / 2, h / 2), degrees, 1.0)
+    cos, sin = abs(m[0, 0]), abs(m[0, 1])
+    nw, nh = int(h * sin + w * cos), int(h * cos + w * sin)
+    m[0, 2] += nw / 2 - w / 2
+    m[1, 2] += nh / 2 - h / 2
+    return cv2.warpAffine(img, m, (nw, nh), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+
+
+def read_upright(img: np.ndarray, script: Optional[str] = None) -> tuple[list[dict], np.ndarray, float]:
+    """Read a picture, turned upright first when it lies on its side or its head, and straightened
+    when it is tilted. Returns the lines, the picture as it was read, and how far it was turned
+    clockwise: 0, 90, 180 or 270 degrees, or a number in between for a tilted page (356.5 is a
+    page that leaned 3.5 degrees clockwise)."""
+    first = read(img, script)
+    lean = tilt(first) if not sideways(first) else 0.0
+    if lean:
+        # The lines are read well enough at a slope, but rows that slope run into each other when
+        # they are put in order, a table's columns no longer stand under each other, and the check
+        # for a page on its head is thrown. So the page is made level before anything else.
+        level = straighten(img, lean)
+        lines, upright, turned = _read_quarters(level, script)
+        if lines and _weight(lines) >= 0.9 * _weight(first):
+            return lines, upright, round((turned - lean) % 360, 1)
+    lines, upright, turned = _read_quarters(img, script, first)
+    lean = tilt(lines) if turned in (90, 270) else 0.0  # a page on its side that also leans
+    if lean:
+        level = straighten(upright, lean)
+        again = read(level, script)
+        if again and _weight(again) >= 0.9 * _weight(lines):
+            return again, level, round((turned - lean) % 360, 1)
+    return lines, upright, turned
+
+
+def _read_quarters(img: np.ndarray, script: Optional[str] = None, lines: Optional[list] = None) -> tuple[list[dict], np.ndarray, int]:
+    """Read a picture, turning it first when it lies on its side or its head. `lines`: the picture
+    as already read, to save reading it again."""
+    lines = read(img, script) if lines is None else lines
     if not sideways(lines):
         # An upside-down page is read line by line all the same, but the lines come out bottom first.
         ours = [ln for ln in lines if ln.get("script")]

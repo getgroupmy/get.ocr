@@ -493,3 +493,91 @@ def test_tamil_and_thai_text_is_carried_in_the_searchable_pdf(client, api_key, n
         r = client.post("/v1/searchable", files={"file": (f"{script}.png", png, "image/png")}, data={"engine": script}, headers=api_key)
         with Document(r.content) as doc:
             assert words in doc.page(1).text_layer and "Invoice No. 2026/0417" in doc.page(1).text_layer
+
+
+def test_a_protected_pdf_opens_with_its_password_and_the_password_is_not_kept(client, api_key):
+    from pathlib import Path
+    locked = (Path(__file__).parent / "pictures" / "locked.pdf").read_bytes()
+    r = client.post("/v1/ocr", files={"file": ("p.pdf", locked, "application/pdf")}, headers=api_key)
+    assert r.status_code == 422 and r.json()["error"] == "pdf_protected" and "pdf_password" in r.json()["message"]
+    wrong = client.post("/v1/ocr", files={"file": ("p.pdf", locked, "application/pdf")}, data={"pdf_password": "salah"}, headers=api_key)
+    assert wrong.status_code == 422 and wrong.json()["error"] == "pdf_protected"
+    ok = client.post("/v1/ocr", files={"file": ("p.pdf", locked, "application/pdf")}, data={"pdf_password": "rahsia123"}, headers=api_key)
+    assert ok.status_code == 200 and "baki akhir RM 1,250.80" in ok.json()["text"] and "rahsia123" not in ok.text
+    # queued: the file is opened before it is stored, so the job carries no password
+    job = client.post("/v1/jobs", files={"file": ("p.pdf", locked, "application/pdf")}, data={"pdf_password": "rahsia123"}, headers=api_key)
+    assert job.status_code in (200, 202) and "rahsia123" not in job.text
+    from app.db import Job, session_scope
+    with session_scope() as db:
+        assert "rahsia123" not in str(db.get(Job, job.json()["id"]).options)
+    # a password sent with a file that needs none changes nothing
+    plain = client.post("/v1/ocr", files={"file": ("t.pdf", synth.text_pdf("Tiada kata laluan"), "application/pdf")},
+                        data={"pdf_password": "apa-apa"}, headers=api_key)
+    assert plain.status_code == 200 and "Tiada kata laluan" in plain.json()["text"]
+
+
+def test_an_iphone_photo_in_heic_is_read(client, api_key, need_engine):
+    import io
+
+    from PIL import Image
+    heic = io.BytesIO()
+    Image.open(io.BytesIO(synth.image_bytes(LINES))).save(heic, format="HEIF")
+    assert heic.getvalue()[4:12] == b"ftypheic"
+    r = client.post("/v1/ocr", files={"file": ("IMG_0001.HEIC", heic.getvalue(), "image/heic")}, headers=api_key)
+    assert r.status_code == 200 and r.json()["kind"] == "image" and LINES[0] in r.json()["text"]
+
+
+def test_word_and_excel_files_are_read_from_their_own_text(client, api_key):
+    from pathlib import Path
+    docx = (Path(__file__).parent / "pictures" / "quote.docx").read_bytes()
+    r = client.post("/v1/ocr", files={"file": ("quote.docx", docx, "application/octet-stream")}, headers=api_key)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["kind"] == "docx" and body["page_count"] == 1 and body["pages"][0]["source"] == "document"
+    rows = body["text"].split("\n")
+    assert rows[0] == "Sebut Harga" and "Kertas A4    10    125.50" in rows and rows[-1] == "Jumlah: RM 365.50"  # a table row stays a row
+    xlsx = (Path(__file__).parent / "pictures" / "ledger.xlsx").read_bytes()
+    body = client.post("/v1/ocr", files={"file": ("ledger.xlsx", xlsx, "application/octet-stream")}, headers=api_key).json()
+    assert body["kind"] == "xlsx" and body["page_count"] == 2  # a sheet is a page
+    first = body["pages"][0]["text"].split("\n")
+    assert first[0] == "Jan" and first[2].split() == ["2026-01-02", "RENT", "JAN", "1200.8", "2799.2"]  # a date, not a day count
+    assert "Tiada transaksi" in body["pages"][1]["text"]
+    # asked for what needs a picture, it says so
+    bad = client.post("/v1/searchable", files={"file": ("quote.docx", docx, "application/octet-stream")}, headers=api_key)
+    assert bad.status_code == 422 and "searchable already" in bad.json()["message"]
+    assert client.post("/v1/ocr", files={"file": ("q.docx", docx, "x/y")}, data={"marks": "true", "codes": "true"}, headers=api_key).status_code == 200
+
+
+def test_an_office_file_that_is_not_what_it_seems_is_refused():
+    import io
+    import zipfile
+
+    import pytest
+
+    from app import office
+    from app.errors import ApiError
+    bomb = io.BytesIO()
+    with zipfile.ZipFile(bomb, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("word/document.xml", '<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "aaaa">]><x>&a;</x>')
+    assert office.kind(bomb.getvalue()) == "docx"
+    with pytest.raises(ApiError) as err:
+        office.pages(bomb.getvalue(), "docx")
+    assert err.value.code == "bad_file"
+    assert office.kind(b"PK\x03\x04 not a zip") is None and office.kind(b"%PDF-1.7") is None
+
+
+def test_a_tilted_page_is_made_level_before_it_is_read(need_engine):
+    import cv2
+    import numpy as np
+    img = cv2.imdecode(np.frombuffer(synth.image_bytes(INVOICE_LINES), np.uint8), cv2.IMREAD_COLOR)
+    level_rows = engine.layout_text(engine.read(img)).split("\n")
+    for lean in (5.0, -8.0):
+        tilted = engine.straighten(img, -lean)  # a page leaning `lean` degrees clockwise
+        lines, upright, turned = engine.read_upright(tilted)
+        assert abs(((turned + 180) % 360 - 180) + lean) < 1.0  # turned back by about what it leaned
+        assert abs(engine.tilt(lines)) < 1.5
+        rows = engine.layout_text(lines).split("\n")
+        assert len(set(rows) & set(level_rows)) >= 0.8 * len(level_rows)  # each printed row is a row again
+    # a level page is left alone, and so is a page that only has a few short lines
+    assert engine.read_upright(img)[2] == 0
+    assert engine.tilt([{"text": "ab", "box": [[0, 0], [30, 9], [30, 19], [0, 10]]}] * 5) == 0.0

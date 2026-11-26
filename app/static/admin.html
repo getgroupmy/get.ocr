@@ -64,12 +64,23 @@
 <main>
   <section id="signin" class="card" hidden>
     <h2>Sign in</h2>
-    <p class="muted">Enter the admin token (<code>OCR_ADMIN_TOKEN</code> in the server's <code>.env</code>). It is kept for this browser tab only.</p>
-    <form id="signin-form">
-      <label for="token">Admin token</label>
-      <input type="password" id="token" autocomplete="current-password" required>
+    <form id="login-form">
+      <label for="l-user">Username</label>
+      <input type="text" id="l-user" autocomplete="username" required maxlength="60">
+      <label for="l-pass" style="margin-top:10px">Password</label>
+      <input type="password" id="l-pass" autocomplete="current-password" required maxlength="200">
+      <label for="l-remember" style="margin-top:10px"><input type="checkbox" id="l-remember"> Keep me signed in on this browser for 30 days</label>
+      <p id="login-error" class="notice bad" hidden style="margin-top:12px"></p>
+      <p style="margin-top:12px"><button class="primary" type="submit">Sign in</button>
+        <button class="plain" type="button" id="use-token">Use a token instead</button></p>
+    </form>
+    <form id="signin-form" hidden>
+      <p class="muted">The admin token (<code>OCR_ADMIN_TOKEN</code> in the server's <code>.env</code>) or a console user's own token. It is kept for this browser tab only.</p>
+      <label for="token">Token</label>
+      <input type="password" id="token" autocomplete="off" required>
       <p id="signin-error" class="notice bad" hidden style="margin-top:12px"></p>
-      <p style="margin-top:12px"><button class="primary" type="submit">Sign in</button></p>
+      <p style="margin-top:12px"><button class="primary" type="submit">Sign in</button>
+        <button class="plain" type="button" id="use-password">Use a username and password</button></p>
     </form>
   </section>
 
@@ -113,8 +124,8 @@
         <h2>Read a file</h2>
         <p class="muted small">Runs on this server. The file and the text are not stored, and this is not counted as usage.</p>
         <form id="try-form">
-          <label for="t-file">Image or PDF</label>
-          <input type="file" id="t-file" accept="image/*,application/pdf" required>
+          <label for="t-file">Image, PDF, Word or Excel file</label>
+          <input type="file" id="t-file" accept="image/*,.heic,.heif,application/pdf,.docx,.xlsx" required>
           <div class="row">
             <div><label for="t-type">Result</label><select id="t-type">
               <option value="">Text only</option>
@@ -131,6 +142,7 @@
             </select></div>
             <div id="t-fields-box" hidden><label for="t-fields">Fields to find</label><input type="text" id="t-fields" placeholder="policy_number, expiry_date, sum_insured"></div>
             <div><label for="t-pages">PDF pages (optional)</label><input type="text" id="t-pages" placeholder="1-3"></div>
+            <div><label for="t-pdfpw">PDF password (if it is locked)</label><input type="password" id="t-pdfpw" autocomplete="off"></div>
             <div><label for="t-force"><input type="checkbox" id="t-force"> Ignore the PDF's text layer</label>
               <label for="t-split"><input type="checkbox" id="t-split"> Several documents in one file</label>
               <label for="t-marks"><input type="checkbox" id="t-marks"> Signatures, tick boxes, stamps</label></div>
@@ -166,14 +178,16 @@
     <section data-panel="people" hidden>
       <div class="card">
         <h2>Console sign-ins</h2>
-        <p class="muted small">Give another person a sign-in of their own in place of sharing the owner's token. A viewer may look and try documents; an admin may also create and revoke API clients. Only the owner's token can manage this list.</p>
+        <p class="muted small">Give another person a sign-in of their own in place of sharing the owner's token. A viewer may look and try documents; an admin may also create and revoke API clients. Only the owner's token can manage this list. With a username and password the person signs in at the sign-in page; without, they use the token shown once.</p>
         <form id="user-form" class="row">
           <div><label for="u-name">Name</label><input type="text" id="u-name" required maxlength="120"></div>
           <div><label for="u-role">Role</label><select id="u-role"><option value="viewer">Viewer</option><option value="admin">Admin</option></select></div>
+          <div><label for="u-user">Username (optional)</label><input type="text" id="u-user" maxlength="60" pattern="[a-zA-Z0-9._-]{3,60}" autocomplete="off"></div>
+          <div><label for="u-pass">Password (10+ characters)</label><input type="password" id="u-pass" minlength="10" maxlength="200" autocomplete="new-password"></div>
           <button class="primary" type="submit">Create sign-in</button>
         </form>
         <div id="user-new" class="notice ok" hidden></div>
-        <div class="scroll"><table><thead><tr><th>Name</th><th>Role</th><th>Created</th><th></th></tr></thead><tbody id="users"></tbody></table></div>
+        <div class="scroll"><table><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Last sign-in</th><th>Created</th><th></th></tr></thead><tbody id="users"></tbody></table></div>
         <p id="users-note" class="muted" hidden></p>
       </div>
     </section>
@@ -211,11 +225,11 @@
 <script>
 const $ = (s, r = document) => r.querySelector(s);
 const el = (tag, text, cls) => { const e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; };
-let token = sessionStorage.getItem("ocr_admin") || "";
+let token = sessionStorage.getItem("ocr_admin") || localStorage.getItem("ocr_admin_session") || "";
 
 async function api(path, opts = {}) {
   const r = await fetch("/admin/api" + path, { ...opts, headers: { "X-Admin-Token": token, ...(opts.headers || {}) } });
-  if (r.status === 401) { signOut(); throw new Error("The admin token is not valid."); }
+  if (r.status === 401) { signOut(); throw new Error("You are signed out: sign in again."); }
   const body = r.status === 204 ? null : await r.json().catch(() => null);
   if (!r.ok) throw new Error((body && body.message) || ("Request failed (" + r.status + ")"));
   return body;
@@ -223,7 +237,7 @@ async function api(path, opts = {}) {
 function showError(msg) { const e = $("#error"); e.textContent = msg || ""; e.hidden = !msg; }
 function when(iso) { return iso ? new Date(iso).toLocaleString() : "never"; }
 
-function signOut() { token = ""; sessionStorage.removeItem("ocr_admin"); $("#app").hidden = true; $("#signout").hidden = true; $("#signin").hidden = false; }
+function signOut() { token = ""; sessionStorage.removeItem("ocr_admin"); localStorage.removeItem("ocr_admin_session"); $("#app").hidden = true; $("#signout").hidden = true; $("#signin").hidden = false; }
 async function enter() {
   try { await loadClients(); } catch (e) { return false; }
   $("#signin").hidden = true; $("#app").hidden = false; $("#signout").hidden = false; return true;
@@ -236,6 +250,21 @@ $("#signin-form").addEventListener("submit", async (ev) => {
   if (ok) { sessionStorage.setItem("ocr_admin", token); $("#token").value = ""; }
   else $("#signin-error").textContent = "That token was not accepted. Check OCR_ADMIN_TOKEN on the server.";
 });
+$("#login-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault(); const err = $("#login-error"); err.hidden = true;
+  let r;
+  try {
+    r = await fetch("/admin/api/login", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: $("#l-user").value, password: $("#l-pass").value, remember: $("#l-remember").checked }) });
+  } catch (e) { err.textContent = "The server did not answer."; err.hidden = false; return; }
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) { err.textContent = body.message || "Sign-in failed."; err.hidden = false; return; }
+  token = body.token; $("#l-pass").value = "";
+  if (await enter()) { sessionStorage.setItem("ocr_admin", token); if ($("#l-remember").checked) localStorage.setItem("ocr_admin_session", token); }
+  else { err.textContent = "Signed in, but the console could not be loaded."; err.hidden = false; }
+});
+$("#use-token").addEventListener("click", () => { $("#login-form").hidden = true; $("#signin-form").hidden = false; });
+$("#use-password").addEventListener("click", () => { $("#signin-form").hidden = true; $("#login-form").hidden = false; });
 $("#signout").addEventListener("click", signOut);
 
 document.querySelectorAll("nav button").forEach((b) => b.addEventListener("click", () => {
@@ -310,9 +339,15 @@ async function loadUsers() {
   let r;
   try { r = await api("/users"); } catch (e) { note.textContent = "Only the owner's token can see and manage console sign-ins."; note.hidden = false; return; }
   for (const u of r.users) {
-    const tr = el("tr"); tr.append(el("td", u.name), el("td", u.role), el("td", when(u.created_at)));
+    const tr = el("tr"); tr.append(el("td", u.name), el("td", u.username || "token only"), el("td", u.role), el("td", u.last_login_at ? when(u.last_login_at) : ""), el("td", when(u.created_at)));
     const td = el("td");
-    if (u.active) { const b = el("button", "Revoke", "danger"); b.type = "button";
+    if (u.active) { const p = el("button", u.username ? "New password" : "Set password", "plain"); p.type = "button";
+      p.addEventListener("click", async () => {
+        const name = prompt("Username for " + u.name + ":", u.username || ""); if (!name) return;
+        const pw = prompt("New password for " + name + " (10 or more characters):"); if (!pw) return;
+        try { await api("/users/" + u.id + "/password", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: name, password: pw }) }); loadUsers(); }
+        catch (e) { showError(e.message); } }); td.append(p, " ");
+      const b = el("button", "Revoke", "danger"); b.type = "button";
       b.addEventListener("click", async () => { if (!confirm("Revoke the sign-in of " + u.name + "?")) return;
         try { await api("/users/" + u.id, { method: "DELETE" }); loadUsers(); } catch (e) { showError(e.message); } }); td.append(b);
     } else td.append(el("span", "revoked", "tag"));
@@ -323,8 +358,8 @@ async function loadUsers() {
 $("#user-form").addEventListener("submit", async (ev) => {
   ev.preventDefault(); showError("");
   try {
-    const u = await api("/users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: $("#u-name").value, role: $("#u-role").value }) });
-    const box = $("#user-new"); box.replaceChildren(el("p", "Token for " + u.name + " (" + u.role + "). It is shown this once: copy it now."), el("code", u.token)); box.hidden = false;
+    const u = await api("/users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: $("#u-name").value, role: $("#u-role").value, username: $("#u-user").value.trim() || null, password: $("#u-pass").value || null }) });
+    const box = $("#user-new"); box.replaceChildren(el("p", u.username ? u.name + " can sign in as " + u.username + " with the password you set. A token for scripts, shown this once:" : "Token for " + u.name + " (" + u.role + "). It is shown this once: copy it now."), el("code", u.token)); box.hidden = false;
     ev.target.reset(); loadUsers();
   } catch (e) { showError(e.message); }
 });
@@ -349,6 +384,7 @@ $("#try-form").addEventListener("submit", async (ev) => {
   const f = $("#t-file").files[0]; if (!f) return;
   const fd = new FormData(); fd.append("file", f);
   if ($("#t-pages").value.trim()) fd.append("pages", $("#t-pages").value.trim());
+  if ($("#t-pdfpw").value) fd.append("pdf_password", $("#t-pdfpw").value);
   if ($("#t-force").checked) fd.append("force_ocr", "true");
   if ($("#t-type").value) { fd.append("type", $("#t-type").value); fd.append("include_text", "true"); }
   if ($("#t-type").value === "custom") fd.append("fields", $("#t-fields").value);
