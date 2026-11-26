@@ -20,7 +20,7 @@ from .errors import ApiError
 
 log = logging.getLogger("ocr.service")
 DETAILS = ("lines", "text")
-READERS = ("standard", "jawi", "arabic", "tamil", "thai", "glm")
+READERS = ("standard", "detect", "jawi", "arabic", "tamil", "thai", "glm")
 
 
 def clean_options(pages: Optional[str], detail: Optional[str], force_ocr: bool, extract_type: Optional[str] = None,
@@ -55,7 +55,7 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
                        f"its model is not installed (ollama pull {get_settings().vlm_model})")
     if not glm and not engine.available():
         raise ApiError(503, "engine_unavailable", "the OCR engine is not loaded on this server")
-    script = options.get("engine") if options.get("engine") in ("jawi",) + tuple(scripts.SCRIPTS) else None
+    script = options.get("engine") if options.get("engine") in ("detect", "jawi") + tuple(scripts.SCRIPTS) else None
     if script == "jawi" and not jawi.available():
         raise ApiError(503, "reader_unavailable", "the Jawi reader is not available: its model file is missing from models/jawi")
     if script in scripts.SCRIPTS and not scripts.available(script):
@@ -124,7 +124,7 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
                     out["preview"] = "data:image/jpeg;base64," + base64.b64encode(jpeg.tobytes()).decode() if ok else None
             pages.append(out)
         return {
-            "engine": vision.NAME if glm else engine.NAME + "+" + (jawi.NAME if script == "jawi" else scripts.name(script)) if script
+            "engine": vision.NAME if glm else engine.NAME + "+" + (jawi.NAME if script == "jawi" else "scripts" if script == "detect" else scripts.name(script)) if script
             else engine.NAME,
             "kind": doc.kind,
             "file": doc.info(),

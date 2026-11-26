@@ -35,10 +35,10 @@ _FILE_BODY = {
             "fields": {"type": "string",
                        "description": "With type=custom: the values to find. Names separated by commas, or JSON "
                                       '{"name": "string|number|date"} or {"name": {"type": ..., "description": ...}}'},
-            "engine": {"type": "string", "enum": ["standard", "jawi", "arabic", "tamil", "thai", "glm"], "default": "standard",
+            "engine": {"type": "string", "enum": ["standard", "detect", "jawi", "arabic", "tamil", "thai", "glm"], "default": "standard",
                        "description": "'jawi' reads the lines in Jawi (Malay in Arabic script) with a model made "
                                       "for it and marks them \"script\": \"jawi\"; the other lines are read as usual. "
-                                      "'arabic', 'tamil' and 'thai' do the same for those scripts (the model is fetched on first use). "
+                                      "'detect' finds out by itself which of these scripts a page is in. 'arabic', 'tamil' and 'thai' do the same for those scripts (the model is fetched on first use). "
                                       "'glm' reads each page with the vision model (handwriting, hard photos): "
                                       "slower, whole-page text, no line positions"},
             "task": {"type": "string", "enum": ["text", "table", "formula"], "default": "text",
@@ -149,7 +149,7 @@ async def searchable_pdf(request: Request, client: ApiClient = Depends(require_c
     data, options, _ = await read_input(request)
     try:
         pdf, pages = await run_in_threadpool(searchable.build, data, options.get("pages"), get_settings().sync_max_pages,
-                                          options.get("engine") if options.get("engine") in ("jawi", "arabic", "tamil", "thai") else None)
+                                          options.get("engine") if options.get("engine") in ("detect", "jawi", "arabic", "tamil", "thai") else None)
     except ApiError:
         service.record_usage(db, client.id, "sync", False, 0, len(data), 0)
         db.commit()
@@ -241,14 +241,17 @@ def bank_csv(result: dict, layout: str) -> str:
     quickbooks-3: Date, Description, Amount (money out negative). quickbooks-4: Date, Description,
     Credit, Debit. Both as QuickBooks Online documents them: dates dd/mm/yyyy, no zeros, no thousands
     separators. generic: Date, Description, Reference, Money out, Money in, Balance, for systems whose
-    import lets you map the columns (SQL Account, AutoCount, Xero, Bukku)."""
+    import lets you map the columns (SQL Account, AutoCount, Bukku). xero: the columns of Xero's
+    bank statement template (*Date, *Amount, Payee, Description, Reference, Check Number), money
+    out negative; Payee is left empty, since a statement does not say who it is apart from the description."""
     import csv
     import io
-    if layout not in ("quickbooks-3", "quickbooks-4", "generic"):
-        raise ApiError(422, "bad_profile", "profile must be quickbooks-3, quickbooks-4 or generic")
+    if layout not in ("quickbooks-3", "quickbooks-4", "xero", "generic"):
+        raise ApiError(422, "bad_profile", "profile must be quickbooks-3, quickbooks-4, xero or generic")
     out = io.StringIO()
     writer = csv.writer(out, lineterminator="\r\n")
     head = {"quickbooks-3": ["Date", "Description", "Amount"], "quickbooks-4": ["Date", "Description", "Credit", "Debit"],
+            "xero": ["*Date", "*Amount", "Payee", "Description", "Reference", "Check Number"],
             "generic": ["Date", "Description", "Reference", "Money out", "Money in", "Balance"]}[layout]
     writer.writerow(head)
 
@@ -266,6 +269,9 @@ def bank_csv(result: dict, layout: str) -> str:
                 writer.writerow([day, text, money(amount)])
             elif layout == "quickbooks-4":
                 writer.writerow([day, text, money(t.get("credit")), money(t.get("debit"))])
+            elif layout == "xero":
+                amount = (t.get("credit") or 0) - (t.get("debit") or 0)
+                writer.writerow([day, f"{amount:.2f}", "", text, t.get("reference") or "", ""])
             else:
                 writer.writerow([day, text, t.get("reference") or "", money(t.get("debit")), money(t.get("credit")),
                                  money(t.get("balance"))])

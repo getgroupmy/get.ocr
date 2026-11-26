@@ -16,7 +16,7 @@ from typing import Optional
 from . import engine
 
 # "1,250.00", "1.250,00", "1 250,00", "1'250.00": the last two digits are always the cents
-_MONEY = re.compile(r"^(?:RM|MYR|\$|€|£)?([(\-−+]?)(\d{1,3}(?:[,.' \u00a0]\d{3})*[.,]\d{2}|\d+[.,]\d{2})(\)?)(-|−|\+|DR|CR)?$", re.I)
+_MONEY = re.compile(r"^(?:RM|MYR|Rs\.?|INR|SGD|S\$|HKD|HK\$|USD|US\$|\$|€|£)?([(\-−+]?)(\d{1,3}(?:[,.' \u00a0]\d{3})*[.,]\d{2}|\d+[.,]\d{2})(\)?)(-|−|\+|DR|CR)?$", re.I)
 _GROUP_START = re.compile(r"^[(\-−+]?\d{1,3}$")           # "10" of "10 750,00"
 _GROUP_END = re.compile(r"^\d{3}(?: \d{3})*,\d{2}\)?$")  # "750,00": only where a comma marks the cents
 _MONTHS = {m: i for i, names in enumerate(
@@ -245,6 +245,13 @@ def parse(pages: list[dict], order: str = "dmy", owed: bool = False) -> dict:
     whole = "\n".join(p.get("text") or "" for p in pages)
     years = Counter(_year(a or b or c, None) for a, b, c in _YEAR.findall(whole))
     default_year = years.most_common(1)[0][0] if years else None
+    # 09/13 can only be month/day: where the dates of the page read as dates more often the other
+    # way round than the way that was asked for, the page is believed.
+    starts = [ln["text"].split()[0] for p in pages for ln in p.get("lines") or [] if ln["text"].strip()]
+    starts = [w for w in starts if _NUMERIC_DATE.match(w) and not re.match(r"^\d{4}", w)]
+    other = "mdy" if order == "dmy" else "dmy"
+    if sum(1 for w in starts if _date(w, other, default_year or 2000)) > sum(1 for w in starts if _date(w, order, default_year or 2000)):
+        order = other
 
     def rows_of(right_limit: Optional[float]) -> list[dict]:
         found: list[dict] = []
@@ -356,10 +363,7 @@ def parse(pages: list[dict], order: str = "dmy", owed: bool = False) -> dict:
         return best if best in keep and abs(columns[best] - w["x1"]) <= _GAP * 2 else None
 
     opening = closing = None
-    openings = 0  # more than one opening balance: several accounts in one statement
     for r in rows:
-        if r["kind"] == "opening":
-            openings += 1
         if r["kind"] == "opening" and opening is None:
             value, mark = r["money"][-1][1:]
             opening = -value if mark == "-" else value
@@ -372,9 +376,11 @@ def parse(pages: list[dict], order: str = "dmy", owed: bool = False) -> dict:
         open_row: Optional[dict] = None  # the transaction a following line of description belongs to
         for at, r in enumerate(rows):
             placed = [(column_of(w), w, v, mark) for w, v, mark in r["money"]] if r["kind"] in ("dated", "other") else []
-            amounts = [(c, v, mark) for c, _, v, mark in placed if c in amount_cols]
+            # on a card statement a minus is a payment or a refund: it lowers what is owed
+            amounts = [(c, v, "+" if owed and mark == "-" and "DR" not in w["text"].upper() else mark)
+                       for c, w, v, mark in placed if c in amount_cols]
             balance = next(((v, mark) for c, _, v, mark in placed if c == balance_col and c is not None), None)
-            same_day = (r["kind"] == "other" and amounts and txns and txns[-1]["_page"] == r["page"]
+            same_day = (r["kind"] == "other" and any(v for _, v, _ in amounts) and txns and txns[-1]["_page"] == r["page"]
                         and len(r["words"]) > len(r["money"]))  # a date printed once for several lines
             if (r["kind"] == "dated" and (amounts or balance)) or same_day:
                 used = {id(w) for c, w, _, _ in placed if c is not None}
@@ -394,10 +400,12 @@ def parse(pages: list[dict], order: str = "dmy", owed: bool = False) -> dict:
                     t["balance"] = -balance[0] if balance[1] == "-" else balance[0]
                 txns.append(t)
                 open_row = t
-            elif (r["kind"] == "other" and open_row is not None and not r["money"] and open_row["_page"] == r["page"]
+            elif (r["kind"] == "other" and open_row is not None and not any(v for _, v, _ in r["money"])
+                  and open_row["_page"] == r["page"]
                   and open_row["_lines"] < 6 and r["words"][0]["x0"] >= open_row["_x"] - 0.02
                   and r["top"] - open_row["_bottom"] <= 1.5 * max(open_row["_height"], 1)):
-                open_row["description"] = ((open_row["description"] or "") + " " + r["text"]).strip()
+                more = " ".join(w["text"] for w in r["words"] if not _money(w["text"]))  # a 0.00 beside a note is not part of it
+                open_row["description"] = ((open_row["description"] or "") + " " + more).strip()
                 open_row["_bottom"], open_row["_lines"] = r["bottom"], open_row["_lines"] + 1
             else:
                 open_row = None
@@ -431,6 +439,11 @@ def parse(pages: list[dict], order: str = "dmy", owed: bool = False) -> dict:
             by_account.append({"opening_balance": -value if mark == "-" else value,
                                "closing_balance": None if end is None else (-end[0] if end[1] == "-" else end[0]),
                                "first_transaction": mine[0] + 1 if mine else None, "transactions": len(mine)})
+    # "Rebates Brought Forward" on the last page reads like an opening balance and is not an account:
+    # an account has transactions.
+    by_account = [a for a in by_account if a["transactions"]]
+    if len(by_account) < 2:
+        by_account = []
     if not by_account:
         # No opening balance per account, but each account's table has its own title with the
         # account number above its column headings ("USD Savings Account — 817-890692-002").
@@ -463,7 +476,7 @@ def parse(pages: list[dict], order: str = "dmy", owed: bool = False) -> dict:
     out_total, out_count = _printed_total(rows, _TOTAL_OUT)
     in_total, in_count = _printed_total(rows, _TOTAL_IN)
     return {"transactions": best, "opening_balance": opening, "closing_balance": closing,
-            "accounts": max(openings, len(by_account), 1),
+            "accounts": max(len(by_account), 1),
             "by_account": by_account,
             "printed": {"total_debits": out_total, "debit_count": out_count,
                         "total_credits": in_total, "credit_count": in_count}}

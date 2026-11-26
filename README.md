@@ -134,6 +134,11 @@ one script per request. Each model is fetched once from the model's public host,
 with `scripts/get_models.sh`, and checked against a known fingerprint; documents are never sent
 anywhere. If the mini cannot reach that host the request answers 503 `reader_unavailable`.
 
+**Not knowing the script.** `engine=detect` finds out by itself: a few of the longest lines the
+standard reader could not read are tried with every script's model, and the page is read with the
+one that reads them best. A page in Latin letters only is read exactly as by the standard reader.
+One script per page.
+
 What these do not do, and how well they read, is under "Limits you should know".
 
 What you give up with `engine=glm`: it answers with the text of the whole page, so there are no `lines`, no positions
@@ -486,8 +491,11 @@ one list and the balance check fails.
 
 **Transactions for an accounting system.** For a statement, add a profile to the same header:
 `Accept: text/csv; profile=quickbooks-3` (Date, Description, Amount, money out negative),
-`profile=quickbooks-4` (Date, Description, Credit, Debit) or `profile=generic` (Date, Description,
-Reference, Money out, Money in, Balance). The two QuickBooks layouts follow QuickBooks Online's
+`profile=quickbooks-4` (Date, Description, Credit, Debit), `profile=xero` (*Date, *Amount, Payee,
+Description, Reference, Check Number; money out negative, Payee empty) or `profile=generic` (Date,
+Description, Reference, Money out, Money in, Balance). The Xero layout is written from memory of
+Xero's bank statement template and was not checked against a Xero account: if its import screen
+shows other headings, map the columns there or use `generic`. The two QuickBooks layouts follow QuickBooks Online's
 published format: dates as dd/mm/yyyy, empty cells in place of zeros, no thousands separators.
 Xero, AutoCount and Bukku publish their column headers only inside a signed-in account, and SQL
 Account maps columns by hand, so for those use `generic` and map the columns at import.
@@ -708,8 +716,14 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
   rendered Thai read well; small low-resolution snippets and Thai numerals did not. Printed text
   typefaces only: calligraphic Arabic and handwriting in these scripts were not tried. A single
   Western digit inside an Arabic line can be lost. Turned pages were tried on one made page per
-  script only. In the searchable PDF, Arabic lines are carried; Tamil and Thai lines are not.
-  Speed was not measured.
+  script only. The searchable PDF carries the text of all four scripts (a font of 20 to 55 KB
+  is put into the file for each script used). Speed was not measured on the mini.
+- **Finding the script, measured.** With `engine=detect`: 12 of 12 made Jawi pages, 4 of 4 real
+  Jawi newspaper pages, 8 of 8 Arabic, 8 of 8 Tamil and 8 of 8 Thai pages were read as their own
+  script, and 30 of 30 scanned English forms were left exactly as the standard reader gives them.
+  Jawi and Arabic are told apart by the six letters only Jawi has, so a short Jawi text without
+  any of them is taken for Arabic. A page in two of these scripts is read as one of them. It costs
+  time: 3 to 8 seconds a made page here against 1 to 2 for the standard reader.
 - **Handwriting, measured and not improved.** On 30 lines each of two public English sets, the
   present reader gets 15% of characters wrong on neat scanned handwriting (IAM) and 51% on photos
   of everyday handwriting (GNHK). TrOCR (MIT) gets 6% to 7% on IAM, the set it was trained on,
@@ -749,8 +763,9 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
     with. Arabic vowel marks. Decorative and poster typefaces read badly. Whether "kg 250" on the
     paper was typed "250 kg" cannot be told from the paper and is left as printed. Field
     extraction from Jawi text by the language model has not been tried.
-- **Rotated pages.** On a page that is upside down or on its side the lines are still read, but
-  they come out in the wrong order (bottom line first, or all on one row). Rotate it upright before sending.
+- **Rotated pages.** A page on its side or upside down is turned upright before it is read (see
+  "Turned pages"). A page tilted by a few degrees is read as it is; a page turned by some other
+  angle, such as 45 degrees, is not handled.
 - **How good the model is.** On the Mac mini `qwen2.5:7b` answers in 30 to 40 seconds per call. It
   could not copy a dense statement table (wrong balances, invented values), which is why statements
   are now read as a table by code. Invoices and receipts are still read by the model and have not
@@ -764,7 +779,8 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
   The quantities, pen strokes and `[ ]` were built on one real photo of a slip (4 missing
   quantities put back, 2 strokes and 5 empty brackets found) and a made-up one. On 52 other
   documents (50 scanned forms, a card statement, a receipt; 2,794 lines) no line changed. Limits:
-  the pen must be of another colour than the print (a black pen on black print is not seen); a
+  a pen of the print's own colour is seen only as a long straight slanted stroke (tried on a
+  made-up slip only); a
   struck digit is only told when the same digit stands clean elsewhere on the slip, otherwise
   the item is left without a quantity and fails `item_quantities`; a quantity column needs two
   digits under each other to be believed; what a stroke or a tick means is for your app to say.
@@ -786,13 +802,18 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
     4 pass (single-account statements with a running balance); 2 are read (161 and 162
     transactions) and fail the balance check because the documents' own printed balances do not
     follow, which is what the check is for; 2 card statements are read (19 and 30 transactions):
-    nobody verified those rows against the pages, and the 30-row one fails its opening-to-closing
-    check for a reason not looked into; the Hong Kong statement with two accounts is split into
+    nobody verified those rows against the pages. The 30-row one failed its opening-to-closing
+    check because its minus-marked payment was taken as a charge, its dates were month/day, and
+    15 note lines with "0.00" beside them were counted as transactions; it now gives 15
+    transactions whose charges (7,699.43) and payments (13.84) are the ones its own summary
+    prints, and passes the check; the Hong Kong statement with two accounts is split into
     them by the title over each table (15 and 10 transactions) and each passes its running-balance
     check; the Dutch one (European numbers, one signed amount column, no running balance: 22
     transactions) passes its opening-to-closing and printed-totals checks; the French-Canadian one
     (thousands set apart by a space, French month names: 25 transactions) passes all three; 1
-    scanned copy finds 147 of 162 rows; 1 is a bank's illustrated guide to its consolidated
+    scanned copy first found 147 of 162 rows, and in fact differed from the digital copy of the
+    same statement in 78 rows, because "Rs." printed against an amount was read as part of it; it
+    now gives the same 162 transactions as the digital copy; 1 is a bank's illustrated guide to its consolidated
     statement, not a statement, and reads as 13 rows that fail the checks; 1 is a one-row example
     and gives nothing. Those three European and multi-account samples are synthetic benchmark
     documents, one of each kind: other Dutch, French or German banks' layouts are untested. No

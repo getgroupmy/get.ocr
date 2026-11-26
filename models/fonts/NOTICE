@@ -8,3 +8,11 @@ The family name was changed to "GetOCR Hidden Text".
 
 It carries the invisible text of a searchable PDF where that text is in Jawi. Nothing is drawn
 with it. The subset is licensed under the same Open Font License.
+
+hidden-text-tamil.ttf, hidden-text-thai.ttf
+
+Subsets of Noto Sans Tamil and Noto Sans Thai at their default weight and width (Copyright 2022
+The Noto Project Authors, https://github.com/notofonts/tamil and https://github.com/notofonts/thai),
+licensed under the SIL Open Font License, Version 1.1. Kept: Basic Latin and the Tamil or Thai
+block; removed: everything else, the shaping tables and the hinting. The family names were changed
+to "GetOCR Hidden Text Tamil" and "GetOCR Hidden Text Thai". Same use and same licence as above.

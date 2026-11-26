@@ -445,3 +445,51 @@ def test_a_plain_page_gets_no_quantities_or_strokes(need_engine):
     from app import lists
     assert [ln["text"] for ln in lists.leading_quantities(img, lines)] == [ln["text"] for ln in lines]
     assert lists.brackets(img, lines) == []
+
+
+def test_a_stroke_in_a_pen_as_dark_as_the_print_is_seen_too(need_engine):
+    import cv2
+    import numpy as np
+    for struck in ((0, 2), ()):
+        img = cv2.imdecode(np.frombuffer(synth.order_slip(struck=struck, ticked=(), pen=(40, 45, 60)), np.uint8), cv2.IMREAD_COLOR)
+        lines = engine.read(img)
+        rows = engine.layout_text(lines).split("\n")
+        assert rows[3:8] == ["1 Stir-Fried Vege Sawi", "1 Vegetarian Fried Rice", "1 Quarter Roasted Chicken",
+                             "1 Siu Mai King", "2 Filtered Water"]
+        assert [ln["text"] for ln in lines if ln.get("struck")] == [
+            "1 Stir-Fried Vege Sawi", "1 Quarter Roasted Chicken"][:len(struck)]
+
+
+def test_the_script_of_a_page_is_found_without_being_told(client, api_key, need_engine):
+    from pathlib import Path
+
+    import pytest
+
+    from app import scripts
+    if not all(scripts.available(s) for s in scripts.SCRIPTS):
+        pytest.skip("the script models could not be fetched here")
+    for name, want in (("jawi", "jawi"), ("jawi_mixed", "jawi"), ("arabic", "arabic"), ("tamil", "tamil"), ("thai", "thai")):
+        png = (Path(__file__).parent / "pictures" / f"{name}.png").read_bytes()
+        r = client.post("/v1/ocr", files={"file": (f"{name}.png", png, "image/png")}, data={"engine": "detect"}, headers=api_key)
+        assert r.status_code == 200, r.text
+        assert {ln["script"] for ln in r.json()["pages"][0]["lines"] if ln.get("script")} == {want}, name
+    # a page in Latin letters is read as by the standard reader, and nothing is marked
+    plain = client.post("/v1/ocr", files={"file": ("p.png", synth.image_bytes(LINES), "image/png")}, data={"engine": "detect"}, headers=api_key)
+    usual = client.post("/v1/ocr", files={"file": ("p.png", synth.image_bytes(LINES), "image/png")}, headers=api_key)
+    assert plain.json()["text"] == usual.json()["text"] and not any("script" in ln for ln in plain.json()["pages"][0]["lines"])
+
+
+def test_tamil_and_thai_text_is_carried_in_the_searchable_pdf(client, api_key, need_engine):
+    from pathlib import Path
+
+    import pytest
+
+    from app import scripts
+    from app.documents import Document
+    for script, words in (("tamil", "மொத்த தொகை 250 ரூபாய்"), ("thai", "ยอดรวมทั้งหมด 250 บาท")):
+        if not scripts.available(script):
+            pytest.skip(f"the {script} model could not be fetched here")
+        png = (Path(__file__).parent / "pictures" / f"{script}.png").read_bytes()
+        r = client.post("/v1/searchable", files={"file": (f"{script}.png", png, "image/png")}, data={"engine": script}, headers=api_key)
+        with Document(r.content) as doc:
+            assert words in doc.page(1).text_layer and "Invoice No. 2026/0417" in doc.page(1).text_layer

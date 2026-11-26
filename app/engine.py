@@ -198,7 +198,9 @@ def read(img: np.ndarray, script: Optional[str] = None) -> list[dict]:
         unread = [[[round(float(x), 1), round(float(y), 1)] for x, y in box] for box in (where if where is not None else [])]
         unread = [box for box in unread if not any(_same_place(box, ln["box"]) for ln in found)]
         everything = found + [{"text": "", "confidence": 0.0, "box": box} for box in unread]
-        found = jawi.reread(img, everything) if script == "jawi" else scripts.reread(img, everything, script)
+        if script == "detect":  # not told which script: ask the lines the standard reader could not read
+            script = scripts.detect(original, everything)
+        found = jawi.reread(img, everything) if script == "jawi" else scripts.reread(img, everything, script) if script else found
         # a scrap the standard reader made of a piece of a line that was now read whole
         whole = [scripts._span(ln["box"]) for ln in found if ln.get("script")]
         found = [ln for ln in found if ln.get("script") or not any(scripts._inside(scripts._span(ln["box"]), big) for big in whole)]
