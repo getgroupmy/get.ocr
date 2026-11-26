@@ -17,15 +17,17 @@
 
 export type OcrFile = Uint8Array | ArrayBuffer | Blob;
 
-export type OcrEngine = "standard" | "detect" | "jawi" | "arabic" | "tamil" | "thai" | "glm";
+export type OcrEngine = "standard" | "detect" | "jawi" | "arabic" | "tamil" | "thai" | "glm" | "minicpm";
 
 export interface OcrOptions {
   /** The file's name, with its ending (.jpg, .heic, .pdf, .docx, .xlsx). Only used as a label. */
   filename?: string;
   /** PDF pages to read, like "1-3,7". Default: all. */
   pages?: string;
-  /** "detect" finds Jawi, Arabic, Tamil or Thai by itself; "glm" is the vision model for handwriting. */
+  /** "detect" finds Jawi, Arabic, Tamil or Thai by itself; "glm" and "minicpm" are vision models for handwriting and hard photos. */
   engine?: OcrEngine;
+  /** With a vision engine: "text" (default), "table", "formula", and with "minicpm" also "seal" and "chart". */
+  task?: "text" | "table" | "formula" | "seal" | "chart";
   /** The password of a locked PDF. Used once to open it; the server keeps it nowhere. */
   pdfPassword?: string;
   /** Read a PDF's pages as pictures even when it carries text. */
@@ -199,6 +201,7 @@ export class GetOcr {
     };
     set("pages", o.pages);
     set("engine", o.engine === "standard" ? undefined : o.engine);
+    set("task", o.task === "text" ? undefined : o.task);
     set("pdf_password", o.pdfPassword);
     set("force_ocr", o.forceOcr);
     set("marks", o.marks);

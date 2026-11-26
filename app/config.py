@@ -77,6 +77,7 @@ class Settings(BaseSettings):
     # A second reader: a vision model on the same model server that reads the picture of a page itself
     # (handwriting, hard photos, complex tables). "" turns it off. Asked for per request with engine=glm.
     vlm_model: str = "glm-ocr"
+    vlm2_model: str = "minicpm-ocr"  # a second vision reader (MiniCPM-OCR 1.0); see scripts/get_minicpm.sh
     vlm_timeout_seconds: float = 180.0
     vlm_max_side: int = 2000  # pictures are scaled down to this before they are sent to the model
     vlm_max_tokens: int = 4096  # the longest answer per page; stops a model that starts repeating itself

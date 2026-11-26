@@ -123,7 +123,8 @@ def health(request: Request, db=Depends(get_db)):  # noqa: ANN001
     ready = engine.available()
     # "extraction" is separate from status: plain reading works without the model server.
     body = {"status": "ok" if ready else "degraded", "engine": engine.NAME, "ocr": ready,
-            "extraction": llm.ready(), "vision_reader": llm.vision_ready(), "signatures": signatures.available(),
+            "extraction": llm.ready(), "vision_reader": llm.vision_ready(),
+            "minicpm": llm.vision_ready(get_settings().vlm2_model), "signatures": signatures.available(),
             "jawi": jawi.available(),
             "queue": service.queue_length()}
     try:

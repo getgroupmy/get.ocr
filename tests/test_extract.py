@@ -539,13 +539,18 @@ def test_picture_quality_is_reported(client, api_key, need_engine):
 
 
 # --- the second reader: a vision model -------------------------------------------------------
+models: list = []  # which model each call of the stand-in vision reader was for
+
+
 @pytest.fixture
 def fake_vision(monkeypatch):
     """Stands in for the vision model: records what it is sent and answers with prepared text."""
     seen = []
+    models.clear()
 
-    def read_image(prompt, image):
+    def read_image(prompt, image, model=None):
         seen.append((prompt, image))
+        models.append(model)
         return "```markdown\nKepada Encik Ali,\nBayaran RM 250.00 diterima.\n```"
 
     monkeypatch.setattr(llm, "vision_ready", lambda *a, **k: True)
@@ -554,7 +559,7 @@ def fake_vision(monkeypatch):
 
 
 def test_vision_reader_is_off_until_its_model_is_installed(client, api_key, need_engine):
-    llm._vision_status = (0.0, False)
+    llm._vision_status = {}
     r = client.post("/v1/ocr", files={"file": ("a.png", synth.image_bytes(["hello"]), "image/png")},
                     data={"engine": "glm"}, headers=api_key)
     assert r.status_code == 503 and r.json()["error"] == "reader_unavailable" and "ollama pull glm-ocr" in r.json()["message"]
@@ -643,3 +648,48 @@ def test_rows_as_csv_and_where_they_are(client, api_key, need_engine, fake_model
                     headers={**api_key, "Accept": "text/csv"})
     assert r.headers["content-type"].startswith("text/csv")
     assert r.text.splitlines() == ["description,quantity,unit_price,amount", "Widget,2.0,50.0,100.0", "Gasket,1.0,25.5,25.5"]
+
+
+def test_minicpm_is_a_second_vision_reader(client, api_key, need_engine, fake_vision, monkeypatch):
+    png = synth.image_bytes(["hello"])
+    r = client.post("/v1/ocr", files={"file": ("a.png", png, "image/png")}, data={"engine": "minicpm"}, headers=api_key)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["engine"] == "minicpm-ocr" and body["pages"][0]["source"] == "minicpm" and body["pages"][0]["lines"] == []
+    assert models[-1] == "minicpm-ocr" and fake_vision[-1][0] == "Text Recognition:"
+    # the first reader is still the first
+    client.post("/v1/ocr", files={"file": ("a.png", png, "image/png")}, data={"engine": "glm"}, headers=api_key)
+    assert models[-1] == "glm-ocr"
+    # what only MiniCPM-OCR was trained to do
+    client.post("/v1/ocr", files={"file": ("a.png", png, "image/png")}, data={"engine": "minicpm", "task": "seal"}, headers=api_key)
+    assert fake_vision[-1][0] == "Seal Recognition:"
+    client.post("/v1/ocr", files={"file": ("a.png", png, "image/png")}, data={"engine": "minicpm", "task": "chart"}, headers=api_key)
+    assert fake_vision[-1][0] == "Chart to Table:"
+    bad = client.post("/v1/ocr", files={"file": ("a.png", png, "image/png")}, data={"engine": "glm", "task": "seal"}, headers=api_key)
+    assert bad.status_code == 422 and "minicpm" in bad.json()["message"]
+    assert client.get("/health").json()["minicpm"] is True
+
+
+def test_minicpm_is_off_until_it_is_installed(client, api_key, need_engine):
+    llm._vision_status = {}
+    r = client.post("/v1/ocr", files={"file": ("a.png", synth.image_bytes(["hello"]), "image/png")},
+                    data={"engine": "minicpm"}, headers=api_key)
+    assert r.status_code == 503 and r.json()["error"] == "reader_unavailable" and "get_minicpm.sh" in r.json()["message"]
+    assert client.get("/health").json()["minicpm"] is False
+
+
+def test_a_table_in_cell_marks_becomes_html():
+    from app import vision
+    plain = "<otsl><fcel>Item<fcel>Qty<fcel>Price<nl><fcel>Kertas A4<fcel>10<fcel>125.50<nl><fcel>Jumlah<ecel><fcel>365.50<nl></otsl>"
+    assert vision.otsl_to_html(plain) == ("<table><tr><td>Item</td><td>Qty</td><td>Price</td></tr><tr><td>Kertas A4</td><td>10</td>"
+                                           "<td>125.50</td></tr><tr><td>Jumlah</td><td></td><td>365.50</td></tr></table>")
+    # a heading over two columns, a cell over two rows, and text that must not become markup
+    merged = "<ched>Amount (RM)<lcel><ched>Note<nl><fcel>Debit<fcel>Credit<fcel>a < b<nl><fcel>1.00<fcel>2.00<ucel><nl>"
+    html = vision.otsl_to_html(merged)
+    assert '<th colspan="2">Amount (RM)</th><th>Note</th>' in html and '<td rowspan="2">a &lt; b</td>' in html
+    assert html.count("<tr>") == 3 and html.endswith("<td>1.00</td><td>2.00</td></tr></table>")
+    assert vision.otsl_to_html("no table here") == "no table here"
+    # the service's own reader of merged cells understands the result
+    from app import tablegrid
+    cells = tablegrid.cells_of(html)
+    assert any(c["text"] == "Amount (RM)" and c["colspan"] == 2 for c in cells)

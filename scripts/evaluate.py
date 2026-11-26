@@ -80,7 +80,7 @@ def main() -> None:
     ap.add_argument("folder")
     ap.add_argument("--url", default="http://127.0.0.1:8090")
     ap.add_argument("--models", default="", help="installed extraction models to compare, separated by commas")
-    ap.add_argument("--engine", default="standard", choices=["standard", "detect", "jawi", "arabic", "tamil", "thai", "glm"])
+    ap.add_argument("--engine", default="standard", choices=["standard", "detect", "jawi", "arabic", "tamil", "thai", "glm", "minicpm"])
     ap.add_argument("--show", action="store_true", help="list every wrong field")
     args = ap.parse_args()
     cases = sorted(pathlib.Path(args.folder).glob("*.expected.json"))
