@@ -1,6 +1,6 @@
 #!/bin/bash
-# Check that the service is reachable from outside at its public address, and that the console
-# is not. Run on the Mac mini after adding the public hostname in Cloudflare.
+# Check that the service is reachable from outside at its public address, and that the API and
+# the console ask for a key and a token. Run on the Mac mini after adding the public hostname in Cloudflare.
 #   ./scripts/check_public.sh ocr.getcdn.link
 set -uo pipefail
 HOST="${1:-}"; [ -n "$HOST" ] || { echo "Usage: $0 <public hostname>, for example: $0 ocr.getcdn.link"; exit 1; }
@@ -22,10 +22,12 @@ fi
 rm -f /tmp/ocr-public-health.$$
 
 code="$(curl -s -m 20 -o /dev/null -w '%{http_code}' "https://$HOST/admin" || echo 000)"
-case "$code" in
-  404|403|401|302) say "✓" "The console is not open from outside (https://$HOST/admin answers $code)." ;;
-  200) ok=0; say "✗" "The console is open from outside. Remove OCR_ADMIN_PUBLIC from .env, or protect /admin* with a Cloudflare Access policy." ;;
-  *) say "•" "https://$HOST/admin answered $code." ;;
+api="$(curl -s -m 20 -o /dev/null -w '%{http_code}' "https://$HOST/admin/api/clients" || echo 000)"
+case "$code/$api" in
+  200/401) say "✓" "The console is at https://$HOST/admin and asks for a token." ;;
+  404/*|403/*|302/*) say "✓" "The console is not reachable from outside (https://$HOST/admin answers $code)." ;;
+  200/200) ok=0; say "✗" "The console's data is readable from outside without a token. Stop the service and tell whoever maintains it." ;;
+  *) say "•" "https://$HOST/admin answered $code, its API $api." ;;
 esac
 
 code="$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST "https://$HOST/v1/ocr" || echo 000)"

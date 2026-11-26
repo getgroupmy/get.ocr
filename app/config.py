@@ -90,9 +90,11 @@ class Settings(BaseSettings):
     # Webhooks to this machine or the local network are refused unless this is on: whoever can set a
     # webhook could otherwise make the server call internal services. Turn it on only when the apps
     # that receive webhooks really do run on this machine or network.
-    # The console and its API are not served to requests that arrive through the Cloudflare tunnel,
-    # only on the machine itself. Set true once /admin* is protected at Cloudflare (an Access policy).
-    admin_public: bool = False
+    # The console is reachable at the public address, behind its token, as get.ekyc's and
+    # get.route's are. Set false to serve it on the machine itself only: a request for /admin that
+    # arrives through the Cloudflare tunnel is then answered 404.
+    admin_public: bool = True
+    admin_tries: int = 10  # wrong console tokens from one address within 5 minutes before it must wait
     webhook_allow_internal: bool = False
     rate_per_minute: int = 120  # requests one API key may make in a minute; 0 = no limit
     duplicate_days: int = 365  # how long a document is remembered (as a hash only) to spot it coming in twice

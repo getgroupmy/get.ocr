@@ -270,19 +270,94 @@ def test_a_page_on_its_side_is_turned_upright(client, api_key, need_engine):
     assert "rotated" not in plain["pages"][0]
 
 
-def test_the_console_is_not_served_through_the_tunnel(client, api_key, monkeypatch):
+def test_the_console_can_be_kept_off_the_public_address(client, api_key, monkeypatch):
+    from app.config import get_settings
     through = {"cf-ray": "a6072fa9291955bd-KUL", "cf-connecting-ip": "203.0.113.9"}
-    # on the machine itself: as before
-    assert client.get("/admin").status_code == 200
-    assert client.get("/admin/api/clients", headers=ADMIN).status_code == 200
-    # through Cloudflare: nothing there, even with the right token
+    # as get.ekyc and get.route do: the console answers at the public address, behind its token
+    assert client.get("/admin", headers=through).status_code == 200
+    assert client.get("/admin/api/clients", headers=through).status_code == 401
+    assert client.get("/admin/api/clients", headers={**ADMIN, **through}).status_code == 200
+    # OCR_ADMIN_PUBLIC=false: through Cloudflare there is nothing there, even with the right token
+    monkeypatch.setattr(get_settings(), "admin_public", False)
     assert client.get("/admin", headers=through).status_code == 404
     assert client.get("/admin/api/clients", headers={**ADMIN, **through}).status_code == 404
+    assert client.get("/admin").status_code == 200  # on the machine itself: as before
+    assert client.get("/admin/api/clients", headers=ADMIN).status_code == 200
     # the API for other apps is what the tunnel is for
     assert client.get("/health", headers=through).status_code == 200
     assert client.post("/v1/ocr", headers=through).status_code == 401
     assert client.get("/v1/types", headers={**api_key, **through}).status_code == 200
-    # the owner may open it once /admin is protected at Cloudflare
+
+
+def test_an_address_that_keeps_sending_wrong_console_tokens_must_wait(client, monkeypatch):
+    from app import auth
     from app.config import get_settings
-    monkeypatch.setattr(get_settings(), "admin_public", True)
-    assert client.get("/admin", headers=through).status_code == 200
+    monkeypatch.setattr(get_settings(), "admin_tries", 3)
+    guesser = {"cf-connecting-ip": "198.51.100.77"}
+    for n in range(3):
+        assert client.get("/admin/api/clients", headers={**guesser, "X-Admin-Token": f"guess-{n}"}).status_code == 401
+    # now even the right token waits, from that address only
+    late = client.get("/admin/api/clients", headers={**guesser, **ADMIN})
+    assert late.status_code == 429 and late.json()["error"] == "too_many_attempts"
+    assert client.get("/admin/api/clients", headers={"cf-connecting-ip": "198.51.100.78", **ADMIN}).status_code == 200
+    # opening the page without a token is not a guess
+    for _ in range(5):
+        assert client.get("/admin/api/clients", headers={"cf-connecting-ip": "198.51.100.79"}).status_code == 401
+    assert client.get("/admin/api/clients", headers={"cf-connecting-ip": "198.51.100.79", **ADMIN}).status_code == 200
+    auth._wrong.clear()
+
+
+def test_sign_in_with_a_username_and_password(client, monkeypatch):
+    from app.routers import session
+    made = client.post("/admin/api/users", json={"name": "Aina", "role": "admin", "username": "Aina.K", "password": "kata-laluan-panjang"},
+                       headers=ADMIN)
+    assert made.status_code == 201 and made.json()["username"] == "aina.k"
+    assert client.post("/admin/api/users", json={"name": "B", "username": "aina.k", "password": "kata-laluan-lain"}, headers=ADMIN).status_code == 409
+    assert client.post("/admin/api/users", json={"name": "B", "username": "bbb"}, headers=ADMIN).status_code == 422  # a username needs a password
+    assert client.post("/admin/api/users", json={"name": "B", "username": "bbb", "password": "pendek"}, headers=ADMIN).status_code == 422
+    # wrong password, unknown name: the same answer
+    assert client.post("/admin/api/login", json={"username": "aina.k", "password": "salah-salah-salah"}).status_code == 401
+    assert client.post("/admin/api/login", json={"username": "tiada", "password": "salah-salah-salah"}).json()["message"] == "wrong username or password"
+    r = client.post("/admin/api/login", json={"username": "AINA.K ", "password": "kata-laluan-panjang"})
+    assert r.status_code == 200 and r.json()["role"] == "admin" and r.json()["expires_in"] == 12 * 3600
+    signed = {"X-Admin-Token": r.json()["token"]}
+    # the session works where a token does, with the user's own rights
+    assert client.get("/admin/api/clients", headers=signed).status_code == 200
+    assert client.post("/admin/api/clients", json={"name": "by-aina"}, headers=signed).status_code == 201
+    assert client.get("/admin/api/users", headers=signed).status_code == 403  # only the owner's token manages users
+    listed = client.get("/admin/api/users", headers=ADMIN).json()["users"]
+    mine = next(u for u in listed if u["username"] == "aina.k")
+    assert mine["last_login_at"] and "password" not in str(listed).lower().replace("password_set", "")
+    # a session cannot be made up or altered
+    forged = r.json()["token"].rsplit(".", 1)[0] + "." + "0" * 64
+    assert client.get("/admin/api/clients", headers={"X-Admin-Token": forged}).status_code == 401
+    # she changes her own password; the old one stops working
+    assert client.post("/admin/api/password", json={"current": "bukan-yang-betul", "new": "kata-laluan-baharu"}, headers=signed).status_code == 403
+    assert client.post("/admin/api/password", json={"current": "kata-laluan-panjang", "new": "kata-laluan-baharu"}, headers=signed).status_code == 200
+    assert client.post("/admin/api/login", json={"username": "aina.k", "password": "kata-laluan-panjang"}).status_code == 401
+    assert client.post("/admin/api/login", json={"username": "aina.k", "password": "kata-laluan-baharu", "remember": True}).json()["expires_in"] == 30 * 86400
+    # the owner sets a new password; revoking the user ends her session at once
+    assert client.put(f"/admin/api/users/{mine['id']}/password", json={"username": "aina", "password": "ditetapkan-pemilik"}, headers=ADMIN).status_code == 200
+    assert client.post("/admin/api/login", json={"username": "aina", "password": "ditetapkan-pemilik"}).status_code == 200
+    assert client.delete(f"/admin/api/users/{mine['id']}", headers=ADMIN).status_code == 204
+    assert client.get("/admin/api/clients", headers=signed).status_code == 401
+    assert client.post("/admin/api/login", json={"username": "aina", "password": "ditetapkan-pemilik"}).status_code == 401
+    # five wrong passwords lock that name from that address
+    session._failures.clear()
+    for _ in range(5):
+        assert client.post("/admin/api/login", json={"username": "kunci", "password": "salah-salah-salah"}).status_code == 401
+    assert client.post("/admin/api/login", json={"username": "kunci", "password": "salah-salah-salah"}).status_code == 429
+    session._failures.clear()
+
+
+def test_a_console_user_can_be_made_from_the_command_line(client, monkeypatch):
+    from app import adduser
+    monkeypatch.setattr(adduser.getpass, "getpass", lambda prompt="": "dari-baris-arahan")
+    assert adduser.main(["pemilik"]) == 0
+    r = client.post("/admin/api/login", json={"username": "pemilik", "password": "dari-baris-arahan"})
+    assert r.status_code == 200 and r.json()["role"] == "admin"
+    monkeypatch.setattr(adduser.getpass, "getpass", lambda prompt="": "kata-laluan-kedua")
+    assert adduser.main(["pemilik"]) == 0  # the same name again: a new password
+    assert client.post("/admin/api/login", json={"username": "pemilik", "password": "kata-laluan-kedua"}).status_code == 200
+    monkeypatch.setattr(adduser.getpass, "getpass", lambda prompt="": "pendek")
+    assert adduser.main(["lain"]) == 1 and adduser.main(["x"]) == 2

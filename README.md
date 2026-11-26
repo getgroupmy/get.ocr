@@ -156,28 +156,42 @@ and get.route: through the Cloudflare tunnel that already runs on the Mac. No se
 router port, and Cloudflare provides HTTPS.
 
 This is set up: `ocr.getcdn.link` is a public hostname of the `getride-ekyc` tunnel (the one that
-also carries `ekyc.getcdn.link` from the same Mac), with two rules, in this order:
-
-| Hostname | Path | Service |
-|---|---|---|
-| `ocr.getcdn.link` | `^/admin` | `http_status:404` |
-| `ocr.getcdn.link` | | `http://localhost:8090` |
-
-and a proxied DNS record `ocr` pointing at that tunnel. To do the same for another address, add the
-hostname under **Zero Trust > Networks > Tunnels > the tunnel > Public Hostname**.
+also carries `ekyc.getcdn.link` from the same Mac), service `http://localhost:8090`, with a proxied
+DNS record `ocr` pointing at that tunnel. To do the same for another address, add the hostname
+under **Zero Trust > Networks > Tunnels > the tunnel > Public Hostname**.
 
 1. On the Mac: `./scripts/check_public.sh ocr.getcdn.link` says whether the address answers from
-   outside, that the console does not, and that the API asks for a key.
-2. In the console (on the Mac: `http://localhost:8090/admin`), **API clients > New** for each app,
-   and give the app `https://ocr.getcdn.link` and its key. The key stays on the app's server.
+   outside and that the API and the console ask for a key and a token.
+2. In the console (`https://ocr.getcdn.link/admin`), **API clients > New** for each app, and give
+   the app `https://ocr.getcdn.link` and its key. The key stays on the app's server.
 
 What to know:
 
-- **The console stays on the Mac**, twice over: the tunnel's first rule answers `/admin` with 404
-  before the request reaches the Mac, and the service itself answers 404 to any request for
-  `/admin` that came through Cloudflare, whatever token it carries. To open the console from
-  outside, protect `/admin*` with a Cloudflare Access policy first, then remove that tunnel rule
-  and set `OCR_ADMIN_PUBLIC=true` in `.env`.
+- **Signing in to the console.** With a username and password, as at get.ekyc and get.route, or
+  with a token. Create the first username on the Mac:
+
+  ```bash
+  cd ~/get.ocr && ./scripts/add_console_user.sh yourname
+  ```
+
+  It asks for a password (10 characters or more, not shown as you type) and makes an admin; add
+  `viewer` after the name for someone who may only look and try documents. Run it again with the
+  same name to set a new password. After that, more people are added in the console's People tab
+  by whoever holds the owner's token (`OCR_ADMIN_TOKEN` in `.env`, shown by
+  `grep OCR_ADMIN_TOKEN ~/get.ocr/.env`). A sign-in lasts 12 hours, or 30 days with "Keep me
+  signed in"; five wrong passwords for a name from one address lock that pair for 15 minutes;
+  passwords are stored hashed (scrypt); rotating the owner's token signs everyone out. An admin
+  can do everything except manage console users, which stays with the owner's token.
+- **The console is on the internet**, at `https://ocr.getcdn.link/admin`, as get.ekyc's and
+  get.route's are. What stands between it and anyone is the admin token and the console users'
+  tokens, which are long random values; an address that sends `OCR_ADMIN_TRIES` (default 10) wrong
+  ones within five minutes must wait five minutes. Give other people their own console user
+  (People tab), not the owner's token, and rotate the owner's token with
+  `scripts/rotate_admin_token.sh` if it was ever shown or sent. To take the console off the
+  internet, set `OCR_ADMIN_PUBLIC=false` in `.env` and restart: a request for `/admin` that comes
+  through the tunnel is then answered 404 and the console works on the Mac only
+  (`http://localhost:8090/admin`). A Cloudflare Access policy on `/admin*` is the stronger
+  middle way: a login at Cloudflare before the console is reached at all.
 - **Cloudflare ends a request after 100 seconds.** A reading answers in a few seconds; field
   extraction with the model can take longer on a long document. For those, an app posts to
   `/v1/jobs` and takes the result by webhook or by polling.

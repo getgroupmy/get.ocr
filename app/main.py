@@ -14,7 +14,7 @@ from .auth import find_client
 from .config import get_settings
 from .db import get_db, init_db
 from .errors import ApiError, RequestTooLarge
-from .routers import admin, ocr
+from .routers import admin, ocr, session
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("ocr")
@@ -91,6 +91,7 @@ class _AdminStaysHome:
 app.add_middleware(_AdminStaysHome)
 
 app.include_router(ocr.router)
+app.include_router(session.router)
 app.include_router(admin.router)
 
 

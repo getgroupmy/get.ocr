@@ -134,6 +134,16 @@ class AdminUser(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class AdminPassword(Base):
+    """A username and password for a console user (the password hashed with scrypt). A table of
+    its own, so that installed databases need no change to the users they already hold."""
+    __tablename__ = "admin_passwords"
+    username: Mapped[str] = mapped_column(String(60), primary_key=True)  # lower case
+    user_id: Mapped[str] = mapped_column(ForeignKey("admin_users.id"), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(200))
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+
+
 class Audit(Base):
     """What was done in the console and when. Names and ids only, never keys or document content."""
     __tablename__ = "audit"
