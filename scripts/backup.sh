@@ -21,5 +21,6 @@ for db in "$DATA"/*.db; do
 done
 [ -d "$DATA/inputs" ] && cp -R "$DATA/inputs" "$TMP/data/inputs"
 tar -czf "$OUT" -C "$TMP" data
+date -u +%Y-%m-%dT%H:%M:%SZ > "$DATA/last_backup"   # the service shows this in /health and warns when it grows old
 find "$DEST" -name 'get-ocr-*.tar.gz' -mtime +30 -delete
 echo "✓ $OUT ($(du -h "$OUT" | cut -f1))"

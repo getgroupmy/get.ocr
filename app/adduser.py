@@ -12,7 +12,7 @@ import sys
 
 from . import crypto
 from .auth import hash_password
-from .db import AdminPassword, AdminUser, Audit, init_db, session_scope
+from .db import AdminPassword, AdminTotp, AdminUser, Audit, init_db, session_scope
 
 
 def main(argv: list) -> int:
@@ -29,6 +29,10 @@ def main(argv: list) -> int:
         row = db.get(AdminPassword, username)
         if row is not None:
             row.password_hash = hash_password(password)
+            second = db.get(AdminTotp, row.user_id)
+            if second is not None:  # the way back in for someone who lost their phone
+                db.delete(second)
+                print("Two-step sign-in was on for this name and is now off; turn it on again in the console.")
             user = db.get(AdminUser, row.user_id)
             user.active = True
             db.add(Audit(action="user.password_set", target=f"{user.id} {user.name} as {username} (by command line)"))

@@ -69,6 +69,10 @@
       <input type="text" id="l-user" autocomplete="username" required maxlength="60">
       <label for="l-pass" style="margin-top:10px">Password</label>
       <input type="password" id="l-pass" autocomplete="current-password" required maxlength="200">
+      <div id="l-code-box" hidden>
+        <label for="l-code" style="margin-top:10px">Code from your authenticator app</label>
+        <input type="text" id="l-code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="6 digits">
+      </div>
       <label for="l-remember" style="margin-top:10px"><input type="checkbox" id="l-remember"> Keep me signed in on this browser for 30 days</label>
       <p id="login-error" class="notice bad" hidden style="margin-top:12px"></p>
       <p style="margin-top:12px"><button class="primary" type="submit">Sign in</button>
@@ -176,6 +180,24 @@
     </section>
 
     <section data-panel="people" hidden>
+      <div class="card" id="mine" hidden>
+        <h2>Your sign-in</h2>
+        <p class="muted small">Two-step sign-in asks for a six-digit code from an authenticator app (Google Authenticator, Microsoft Authenticator, Authy, 1Password) after your password. If you lose the phone, the owner can turn it off for you, or run <code>./scripts/add_console_user.sh</code> with your name on the server.</p>
+        <p id="twostep-state"></p>
+        <p><button class="primary" type="button" id="twostep-on" hidden>Turn on two-step sign-in</button>
+          <button class="plain" type="button" id="twostep-off" hidden>Turn it off</button>
+          <button class="plain" type="button" id="pw-change">Change my password</button></p>
+        <div id="twostep-setup" hidden>
+          <p>1. Scan this with the authenticator app, or type the key into it.</p>
+          <p><img id="twostep-qr" alt="QR code for the authenticator app" width="220" height="220" hidden></p>
+          <p class="small">Key: <code id="twostep-key"></code></p>
+          <form id="twostep-form" class="row">
+            <div><label for="twostep-code">2. The code the app now shows</label><input type="text" id="twostep-code" inputmode="numeric" maxlength="7" required placeholder="6 digits"></div>
+            <button class="primary" type="submit">Confirm</button>
+          </form>
+        </div>
+        <p id="mine-note" class="notice ok" hidden></p>
+      </div>
       <div class="card">
         <h2>Console sign-ins</h2>
         <p class="muted small">Give another person a sign-in of their own in place of sharing the owner's token. A viewer may look and try documents; an admin may also create and revoke API clients. Only the owner's token can manage this list. With a username and password the person signs in at the sign-in page; without, they use the token shown once.</p>
@@ -255,11 +277,13 @@ $("#login-form").addEventListener("submit", async (ev) => {
   let r;
   try {
     r = await fetch("/admin/api/login", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: $("#l-user").value, password: $("#l-pass").value, remember: $("#l-remember").checked }) });
+      body: JSON.stringify({ username: $("#l-user").value, password: $("#l-pass").value, remember: $("#l-remember").checked,
+        code: $("#l-code-box").hidden ? null : $("#l-code").value.trim() || null }) });
   } catch (e) { err.textContent = "The server did not answer."; err.hidden = false; return; }
   const body = await r.json().catch(() => ({}));
-  if (!r.ok) { err.textContent = body.message || "Sign-in failed."; err.hidden = false; return; }
-  token = body.token; $("#l-pass").value = "";
+  if (r.status === 401 && body.error === "code_required") { $("#l-code-box").hidden = false; $("#l-code").focus(); return; }
+  if (!r.ok) { err.textContent = body.message || "Sign-in failed."; err.hidden = false; $("#l-code").value = ""; return; }
+  token = body.token; $("#l-pass").value = ""; $("#l-code").value = ""; $("#l-code-box").hidden = true;
   if (await enter()) { sessionStorage.setItem("ocr_admin", token); if ($("#l-remember").checked) localStorage.setItem("ocr_admin_session", token); }
   else { err.textContent = "Signed in, but the console could not be loaded."; err.hidden = false; }
 });
@@ -334,12 +358,51 @@ async function revoke(c) {
   try { await api("/clients/" + c.id, { method: "DELETE" }); await loadClients(); } catch (e) { showError(e.message); }
 }
 
+// Your own sign-in: two-step and password. Only for someone signed in with a username and password.
+async function loadMine() {
+  const card = $("#mine"); $("#twostep-setup").hidden = true; $("#mine-note").hidden = true;
+  if (!token.startsWith("os_")) { card.hidden = true; return; }
+  let r; try { r = await api("/2fa"); } catch (e) { card.hidden = true; return; }
+  card.hidden = false;
+  $("#twostep-state").textContent = r.on ? "Two-step sign-in is on." : "Two-step sign-in is off: your password alone signs you in.";
+  $("#twostep-on").hidden = r.on; $("#twostep-off").hidden = !r.on;
+}
+$("#twostep-on").addEventListener("click", async () => {
+  showError("");
+  try {
+    const r = await api("/2fa/setup", { method: "POST" });
+    $("#twostep-key").textContent = r.key.replace(/(.{4})/g, "$1 ").trim();
+    const img = $("#twostep-qr"); if (r.qr) { img.src = r.qr; img.hidden = false; } else img.hidden = true;
+    $("#twostep-setup").hidden = false; $("#twostep-code").value = ""; $("#twostep-code").focus();
+  } catch (e) { showError(e.message); }
+});
+$("#twostep-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault(); showError("");
+  try {
+    await api("/2fa/confirm", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: $("#twostep-code").value.trim() }) });
+    await loadMine(); const n = $("#mine-note"); n.textContent = "Two-step sign-in is on. From the next sign-in you will be asked for a code."; n.hidden = false;
+  } catch (e) { showError(e.message); }
+});
+$("#twostep-off").addEventListener("click", async () => {
+  const pw = prompt("Your password, to turn two-step sign-in off:"); if (!pw) return; showError("");
+  try { await api("/2fa/off", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: pw }) }); loadMine(); }
+  catch (e) { showError(e.message); }
+});
+$("#pw-change").addEventListener("click", async () => {
+  const cur = prompt("Your current password:"); if (!cur) return;
+  const nw = prompt("Your new password (10 or more characters):"); if (!nw) return; showError("");
+  try { await api("/password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ current: cur, new: nw }) });
+    const n = $("#mine-note"); n.textContent = "Your password is changed."; n.hidden = false; }
+  catch (e) { showError(e.message); }
+});
+
 async function loadUsers() {
+  loadMine();
   const tb = $("#users"); tb.replaceChildren(); const note = $("#users-note"); note.hidden = true;
   let r;
   try { r = await api("/users"); } catch (e) { note.textContent = "Only the owner's token can see and manage console sign-ins."; note.hidden = false; return; }
   for (const u of r.users) {
-    const tr = el("tr"); tr.append(el("td", u.name), el("td", u.username || "token only"), el("td", u.role), el("td", u.last_login_at ? when(u.last_login_at) : ""), el("td", when(u.created_at)));
+    const tr = el("tr"); tr.append(el("td", u.name), el("td", (u.username || "token only") + (u.two_step ? " · two-step" : "")), el("td", u.role), el("td", u.last_login_at ? when(u.last_login_at) : ""), el("td", when(u.created_at)));
     const td = el("td");
     if (u.active) { const p = el("button", u.username ? "New password" : "Set password", "plain"); p.type = "button";
       p.addEventListener("click", async () => {
@@ -347,6 +410,9 @@ async function loadUsers() {
         const pw = prompt("New password for " + name + " (10 or more characters):"); if (!pw) return;
         try { await api("/users/" + u.id + "/password", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: name, password: pw }) }); loadUsers(); }
         catch (e) { showError(e.message); } }); td.append(p, " ");
+      if (u.two_step) { const t = el("button", "Turn off two-step", "plain"); t.type = "button";
+        t.addEventListener("click", async () => { if (!confirm("Turn off two-step sign-in for " + u.name + "? Do this when they have lost their phone.")) return;
+          try { await api("/users/" + u.id + "/2fa", { method: "DELETE" }); loadUsers(); } catch (e) { showError(e.message); } }); td.append(t, " "); }
       const b = el("button", "Revoke", "danger"); b.type = "button";
       b.addEventListener("click", async () => { if (!confirm("Revoke the sign-in of " + u.name + "?")) return;
         try { await api("/users/" + u.id, { method: "DELETE" }); loadUsers(); } catch (e) { showError(e.message); } }); td.append(b);

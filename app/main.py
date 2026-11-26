@@ -131,6 +131,8 @@ def health(request: Request, db=Depends(get_db)):  # noqa: ANN001
         body["disk_free_gb"] = round(shutil.disk_usage(get_settings().data_dir).free / 1e9, 1)
     except OSError:
         body["disk_free_gb"] = None
+    last = service.last_backup()
+    body["last_backup_at"] = last.isoformat() + "Z" if last else None
     if key is not None:
         body["key"] = "ok"
     return body

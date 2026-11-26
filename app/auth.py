@@ -79,6 +79,26 @@ def check_password(password: str, stored: str) -> bool:
         return False
 
 
+def totp_code(secret: bytes, step: int) -> str:
+    """The six-digit code an authenticator app shows for one 30-second step (RFC 6238, SHA-1)."""
+    mac = hmac.new(secret, step.to_bytes(8, "big"), hashlib.sha1).digest()
+    at = mac[-1] & 0x0F
+    return f"{(int.from_bytes(mac[at:at + 4], 'big') & 0x7FFFFFFF) % 1_000_000:06d}"
+
+
+def totp_step_for(secret: bytes, code: str, after: int = 0, now: Optional[float] = None) -> Optional[int]:
+    """The step a code belongs to, if it is the code of now or of the step before or after (a
+    phone's clock may be half a minute out) and is newer than the last one used. None otherwise."""
+    code = "".join(ch for ch in code if ch.isdigit())
+    if len(code) != 6:
+        return None
+    current = int((time.time() if now is None else now) // 30)
+    for step in (current, current - 1, current + 1):
+        if step > after and hmac.compare_digest(totp_code(secret, step), code):
+            return step
+    return None
+
+
 def _session_key() -> bytes:
     # From the storage key and the owner's token: rotating the token signs everyone out.
     s = get_settings()

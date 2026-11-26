@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from .. import crypto, extract, service
 from ..auth import new_api_key, require_admin
 from ..config import get_settings, resolves_to_internal
-from ..db import AdminPassword, AdminUser, ApiClient, Audit, Job, Route, Usage, get_db
+from ..db import AdminPassword, AdminTotp, AdminUser, ApiClient, Audit, Job, Route, Usage, get_db
 from ..errors import ApiError
 from .ocr import job_out, read_input
 
@@ -193,13 +193,27 @@ def set_user_password(uid: str, body: SetPassword, request: Request, db: Session
 @router.get("/users")
 def list_users(db: Session = Depends(get_db)):
     names = {p.user_id: p for p in db.scalars(select(AdminPassword))}
+    two_step = {t.user_id for t in db.scalars(select(AdminTotp)) if t.confirmed}
 
     def one(u: AdminUser) -> dict:
         login = names.get(u.id)
         return {"id": u.id, "name": u.name, "role": u.role, "active": u.active, "created_at": u.created_at.isoformat() + "Z",
-                "username": login.username if login else None,
+                "username": login.username if login else None, "two_step": u.id in two_step,
                 "last_login_at": login.last_login_at.isoformat() + "Z" if login and login.last_login_at else None}
     return {"users": [one(u) for u in db.scalars(select(AdminUser).order_by(AdminUser.created_at.desc()))]}
+
+
+@router.delete("/users/{uid}/2fa", status_code=204)
+def reset_two_step(uid: str, request: Request, db: Session = Depends(get_db)):
+    """Turn a user's two-step sign-in off, for someone who lost their phone. The owner's token only."""
+    u = db.get(AdminUser, uid)
+    if u is None:
+        raise ApiError(404, "not_found", "user not found")
+    second = db.get(AdminTotp, uid)
+    if second is not None:
+        db.delete(second)
+        _audit(db, request, "user.two_step_reset", f"{u.id} {u.name}")
+    return Response(status_code=204)
 
 
 @router.delete("/users/{uid}", status_code=204)
@@ -217,8 +231,8 @@ async def try_searchable(request: Request):
     """The console's searchable PDF of an uploaded scan. Not stored and not counted as usage."""
     from .. import searchable
     data, options, _ = await read_input(request)
-    pdf, _ = await run_in_threadpool(searchable.build, data, options.get("pages"), get_settings().max_pages,
-                                          options.get("engine") if options.get("engine") in ("detect", "jawi", "arabic", "tamil", "thai") else None)
+    script = options.get("engine") if options.get("engine") in ("detect", "jawi", "arabic", "tamil", "thai") else None
+    pdf, _ = await run_in_threadpool(searchable.build, data, options.get("pages"), get_settings().max_pages, script)
     return Response(pdf, media_type="application/pdf")
 
 
