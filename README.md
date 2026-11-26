@@ -545,8 +545,16 @@ apply: a statement kept in Excel goes to the model. The old `.doc` and `.xls` fo
 placed inside a document, headers, footers and footnotes are not read; a formula gives the value
 saved with the file.
 
-**Turned pages.** A page that is sideways or upside down is turned upright before reading; the page
-then carries `rotated` (90, 180 or 270) and its positions are on the upright page.
+**Turned and tilted pages.** A page that is sideways or upside down is turned upright before
+reading, and a page that leans (a scan fed in crooked, a photo taken at a slant of 1.5 to 40
+degrees) is made level first. The page then carries `rotated`, how far it was turned clockwise: 90,
+180 or 270, or a number in between for a tilted page (356.5 for a page that leaned 3.5 degrees),
+and its positions are on the page as it was read. The words of a tilted page were read either way;
+what straightening saves is the rows. Measured on 13 pages (12 scanned forms and a Jawi page)
+tilted by 2 to 15 degrees either way: without it 4% to 41% of a page's rows of text came out as
+the same rows as on the level page, with it 57% to 66%, and every page tilted by 4 degrees or more
+was made level to within a degree. A level page is left alone (0 of 13 touched). It does not undo
+perspective: a page photographed from the side, wider at one end than the other, stays so.
 
 **How well each value is backed.** `evidence` gives each top-level value a level: `high` (printed
 in the text, on a line the reader was sure of, and the checks pass), `medium` (printed, but the
@@ -808,9 +816,9 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
     with. Arabic vowel marks. Decorative and poster typefaces read badly. Whether "kg 250" on the
     paper was typed "250 kg" cannot be told from the paper and is left as printed. Field
     extraction from Jawi text by the language model has not been tried.
-- **Rotated pages.** A page on its side or upside down is turned upright before it is read (see
-  "Turned pages"). A page tilted by a few degrees is read as it is; a page turned by some other
-  angle, such as 45 degrees, is not handled.
+- **Rotated pages.** See "Turned and tilted pages". A page leaning by more than 40 degrees and
+  less than a quarter turn is not handled, nor is perspective. After straightening, about a third
+  of the rows still differ from the level page's: the picture is resampled once more.
 - **How good the model is.** On the Mac mini `qwen2.5:7b` answers in 30 to 40 seconds per call. It
   could not copy a dense statement table (wrong balances, invented values), which is why statements
   are now read as a table by code. Invoices and receipts are still read by the model and have not
