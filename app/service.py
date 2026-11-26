@@ -21,7 +21,8 @@ from .errors import ApiError
 
 log = logging.getLogger("ocr.service")
 DETAILS = ("lines", "text")
-READERS = ("standard", "detect", "jawi", "arabic", "tamil", "thai", "glm")
+READERS = ("standard", "detect", "jawi", "arabic", "tamil", "thai", "glm", "vision")
+VISION = ("glm", "vision")
 
 
 def clean_options(pages: Optional[str], detail: Optional[str], force_ocr: bool, extract_type: Optional[str] = None,
@@ -33,6 +34,8 @@ def clean_options(pages: Optional[str], detail: Optional[str], force_ocr: bool, 
     task = (task or "text").strip().lower()
     if task not in vision.TASKS:
         raise ApiError(422, "bad_task", "task must be one of: " + ", ".join(vision.TASKS))
+    if task in vision.ONLY_SECOND and reader != "vision":
+        raise ApiError(422, "bad_task", f"task={task} is read by engine=vision only")
     detail = (detail or "lines").lower()
     if detail not in DETAILS:
         raise ApiError(422, "bad_detail", "detail must be 'lines' or 'text'")
@@ -49,11 +52,13 @@ def clean_options(pages: Optional[str], detail: Optional[str], force_ocr: bool, 
 
 def recognise(data: bytes, options: dict, max_pages: int) -> dict:
     """Read the chosen pages of an image or PDF."""
-    glm = options.get("engine") == "glm"
-    if glm and not vision.available():
+    reader = options.get("engine")
+    glm = reader in VISION  # a vision model reads the page
+    if glm and not vision.available(reader):
         raise ApiError(503, "reader_unavailable",
                        "the vision reader is not available: the model server on this machine is not answering, or "
-                       f"its model is not installed (ollama pull {get_settings().vlm_model})")
+                       + (f"its model is not installed (ollama pull {get_settings().vlm_model})" if reader == "glm"
+                          else "its model is not installed (./scripts/get_vision_model.sh)"))
     if not glm and not engine.available():
         raise ApiError(503, "engine_unavailable", "the OCR engine is not loaded on this server")
     script = options.get("engine") if options.get("engine") in ("detect", "jawi") + tuple(scripts.SCRIPTS) else None
@@ -77,7 +82,7 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
                             with_lines=bool(options.get("layer_lines")))
             out: dict = {"page": n, "width": page.width, "height": page.height}
             if glm:  # the vision model reads the picture: whole-page text, no positions or confidence
-                out.update(source="glm", text=vision.read(page.image, options.get("task") or "text"), confidence=None,
+                out.update(source=reader, text=vision.read(page.image, options.get("task") or "text", reader), confidence=None,
                            quality=engine.quality(page.image))
                 lines: list[dict] = []
             elif page.text_layer is not None:
@@ -130,7 +135,7 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
                     out["preview"] = "data:image/jpeg;base64," + base64.b64encode(jpeg.tobytes()).decode() if ok else None
             pages.append(out)
         return {
-            "engine": vision.NAME if glm else engine.NAME + "+" + (jawi.NAME if script == "jawi" else "scripts" if script == "detect" else scripts.name(script)) if script
+            "engine": vision.model(reader) if glm else engine.NAME + "+" + (jawi.NAME if script == "jawi" else "scripts" if script == "detect" else scripts.name(script)) if script
             else engine.NAME,
             "kind": doc.kind,
             "file": doc.info(),

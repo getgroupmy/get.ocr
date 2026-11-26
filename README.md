@@ -113,6 +113,25 @@ ollama pull glm-ocr
 default, `table` or `formula`). Each page is sent to it as a picture, on this machine only, and
 comes back with `"source": "glm"`.
 
+**GET.ocr Vision, a second vision reader.** It can be installed beside GLM-OCR:
+
+```bash
+./scripts/get_vision_model.sh
+```
+
+It needs Ollama 0.40.12 or later, downloads three files (about 2 GB), checks each against a known
+fingerprint and registers the model as `get-ocr-vision`. `/health` then shows `"vision": true`.
+Ask for it with `engine=vision`, or choose "GET.ocr Vision" as the Reader in the console; pages
+come back with `"source": "vision"`. `task` is `text`, `table` or `formula` as for GLM-OCR, and
+also `seal` (the words of a stamp) and `chart` (a chart as a table). A table comes back as HTML,
+with merged cells. Like GLM-OCR it gives the text of the whole page: no line positions, no
+confidence, and an order slip's pen strokes and tick boxes are not reported.
+
+GET.ocr Vision is the name of the reader in this service. The model behind it is
+[MiniCPM-OCR 1.0](https://github.com/OpenBMB/MiniCPM-OCR) by OpenBMB, licensed under Apache-2.0 and
+run here unchanged; that credit stays with the model wherever the reader is described.
+How it measured is under "Limits you should know".
+
 **Jawi (Malay in Arabic script).** Ask with `engine=jawi` on `/v1/ocr`, `/v1/extract` or
 `/v1/jobs`, or choose "Standard, with Jawi" as the Reader in the console. The standard reader finds
 where the lines are; each line it cannot read is read again by a model made for Jawi
@@ -822,12 +841,27 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
   Jawi and Arabic are told apart by the six letters only Jawi has, so a short Jawi text without
   any of them is taken for Arabic. A page in two of these scripts is read as one of them. It costs
   time: 3 to 8 seconds a made page here against 1 to 2 for the standard reader.
-- **Handwriting, measured and not improved.** On 30 lines each of two public English sets, the
-  present reader gets 15% of characters wrong on neat scanned handwriting (IAM) and 51% on photos
-  of everyday handwriting (GNHK). TrOCR (MIT) gets 6% to 7% on IAM, the set it was trained on,
-  and 74% to 112% on GNHK, at up to 9 seconds a line; the newer PP-OCR models were worse than the
-  present reader on both. Nothing reached a usable level on handwriting it had not seen, so
-  nothing was added. The vision reader (`engine=glm`) remains the route to try, and is untested.
+- **Handwriting and hard photos, measured.** Two public English sets, 30 lines each, read as
+  single cropped lines (share of characters wrong):
+
+  | | Neat scanned handwriting (IAM) | Photos of everyday handwriting (GNHK), the 16 valid lines |
+  |---|---|---|
+  | Present reader | 14.6% | 19% |
+  | TrOCR small / base (MIT) | 7.0% / 5.5%, on the set it was trained on | not re-measured |
+  | GET.ocr Vision (`engine=vision`; the model is MiniCPM-OCR 1.0) | 2.8% | 6% |
+
+  An earlier version of this list gave 51% for the present reader on GNHK, and worse for the
+  others. That test set was faulty: of its 30 crops, 14 were strips cut across pages lying on
+  their side, or solid black, or held two lines where the label has one. The 16 lines above are
+  the upright single lines, picked after the results were seen, so they show a direction and
+  not a measurement to rely on. On the one real photo tried (an order slip, the whole photo, no
+  cropping) GET.ocr Vision gave every line right, the two quantities under a pen stroke included.
+  **Not measured:** its speed on the Mac mini (on a 4-core CPU with no graphics acceleration it
+  took 17 to 23 seconds a line and about a minute for the slip, which says little about the
+  Mac); Malay, which its makers do not claim (Chinese and English only); the model through
+  Ollama, which is how the Mac will run it (here it ran through llama.cpp, the engine inside
+  Ollama); `seal` and `chart`; field extraction from its text. GLM-OCR (`engine=glm`) is still
+  untested.
 - **Jawi, measured.** The model was trained by its authors on newspaper print of the 1930s to
   1960s; they report 3.7% of characters wrong on their own held-out lines. No transcribed real
   Jawi page could be found to check that here. What was measured, on lines and pages made from
@@ -1010,6 +1044,7 @@ app/static/admin.html    console
 | PP-OCRv5 recognition models for Arabic, Tamil and Thai (fetched on first use) | Reading those scripts | Apache-2.0 |
 | [python-bidi](https://github.com/MeirKriheli/python-bidi) | Reading order of Arabic lines | LGPL-3.0 |
 | Amiri, a subset (`models/fonts`, see its NOTICE) | Carries hidden Jawi and Arabic text in a searchable PDF | OFL-1.1 |
+| [MiniCPM-OCR 1.0](https://github.com/OpenBMB/MiniCPM-OCR) by OpenBMB (fetched by `scripts/get_vision_model.sh`) | The model behind GET.ocr Vision, the second vision reader | Apache-2.0 |
 | ONNX Runtime | Runs the models on the CPU | MIT |
 | [pypdfium2](https://github.com/pypdfium2-team/pypdfium2) (PDFium) | PDF rendering and text layer | Apache-2.0 / BSD-3-Clause |
 | Pillow | Image decoding | MIT-CMU |
