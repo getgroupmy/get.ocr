@@ -27,6 +27,11 @@ async def lifespan(_: FastAPI):
     init_db()
     if not engine.available():
         log.error("the OCR engine did not load: readings will answer 503")
+    try:  # the change log: an update made from the terminal is recorded here
+        from . import system
+        system.note_startup()
+    except Exception:  # noqa: BLE001 - never a reason not to start
+        log.warning("the change log could not be written", exc_info=True)
     service.start()
     yield
     service.stop()

@@ -50,7 +50,7 @@ def fill(text: str, lines: list[dict]) -> tuple[str, list[dict]]:
                     or len(key) < MIN_LETTERS:
                 continue
             after.setdefault(at, []).append(line["text"])
-            added.append({"text": line["text"], "confidence": line.get("confidence")})
+            added.append({"text": line["text"], "confidence": line.get("confidence"), "box": line["box"]})
     if not added:
         return text, []
     out = list(after.get(-1, []))
@@ -58,3 +58,10 @@ def fill(text: str, lines: list[dict]) -> tuple[str, list[dict]]:
         out.append(row)
         out.extend(after.get(n, []))
     return "\n".join(out).strip("\n"), added
+
+
+def beside(text: str, lines: list[dict]) -> list[dict]:
+    """The clearly read `lines` that are not in `text`, without changing it: what stands on the
+    page outside a table the vision model wrote out."""
+    plain = re.sub(r"<[^>]+>", "\n", text)
+    return fill(plain, lines)[1]

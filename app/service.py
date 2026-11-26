@@ -80,28 +80,39 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
         looked = 0  # text pages whose pictures were read as well
         for n in numbers:
             page = doc.page(n, use_text_layer=not options.get("force_ocr") and not glm,
-                            with_lines=bool(options.get("layer_lines")))
+                            with_lines=bool(options.get("layer_lines")) or options.get("detail", "lines") == "lines")
             out: dict = {"page": n, "width": page.width, "height": page.height}
             if glm:  # the vision model reads the picture: whole-page text, no positions or confidence
                 out.update(source=reader, text=vision.read(page.image, options.get("task") or "text", reader), confidence=None,
                            quality=engine.quality(page.image))
                 lines: list[dict] = []
-                if (options.get("task") or "text") == "text" and "<table" not in out["text"] and engine.available():
+                task = options.get("task") or "text"
+                if task == "text" and "<table" not in out["text"] and engine.available():
                     # a vision model can skip a heading or small print: what the standard reader
                     # read clearly and the model left out is put in
                     out["text"], added = gaps.fill(out["text"], engine.read(page.image))
                     if added:
                         out["added_lines"] = added
+                elif task == "table" and engine.available():
+                    # the model writes out the table only: what else stands on the page is listed beside it
+                    outside = gaps.beside(out["text"], engine.read(page.image))
+                    if outside:
+                        out["other_lines"] = outside
             elif page.text_layer is not None:
                 out.update(source="text_layer", text=page.text_layer, confidence=None)
                 lines = page.text_lines or []
                 if looked < get_settings().picture_text_pages and engine.available() and doc.kind == "pdf":
-                    picture = doc.pictures(n)  # words that are part of a picture are not in the stored text
-                    if picture is not None:
+                    found = doc.pictures(n)  # words that are part of a picture are not in the stored text
+                    if found is not None:
+                        picture, left, top, per_point = found
                         looked += 1
                         out["text"], added = gaps.fill(out["text"], engine.read(picture))
+                        for a in added:  # positions on the page in points, as the stored text's are
+                            a["box"] = [[round(left + x / per_point, 1), round(top + y / per_point, 1)] for x, y in a["box"]]
                         if added:
                             out["added_lines"] = added
+                            if page.text_lines is not None:
+                                lines = lines + [{**a, "added": True} for a in added]
             else:
                 lines, upright, turned = engine.read_upright(page.image, script)
                 if turned:  # the page lay on its side: positions are given on the page turned upright

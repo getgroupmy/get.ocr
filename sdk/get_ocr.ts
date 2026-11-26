@@ -53,9 +53,12 @@ export interface ExtractOptions extends OcrOptions {
 
 export interface OcrLine {
   text: string;
-  confidence: number;
-  /** Four corners in page pixels, clockwise from the top left. */
+  /** null for a line taken from a PDF's own text. */
+  confidence: number | null;
+  /** Four corners, clockwise from the top left: in page pixels, or in points for a PDF read from its own text. */
   box: [number, number][];
+  /** The line is part of a picture on a PDF page and was read by the standard reader, not taken from the stored text. */
+  added?: boolean;
   /** "jawi", "arabic", "tamil" or "thai" when that reader read the line. */
   script?: string;
   /** A pen stroke crosses this line's quantity (an order slip). */
@@ -66,13 +69,17 @@ export interface OcrPage {
   page: number;
   width: number;
   height: number;
-  /** "ocr" (a picture was read), "text_layer" (a PDF's own text), "document" (Word, Excel), "glm". */
+  /** "ocr" (a picture was read), "text_layer" (a PDF's own text), "document" (Word, Excel), "glm", "vision". */
   source: string;
   text: string;
   confidence: number | null;
   /** How far the page was turned clockwise to stand upright; a decimal for a tilted page. */
   rotated?: number;
   lines?: OcrLine[];
+  /** Lines the reader left out and the standard reader supplied; they are already in `text`. */
+  added_lines?: { text: string; confidence: number; box: [number, number][] }[];
+  /** With task "table": what stands on the page outside the table. Not in `text`. */
+  other_lines?: { text: string; confidence: number; box: [number, number][] }[];
   quality?: { sharpness: number; brightness: number; issues: string[] };
   [more: string]: unknown;
 }

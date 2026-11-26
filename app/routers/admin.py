@@ -277,3 +277,49 @@ async def try_it(request: Request):
     options["preview"] = True  # the review view shows the page as it was read
     # the console is the administrator's own: whole documents, as a job would take them
     return await run_in_threadpool(service.run, data, options, get_settings().max_pages)
+
+
+# --- version, update from the console, change log ----------------------------------------------
+def _may_update(request: Request) -> str:
+    if getattr(request.state, "role", "owner") not in ("owner", "admin"):
+        raise ApiError(403, "forbidden", "only the owner or an admin may check for and install updates")
+    return getattr(request.state, "admin", "owner")
+
+
+@router.get("/system")
+def system_status(request: Request):
+    """The running version and the changes waiting on the branch it follows."""
+    from .. import system
+    _may_update(request)
+    try:
+        return system.check()
+    except Exception as exc:  # noqa: BLE001 - e.g. no network to fetch
+        return {**system.version(), "updatable": False, "reason": str(exc)[:300], "waiting": []}
+
+
+@router.post("/system/update")
+def system_update(request: Request, db: Session = Depends(get_db)):
+    """Bring in the latest version, check that it starts (and go back if it does not), then restart."""
+    from .. import system
+    who = _may_update(request)
+    try:
+        out = system.update()
+    except system.UpdateError as exc:
+        system.record({"status": "failed", "how": "console", "by": who, "from": system.version().get("commit"),
+                       "to": None, "error": str(exc)[:1000], "changes": []})
+        _audit(db, request, "system.update_failed", str(exc)[:120])
+        db.commit()
+        raise ApiError(409, "update_failed", str(exc)[:1000]) from exc
+    system.record({"status": "updated", "how": "console", "by": who, "from": out["from"], "to": out["to"],
+                   "changes": out["applied"], "steps": out["steps"]})
+    _audit(db, request, "system.updated", f"{out['from']} -> {out['to']}")
+    db.commit()
+    system.restart_soon()
+    return {**out, "restarting": True}
+
+
+@router.get("/changelog")
+def change_log():
+    """Every version this server has run, newest first."""
+    from .. import system
+    return {"current": system.version(), "entries": system.changelog()}

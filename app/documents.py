@@ -75,6 +75,23 @@ def _layer_lines(tp, height: float) -> list[dict]:  # noqa: ANN001
     return out
 
 
+def _apart(text: str, lines: list[dict], width: float) -> str:
+    """The stored text with two pieces set on separate lines when they only happen to sit at about
+    the same height: far apart across the page and not on the same baseline, like an address at
+    the left and a signatory's title at the right. Columns of a table share a baseline and stay."""
+    def tall(t: str) -> bool:  # a capital or a digit: the top of the piece is then the top of the type
+        return any(ch.isupper() or ch.isdigit() for ch in t)
+    for a, b in zip(lines, lines[1:]):
+        (ax0, ay0), (ax1, ay1) = a["box"][0], a["box"][2]
+        (bx0, by0), (_, by1) = b["box"][0], b["box"][2]
+        height = max(ay1 - ay0, by1 - by0, 1.0)
+        if bx0 - ax1 > 0.25 * width and 0.15 * height < abs(by0 - ay0) < height and tall(a["text"]) and tall(b["text"]):
+            glued = a["text"] + " " + b["text"]
+            if text.count(glued) == 1:
+                text = text.replace(glued, a["text"] + "\n" + b["text"])
+    return text
+
+
 def _bgr(im: Image.Image) -> np.ndarray:
     side = get_settings().max_image_side
     im = im.convert("RGB")
@@ -201,7 +218,11 @@ class Document:
                     try:
                         text = tp.get_text_range().replace("\r\n", "\n").replace("\r", "\n").strip()
                         real = len(re.sub(r"\s", "", text)) >= 20
-                        lines = _layer_lines(tp, h) if real and with_lines else None
+                        lines = _layer_lines(tp, h) if real else None
+                        if lines:
+                            text = _apart(text, lines, w)
+                        if not with_lines:
+                            lines = None
                     finally:
                         tp.close()
                     # A real text layer: use it. A few stray characters on a scan: read the picture.
@@ -213,9 +234,10 @@ class Document:
                 p.close()
         return Page(number, img, img.shape[1], img.shape[0])
 
-    def pictures(self, number: int) -> Optional[np.ndarray]:
+    def pictures(self, number: int):  # noqa: ANN201
         """The part of a PDF page that holds its pictures (a letterhead, a crest, a scanned
-        form behind typed text), as a picture; None when the page has none worth reading."""
+        form behind typed text): the picture, where its corner is on the page in points, and
+        the pixels per point. None when the page has none worth reading."""
         if self.kind != "pdf" or self._sheets:
             return None
         import pypdfium2.raw as pdfium_c
@@ -238,9 +260,8 @@ class Document:
                 p.close()
         x0, x1 = min(b[0] for b in boxes), max(b[2] for b in boxes)
         y0, y1 = h - max(b[3] for b in boxes), h - min(b[1] for b in boxes)
-        pad = 4
-        return img[max(int((y0 - pad) * scale), 0):int((y1 + pad) * scale) + 1,
-                   max(int((x0 - pad) * scale), 0):int((x1 + pad) * scale) + 1]
+        left, top = max(int((x0 - 4) * scale), 0), max(int((y0 - 4) * scale), 0)
+        return img[top:int((y1 + 4) * scale) + 1, left:int((x1 + 4) * scale) + 1], left / scale, top / scale, scale
 
     def close(self) -> None:
         if self._pdf is not None:

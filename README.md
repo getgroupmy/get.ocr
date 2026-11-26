@@ -134,7 +134,13 @@ page, and what it read clearly (90% sure or more) and the other left out is put 
 near where it sits on the page. Those lines are also listed per page as `added_lines`, so an app
 can tell which came this way. This applies to `task=text`; for a PDF with stored text the
 pictures on up to `OCR_PICTURE_TEXT_PAGES` pages per request are read (default 10, 0 turns it
-off), which adds about a second for a page that is one large picture.
+off), which adds about a second for a page that is one large picture. With `task=table` the
+table is left as the model wrote it, and what else stands on the page is listed as `other_lines`.
+
+A PDF read from its stored text gives `lines` with the place of each piece in points, like a
+picture's lines in pixels; a line added from a picture on the page carries `"added": true`. Two
+pieces far apart across the page that are not on the same baseline (an address at the left, a
+signatory's title at the right) are separate lines of the text.
 
 GET.ocr Vision is the name of the reader in this service. The model behind it is
 [MiniCPM-OCR 1.0](https://github.com/OpenBMB/MiniCPM-OCR) by OpenBMB, licensed under Apache-2.0 and
@@ -257,7 +263,7 @@ On the Mac mini, from `~/get.ocr`:
 
 | Task | Command |
 |---|---|
-| Update to the latest `main` and restart | `./scripts/update.sh` |
+| Update to the latest `main` and restart | The console's **Changelog** tab (Check for updates, then Update and restart), or `./scripts/update.sh` |
 | Back up the database (to `./backups`, or a folder you name) | `./scripts/backup.sh /Volumes/NAS/ocr` |
 | Replace the admin token | `./scripts/rotate_admin_token.sh` |
 | Fetch optional models (signature detection); `update.sh` runs this too | `./scripts/get_models.sh` |
@@ -276,6 +282,13 @@ On the Mac mini, from `~/get.ocr`:
   prints, per kind, how many fields were right, how often the checks passed and the time per
   document. `--models a,b` compares installed models; `--engine glm` reads with the vision model.
   Real documents in `eval/` are kept out of git.
+- **Updating from the console.** The Changelog tab shows the running version and every version
+  this server has run. "Check for updates" lists the changes waiting on `main`; "Update and
+  restart" brings them in, installs requirements if they changed, checks that the new version
+  loads, goes back to the previous version if it does not, and restarts the server in place (no
+  Mac password needed). The owner and admins may do this; a viewer only sees the list. It needs
+  the checkout to be able to fetch from GitHub without asking for a password, as `update.sh` does,
+  and it refuses when files of the checkout were edited by hand.
 - **Ollama after a restart.** `./scripts/ollama_at_boot.sh` makes Ollama start with the Mac instead
   of at login, so extraction comes back by itself after a power cut. **It has not been run on a Mac.**
 - **Alerts.** Set `OCR_ALERT_WEBHOOK` to a URL (a Slack or Telegram bot hook, or your own): it is
