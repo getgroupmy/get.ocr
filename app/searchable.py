@@ -30,6 +30,8 @@ def build(data: bytes, pages: Optional[str], max_pages: int, script: Optional[st
     if not engine.available():
         raise ApiError(503, "engine_unavailable", "the OCR engine is not loaded on this server")
     with Document(data) as doc:
+        if doc.kind in ("docx", "xlsx"):
+            raise ApiError(422, "bad_file", "a Word or Excel file is searchable already: send a scan or a photo")
         numbers = parse_pages(pages, doc.page_count)
         if len(numbers) > max_pages:
             raise ApiError(422, "too_many_pages", f"{len(numbers)} pages asked for, the limit here is {max_pages}")

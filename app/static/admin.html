@@ -113,8 +113,8 @@
         <h2>Read a file</h2>
         <p class="muted small">Runs on this server. The file and the text are not stored, and this is not counted as usage.</p>
         <form id="try-form">
-          <label for="t-file">Image or PDF</label>
-          <input type="file" id="t-file" accept="image/*,application/pdf" required>
+          <label for="t-file">Image, PDF, Word or Excel file</label>
+          <input type="file" id="t-file" accept="image/*,.heic,.heif,application/pdf,.docx,.xlsx" required>
           <div class="row">
             <div><label for="t-type">Result</label><select id="t-type">
               <option value="">Text only</option>
@@ -131,6 +131,7 @@
             </select></div>
             <div id="t-fields-box" hidden><label for="t-fields">Fields to find</label><input type="text" id="t-fields" placeholder="policy_number, expiry_date, sum_insured"></div>
             <div><label for="t-pages">PDF pages (optional)</label><input type="text" id="t-pages" placeholder="1-3"></div>
+            <div><label for="t-pdfpw">PDF password (if it is locked)</label><input type="password" id="t-pdfpw" autocomplete="off"></div>
             <div><label for="t-force"><input type="checkbox" id="t-force"> Ignore the PDF's text layer</label>
               <label for="t-split"><input type="checkbox" id="t-split"> Several documents in one file</label>
               <label for="t-marks"><input type="checkbox" id="t-marks"> Signatures, tick boxes, stamps</label></div>
@@ -349,6 +350,7 @@ $("#try-form").addEventListener("submit", async (ev) => {
   const f = $("#t-file").files[0]; if (!f) return;
   const fd = new FormData(); fd.append("file", f);
   if ($("#t-pages").value.trim()) fd.append("pages", $("#t-pages").value.trim());
+  if ($("#t-pdfpw").value) fd.append("pdf_password", $("#t-pdfpw").value);
   if ($("#t-force").checked) fd.append("force_ocr", "true");
   if ($("#t-type").value) { fd.append("type", $("#t-type").value); fd.append("include_text", "true"); }
   if ($("#t-type").value === "custom") fd.append("fields", $("#t-fields").value);

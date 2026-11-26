@@ -27,6 +27,8 @@ _FILE_BODY = {
             "pages": {"type": "string", "description": "PDF pages to read, e.g. 1-3,7. Default: all"},
             "detail": {"type": "string", "enum": ["lines", "text"], "default": "lines",
                        "description": "'lines' adds every line with its position and confidence"},
+            "pdf_password": {"type": "string",
+                             "description": "The password of a protected PDF. Used once to open it and kept nowhere"},
             "force_ocr": {"type": "boolean", "default": False,
                           "description": "Read PDF pages as pictures even when they carry a text layer"},
             "type": {"type": "string", "enum": list(extract.TYPES),
@@ -114,6 +116,10 @@ async def read_input(request: Request) -> tuple[bytes, dict, Optional[str]]:
                                     fields.get("fields"), _truthy(fields.get("codes", False)),
                                     _truthy(fields.get("split", False)), fields.get("engine"), fields.get("task"),
                                     _truthy(fields.get("marks", False)))
+    password = fields.get("pdf_password")
+    if password:  # used here once to open the file; it is not kept with the job or written anywhere
+        from ..documents import unlock
+        data = await run_in_threadpool(unlock, data, str(password)[:200])
     ref = fields.get("external_ref")
     return data, options, (str(ref)[:200] if ref else None)
 

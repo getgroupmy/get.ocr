@@ -13,7 +13,7 @@ webhooks, and data encrypted at rest.
 
 | | |
 |---|---|
-| **Input** | JPEG, PNG, WEBP, TIFF (multi-page), BMP, GIF and PDF, up to `OCR_MAX_UPLOAD_MB` |
+| **Input** | JPEG, PNG, HEIC (iPhone photos), WEBP, TIFF (multi-page), BMP, GIF, PDF (with `pdf_password` when it is locked), Word (.docx) and Excel (.xlsx), up to `OCR_MAX_UPLOAD_MB` |
 | **Read now** | `POST /v1/ocr` answers in the same request. Images and PDFs up to `OCR_SYNC_MAX_PAGES` pages. Nothing is stored |
 | **Queue** | `POST /v1/jobs` for long PDFs. Answers at once with a job id; the result comes by signed webhook or by polling |
 | **Output** | Plain text in reading order, and every line with its position and the model's confidence |
@@ -151,12 +151,43 @@ model.** Its prompts and the request format are as documented; how well it reads
 gives tables, how long a page takes on the Mac mini and the largest picture it handles well are
 unknown until it is tried there. Two models loaded together need the memory for both.
 
-**Public address.** If get.ekyc's Cloudflare tunnel already runs on that Mac, add a second public
-hostname to the same tunnel in Cloudflare Zero Trust (for example `ocr.getride.my`) with service
-**HTTP** `localhost:8090`. No second tunnel is needed. Block `/admin*` at Cloudflare with an Access
-policy, so the console is reachable only on the Mac or through Cloudflare Access. With Docker
-instead, `docker compose --profile tunnel up -d` starts a tunnel of its own (`TUNNEL_TOKEN` in
-`.env`, service **HTTP** `ocr:8080`).
+**Public address (`ocr.getcdn.link`).** Other apps reach the service the way they reach get.ekyc
+and get.route: through the Cloudflare tunnel that already runs on the Mac. No second tunnel, no
+router port, and Cloudflare provides HTTPS.
+
+This is set up: `ocr.getcdn.link` is a public hostname of the `getride-ekyc` tunnel (the one that
+also carries `ekyc.getcdn.link` from the same Mac), with two rules, in this order:
+
+| Hostname | Path | Service |
+|---|---|---|
+| `ocr.getcdn.link` | `^/admin` | `http_status:404` |
+| `ocr.getcdn.link` | | `http://localhost:8090` |
+
+and a proxied DNS record `ocr` pointing at that tunnel. To do the same for another address, add the
+hostname under **Zero Trust > Networks > Tunnels > the tunnel > Public Hostname**.
+
+1. On the Mac: `./scripts/check_public.sh ocr.getcdn.link` says whether the address answers from
+   outside, that the console does not, and that the API asks for a key.
+2. In the console (on the Mac: `http://localhost:8090/admin`), **API clients > New** for each app,
+   and give the app `https://ocr.getcdn.link` and its key. The key stays on the app's server.
+
+What to know:
+
+- **The console stays on the Mac**, twice over: the tunnel's first rule answers `/admin` with 404
+  before the request reaches the Mac, and the service itself answers 404 to any request for
+  `/admin` that came through Cloudflare, whatever token it carries. To open the console from
+  outside, protect `/admin*` with a Cloudflare Access policy first, then remove that tunnel rule
+  and set `OCR_ADMIN_PUBLIC=true` in `.env`.
+- **Cloudflare ends a request after 100 seconds.** A reading answers in a few seconds; field
+  extraction with the model can take longer on a long document. For those, an app posts to
+  `/v1/jobs` and takes the result by webhook or by polling.
+- **Upload size.** Cloudflare's free plan takes uploads up to 100 MB; this service's own limit is
+  `OCR_MAX_UPLOAD_MB`.
+- Each key is limited to `OCR_RATE_PER_MINUTE` requests a minute, and the audit log records the
+  caller's address as Cloudflare reports it.
+
+With Docker instead, `docker compose --profile tunnel up -d` starts a tunnel of its own
+(`TUNNEL_TOKEN` in `.env`, service **HTTP** `ocr:8080`).
 
 `scripts/install_service.sh` is adapted from get.ekyc's script. **It has not been run on a Mac
 yet**: this repository was built and tested on Linux.
@@ -499,6 +530,20 @@ shows other headings, map the columns there or use `generic`. The two QuickBooks
 published format: dates as dd/mm/yyyy, empty cells in place of zeros, no thousands separators.
 Xero, AutoCount and Bukku publish their column headers only inside a signed-in account, and SQL
 Account maps columns by hand, so for those use `generic` and map the columns at import.
+
+**A locked PDF.** Banks often send statements as password-protected PDFs. Send the password in the
+form field `pdf_password`. It is used once, when the request arrives, to open the file; the file is
+then handled without it, and the password is not stored with a queued job, logged or returned.
+Without it, or with the wrong one, the answer is 422 `pdf_protected`.
+
+**Word and Excel files.** A `.docx` or `.xlsx` is read from its own text, which is exact: nothing
+is recognised from a picture. A Word document is one page (`"kind": "docx"`), with each table row
+on a line of its own; each sheet of a workbook is a page (`"kind": "xlsx"`), its columns kept under
+each other, dates as YYYY-MM-DD. Pages come back with `"source": "document"` and no line positions,
+so `sources` cannot point at a box, and the statement reader, which works by position, does not
+apply: a statement kept in Excel goes to the model. The old `.doc` and `.xls` formats, pictures
+placed inside a document, headers, footers and footnotes are not read; a formula gives the value
+saved with the file.
 
 **Turned pages.** A page that is sideways or upside down is turned upright before reading; the page
 then carries `rotated` (90, 180 or 270) and its positions are on the upright page.

@@ -68,6 +68,8 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
             raise ApiError(422, "too_many_pages",
                            f"{len(numbers)} pages asked for, the limit here is {max_pages}; "
                            "use the 'pages' option, or POST /v1/jobs for long documents")
+        if glm and doc.kind in ("docx", "xlsx"):
+            raise ApiError(422, "bad_engine", "a Word or Excel file is read from its own text: leave the engine out")
         pages = []
         for n in numbers:
             page = doc.page(n, use_text_layer=not options.get("force_ocr") and not glm,
@@ -93,7 +95,10 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
             want_codes = options.get("codes")
             if want_codes == "some":  # extraction: every picture, and where a text PDF usually carries its code
                 want_codes = page.image is not None or n in numbers[:2] or n == numbers[-1]
-            if want_codes:
+            office = doc.kind in ("docx", "xlsx")  # no picture to look at: only its own text
+            if office:
+                out["source"] = "document"
+            if want_codes and not office:
                 image = page.image if page.image is not None else doc.page(n, use_text_layer=False).image
                 scale = page.width / image.shape[1]  # a text page is measured in points, its picture in pixels
                 out["codes"] = [{**c, "box": [[round(x * scale, 1), round(y * scale, 1)] for x, y in c["box"]]}
@@ -101,7 +106,7 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
             if page.image is not None and options.get("extract") in ("order", "auto") and any(
                     ln.get("struck") or ln["text"][:1].isdigit() for ln in lines):
                 out["list_marks"] = lists.brackets(page.image, lines)  # for an order list: which rows are ticked
-            if options.get("marks") or options.get("preview"):
+            if (options.get("marks") or options.get("preview")) and not office:
                 image = page.image if page.image is not None else doc.page(n, use_text_layer=False).image
                 scale = out["width"] / image.shape[1]
 
@@ -140,6 +145,8 @@ def table_grids(data: bytes, options: dict, max_pages: int) -> dict:
     from . import tablegrid
     started = time.monotonic()
     with Document(data) as doc:
+        if doc.kind in ("docx", "xlsx"):
+            raise ApiError(422, "bad_type", "type=table_grid reads a table from a picture; a Word or Excel file has none")
         numbers = parse_pages(options.get("pages"), doc.page_count)
         if len(numbers) > max_pages:
             raise ApiError(422, "too_many_pages", f"{len(numbers)} pages asked for, the limit here is {max_pages}")

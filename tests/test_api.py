@@ -268,3 +268,21 @@ def test_a_page_on_its_side_is_turned_upright(client, api_key, need_engine):
         assert "INV-2026-00417" in page["text"] and page["text"].index("Invoice") < page["text"].index("Jumlah")
     plain = client.post("/v1/ocr", files={"file": ("u.png", synth.image_bytes(LINES), "image/png")}, headers=api_key).json()
     assert "rotated" not in plain["pages"][0]
+
+
+def test_the_console_is_not_served_through_the_tunnel(client, api_key, monkeypatch):
+    through = {"cf-ray": "a6072fa9291955bd-KUL", "cf-connecting-ip": "203.0.113.9"}
+    # on the machine itself: as before
+    assert client.get("/admin").status_code == 200
+    assert client.get("/admin/api/clients", headers=ADMIN).status_code == 200
+    # through Cloudflare: nothing there, even with the right token
+    assert client.get("/admin", headers=through).status_code == 404
+    assert client.get("/admin/api/clients", headers={**ADMIN, **through}).status_code == 404
+    # the API for other apps is what the tunnel is for
+    assert client.get("/health", headers=through).status_code == 200
+    assert client.post("/v1/ocr", headers=through).status_code == 401
+    assert client.get("/v1/types", headers={**api_key, **through}).status_code == 200
+    # the owner may open it once /admin is protected at Cloudflare
+    from app.config import get_settings
+    monkeypatch.setattr(get_settings(), "admin_public", True)
+    assert client.get("/admin", headers=through).status_code == 200

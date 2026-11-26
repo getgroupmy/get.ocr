@@ -69,6 +69,27 @@ class _BodySizeLimitMiddleware:
 
 app.add_middleware(_BodySizeLimitMiddleware)
 
+
+class _AdminStaysHome:
+    """The service is published through a Cloudflare tunnel so other apps can call /v1. The console
+    is for the owner: a request for /admin that came through the tunnel (Cloudflare marks every
+    request it forwards) is answered as if there were nothing there, unless OCR_ADMIN_PUBLIC says
+    the console is protected at Cloudflare and may be reached from outside."""
+
+    def __init__(self, app):  # noqa: ANN001
+        self.app = app
+
+    async def __call__(self, scope, receive, send):  # noqa: ANN001
+        if scope["type"] == "http" and scope.get("path", "").startswith("/admin") and not get_settings().admin_public:
+            names = {name.lower() for name, _ in scope.get("headers") or []}
+            if names & {b"cf-ray", b"cf-connecting-ip", b"cdn-loop"}:
+                response = JSONResponse({"error": "not_found", "message": "Not Found"}, status_code=404)
+                return await response(scope, receive, send)
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(_AdminStaysHome)
+
 app.include_router(ocr.router)
 app.include_router(admin.router)
 

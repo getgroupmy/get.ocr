@@ -1,4 +1,4 @@
-"""Turns an upload (an image or a PDF) into pages the reader can take."""
+"""Turns an upload (an image, a PDF, a Word or an Excel file) into pages the reader can take."""
 from __future__ import annotations
 from typing import Optional
 
@@ -13,7 +13,12 @@ from PIL import Image, ImageOps
 from .config import get_settings
 from .errors import ApiError
 
-IMAGE_FORMATS = {"JPEG", "PNG", "WEBP", "MPO", "TIFF", "BMP", "GIF"}
+IMAGE_FORMATS = {"JPEG", "PNG", "WEBP", "MPO", "TIFF", "BMP", "GIF", "HEIF"}
+try:  # HEIC, what an iPhone saves its photos as
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+except Exception:  # noqa: BLE001 - without the library a HEIC photo is refused like any unknown format
+    pillow_heif = None
 Image.MAX_IMAGE_PIXELS = 80_000_000  # a larger picture is refused (decompression bombs)
 _EDITORS = re.compile(r"photoshop|gimp|canva|illustrator|pixelmator|affinity|picsart|snapseed|lightroom|paint\.net|"
                       r"ilovepdf|smallpdf|sejda|pdfescape|pdf-?xchange|phantompdf|foxit pdf editor|nitro|pdfelement|"
@@ -100,13 +105,18 @@ class Document:
     """An opened upload. Use as a context manager."""
 
     def __init__(self, data: bytes):
-        self.kind = "pdf" if data[:1024].lstrip().startswith(b"%PDF") else "image"
+        from . import office
+        self.kind = "pdf" if data[:1024].lstrip().startswith(b"%PDF") else office.kind(data) or "image"
         self._pdf = None
+        self._sheets: list = []  # the text of a Word document (one page) or of each sheet of a workbook
         self._exif: dict = {}
         self._im: Optional[Image.Image] = None  # the open image; frames are decoded one at a time
         self._im_data = b""  # keeps the buffer the image reads from alive
         if self.kind == "pdf":
             self._open_pdf(data)
+        elif self.kind in ("docx", "xlsx"):
+            self._sheets = office.pages(data, self.kind)
+            self.page_count = len(self._sheets)
         else:
             self._open_image(data)
 
@@ -119,7 +129,7 @@ class Document:
         except Exception as exc:  # noqa: BLE001
             protected = "password" in str(exc).lower()
             raise ApiError(422, "pdf_protected" if protected else "bad_file",
-                           "the PDF is password protected" if protected else "not a readable PDF") from exc
+                           "the PDF is password protected: send its password as pdf_password" if protected else "not a readable PDF") from exc
         if self.page_count == 0:
             raise ApiError(422, "bad_file", "the PDF has no pages")
 
@@ -135,7 +145,7 @@ class Document:
             raise
         except Exception as exc:  # noqa: BLE001
             raise ApiError(415, "unsupported_format", "not a readable image or PDF "
-                           "(JPEG, PNG, WEBP, TIFF, BMP, GIF, PDF)") from exc
+                           "(JPEG, PNG, HEIC, WEBP, TIFF, BMP, GIF, PDF, DOCX, XLSX)") from exc
         cap = get_settings().max_pages
         if n > cap:  # refuse before decoding: a tiny many-frame TIFF would otherwise exhaust memory
             raise ApiError(422, "too_many_pages", f"the document has {n} pages; the limit is {cap}")
@@ -176,6 +186,8 @@ class Document:
         return out
 
     def page(self, number: int, use_text_layer: bool = True, with_lines: bool = False) -> Page:
+        if self._sheets:  # a Word or Excel file has no picture: its own text is the page
+            return Page(number, None, 612, 792, self._sheets[number - 1], None)
         if self.kind == "image":
             img = self._frame(number)
             return Page(number, img, img.shape[1], img.shape[0])
@@ -215,3 +227,31 @@ class Document:
 
     def __exit__(self, *exc) -> None:  # noqa: ANN002
         self.close()
+
+
+def unlock(data: bytes, password: Optional[str]) -> bytes:
+    """A password-protected PDF opened with its password and written out again without it, so the
+    password is used once and kept nowhere. Any other file, and a PDF that is not protected, comes
+    back as it is."""
+    if not password or not data[:1024].lstrip().startswith(b"%PDF"):
+        return data
+    import pypdfium2 as pdfium
+    with _pdf_lock:
+        try:
+            pdfium.PdfDocument(data).close()
+            return data  # it opens without a password
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            locked = pdfium.PdfDocument(data, password=password)
+        except Exception as exc:  # noqa: BLE001
+            raise ApiError(422, "pdf_protected", "the PDF is password protected and the password given does not open it") from exc
+        try:
+            copy = pdfium.PdfDocument.new()
+            copy.import_pages(locked)
+            out = io.BytesIO()
+            copy.save(out)
+            copy.close()
+        finally:
+            locked.close()
+    return out.getvalue()
