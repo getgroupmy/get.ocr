@@ -18,6 +18,7 @@ from . import engine
 _KNOWN = re.compile(r"insur|takaful|assurance", re.I)
 _SCHEDULE = re.compile(r"schedule|jadual|cover\s*note|nota\s*perlindungan|certificate\s*of\s*insurance|sijil\s*insurans|"
                        r"confirmation\s*of\s*purchase|polisi|policy", re.I)
+_CERTIFICATE = re.compile(r"certificate\s*of\s*(?:insurance|takaful)|sijil\s*(?:insurans|takaful)|cover\s*note|nota\s*perlindungan", re.I)
 _PREMIUM = re.compile(r"premium|contribution|caruman", re.I)
 E_HAILING = re.compile(r"e\s*-?\s*hail|private\s*hire\s*car|kereta\s*sewa\s*persendirian", re.I)
 MONTHS = {m: n for n, names in enumerate(
@@ -144,8 +145,10 @@ def _box(line: dict) -> tuple:
 
 def is_schedule(lines: list[dict]) -> bool:
     whole = " ".join(ln["text"] for ln in lines)
-    return bool(len(lines) >= 20 and _KNOWN.search(whole) and _SCHEDULE.search(whole) and _PREMIUM.search(whole)
-                and re.search(_MONEY, whole))
+    if len(lines) < 12 or not _KNOWN.search(whole):
+        return False
+    # a schedule prints a premium column; a certificate of insurance or takaful and a cover note need not
+    return bool((_SCHEDULE.search(whole) and _PREMIUM.search(whole) and re.search(_MONEY, whole)) or _CERTIFICATE.search(whole))
 
 
 def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:

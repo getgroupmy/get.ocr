@@ -1102,3 +1102,31 @@ def test_permit_and_inspection_are_recognised_on_auto_without_the_model(fake_mod
     out = extract.run(pages, [pages[0]["text"]], "auto")
     assert out["document_type"] == "driver_permit" and out["read_by"] == "labels" and out["model_calls"] == 0
     assert out["fields"]["expiry_date"] == "2024-10-12" and out["fields"]["seating_capacity"] == 5 and "expired" in out["fields"]
+
+
+def test_a_page_photographed_upside_down_is_still_read_by_position(fake_model):
+    lines = [{**ln, "box": [[1136 - x, 720 - y] for x, y in ln["box"]]} for ln in DRIVING]  # every place turned half a circle
+    pages = [{"page": 1, "width": 1136, "height": 720, "lines": lines, "text": "\n".join(ln["text"] for ln in lines)}]
+    out = extract.run(pages, [pages[0]["text"]], "auto")
+    assert out["document_type"] == "driving_licence" and out["fields"]["holder_name"] == "LIM AH KOW BIN ABDULLAH"
+    assert out["fields"]["address"] == "43 JALAN SHAIK MADAR, 11500 AYER ITAM, PULAU PINANG"
+
+
+def test_a_certificate_of_insurance_without_a_premium_column_is_read():
+    from app import insurance
+    lines = [_at("Northwind General Insurance Berhad", 60, 10), _at("CERTIFICATE OF INSURANCE / SIJIL INSURANS", 300, 50),
+             _at("Certificate No. / No. Sijil", 60, 110), _at("JVE4495625", 60, 140),
+             _at("1. Index Mark and Registration Number of Vehicle", 60, 180), _at("WXY1234", 60, 210),
+             _at("2. Name of Insured / Nama Pemegang Polisi", 60, 250), _at("AHMAD BIN ALI", 60, 280),
+             _at("3. Period of Insurance / Tarikh Insurans", 60, 320), _at("From / Dari 00:00:01 AM 31-10-2023 To / Hingga 30-10-2024", 60, 350)]
+    lines += [_at("Clause %d of the certificate, which says who may drive." % n, 60, 400 + 30 * n) for n in range(6)]
+    f = insurance.parse([{"page": 1, "width": 1400, "lines": lines}])["fields"]
+    assert (f["policy_number"], f["plate_number"], f["insured_name"]) == ("JVE4495625", "WXY1234", "AHMAD BIN ALI")
+    assert (f["period_start"], f["period_end"]) == ("2023-10-31", "2024-10-30") and "total_payable" not in f
+
+
+def test_a_certificate_heading_split_or_cut_is_still_a_heading():
+    from app import vehicle
+    assert vehicle._is_heading("PEMILIKAN KENDERAAN") and vehicle._is_heading("SPEMILIKAN KENDERAAN")
+    assert vehicle._is_heading("PERANUAN PENDAFTARAN KENDERAAN") and vehicle._is_heading("PERAKUAN PENDAFTARAN KENDER")
+    assert not vehicle._is_heading("No Perakuan Pendaftaran Kenderaan : A/R") and not vehicle._is_heading("JABATAN PENGANGKUTAN JALAN")
