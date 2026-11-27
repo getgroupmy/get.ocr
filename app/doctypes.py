@@ -45,7 +45,7 @@ DOCS: dict[str, dict] = {
         "Vehicle registration card (VOC, geran)", "a vehicle ownership or registration certificate",
         "plate_number, chassis_number, engine_number, make, model, year_made:n, engine_capacity_cc:n, fuel_type, colour, "
         "owner_name, owner_id_number, owner_address, registration_date:d, ownership_claim, origin_status, usage_class, "
-        "body_type, weights, registration_conditions, certificate_serial, print_date:d",
+        "body_type, weights, registration_conditions, certificate_serial, print_date:d, owner_status",
         checks=(("format", "chassis_number", "chassis_number", r"[A-Z0-9]{8,17}", "8 to 17 letters and digits"),),
         words=r"sijil\s*pemilikan\s*kenderaan|vehicle ownership certificate|no\.? ?ch?asis|no\.? ?enjin|chassis no|engine no|"
               r"keupayaan ?enjin|hak milik|kelas ?kegunaan|tarikh ?pendaftaran|bahan ?bakar",

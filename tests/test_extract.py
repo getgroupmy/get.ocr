@@ -927,7 +927,7 @@ def test_the_vocational_licence_gives_its_types_and_whether_it_covers_e_hailing(
     assert out["kind"] == "vocational_licence" and (f["holder_name"], f["id_number"], f["nationality"]) == \
         ("RAVI A/L MUTHU", "900716055765", "MAL")
     assert (f["issue_date"], f["expiry_date"], f["licence_types"]) == ("2022-09-07", "2024-07-16", "PSV, GDL")
-    assert f["classes"] == "PSV D:TEKSI/TEKSI MEWAH/ KERETA SEWA/E-HAILING; GDL E:BTM > 7500 KG (BERAT KEJUR)"
+    assert f["classes"] == "D:TEKSI/TEKSI MEWAH/KERETA SEWA/E-HAILING; E:BTM > 7500 KG (BERAT KEJUR)"
     assert out["extra"] == {"expired": False, "e_hailing": True}
     # the reader may give a type and its class as one line
     joined = [ln for ln in VOCATIONAL if ln["text"] not in ("PSV", "D:TEKSI/TEKSI MEWAH/", "GDL", "E:BTM > 7500 KG (BERAT KEJUR)")]
@@ -972,3 +972,18 @@ def test_a_licence_in_a_wallet_under_another_card_keeps_its_name():
     wallet = [_at("0105011", 900, 5), _at("Jenis / Type : Kelas / Class :", 650, 20, 16), _at("No SIRI: G 902030", 240, 40)]
     f = licence.parse([{"page": 1, "width": 1136, "lines": wallet + DRIVING}])["fields"]
     assert f["holder_name"] == "LIM AH KOW BIN ABDULLAH" and f["classes"] == "B2 D"
+
+
+def test_a_vocational_licence_is_read_when_its_labels_are_misread():
+    from app import licence
+    # as real cards come out: the small labels garbled, the number glued to its label, the type unread
+    lines = [_at("ESEN VOKASIONAL MALAYSIA", 180, 40, 30), _at("Na/ Nang", 300, 125, 16), _at("RAVI A/L MUTHU", 298, 150),
+             _at("Ne.KP/1.0.:900716055765", 296, 242), _at("MAL.", 722, 250), _at("Tempoh / Vald Untif:", 296, 280, 16),
+             _at("07//09/2022.- 16/07/2024", 292, 305), _at("Janis | TypeKalas / Cless", 292, 345, 16),
+             _at("D:TEKSI/TEKSI MEWAH/", 410, 370), _at("ERETA SEWA/E-HAILING", 380, 400),
+             _at("Ketua Pengarah Pengangkutan Jalan", 30, 510, 14), _at("No. SIRI: J 484702", 300, 700)]
+    out = licence.parse([{"page": 1, "width": 855, "lines": lines}])
+    f = out["fields"]
+    assert (f["holder_name"], f["id_number"], f["nationality"]) == ("RAVI A/L MUTHU", "900716055765", "MAL")
+    assert (f["issue_date"], f["expiry_date"], f["licence_types"]) == ("2022-09-07", "2024-07-16", "PSV")
+    assert f["classes"] == "D:TEKSI/TEKSI MEWAH/ERETA SEWA/E-HAILING" and out["extra"]["e_hailing"] is True
