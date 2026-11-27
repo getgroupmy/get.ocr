@@ -188,10 +188,12 @@ def table_grids(data: bytes, options: dict, max_pages: int) -> dict:
         numbers = parse_pages(options.get("pages"), doc.page_count)
         if len(numbers) > max_pages:
             raise ApiError(422, "too_many_pages", f"{len(numbers)} pages asked for, the limit here is {max_pages}")
-        found, pages = [], []
+        found, pages, seen = [], [], []
         for n in numbers:
             page = doc.page(n, use_text_layer=False)
-            _, upright, turned = engine.read_upright(page.image)
+            lines, upright, turned = engine.read_upright(page.image)
+            seen.append({"page": n, "width": upright.shape[1], "height": upright.shape[0], "lines": lines,
+                         "text": engine.layout_text(lines)})
             table = tablegrid.read(upright)
             pages.append({"page": n, "width": upright.shape[1], "height": upright.shape[0], "source": "ocr",
                           "confidence": None, **({"rotated": turned} if turned else {})})
@@ -200,7 +202,8 @@ def table_grids(data: bytes, options: dict, max_pages: int) -> dict:
         if not found:
             raise ApiError(422, "no_table", "no table was found on the page(s)")
         first = found[0]
-        return {"document_type": "table_grid",
+        named = extract.identify(seen, [engine.layout_columns(p["lines"]) for p in seen])
+        return {"document_type": "table_grid", "identified_type": named, "document_label": extract.label(named),
                 "fields": {"html": first["html"], "merged_cells": first["merged_cells"], "cells": first["cells"],
                            "other_tables": found[1:], "grid": [{f"c{i + 1}": v for i, v in enumerate(row)} for row in first["grid"]]},
                 "checks": [], "checks_passed": None, "not_found_in_text": [], "unreadable_dates": [], "sources": {},
@@ -231,14 +234,12 @@ def extract_fields(data: bytes, options: dict, max_pages: int) -> dict:
                 one = extract.run([ocr["pages"][i] for i in group], [texts[i] for i in group], kind, options.get("fields"))
             except ApiError as exc:  # one unreadable document does not lose the others
                 one = {"error": exc.code, "message": exc.message}
-            documents.append({"pages": numbers, **one})
-        out = {"documents": documents}
+            documents.append(name_document({"pages": numbers, **one}, [ocr["pages"][i] for i in group],
+                                           [texts[i] for i in group]))
+        out = {"documents": documents}  # each document is named; the file as a whole is not
     else:
-        out = extract.run(ocr["pages"], texts, kind, options.get("fields"))
-    if "document_type" not in out:  # several documents in one file: the first one names the file
-        first = next((d.get("document_type") for d in out.get("documents", []) if d.get("document_type")), ocr["document_type"])
-        out["document_type"] = first
-    out["document_label"] = extract.label(out["document_type"])
+        out = name_document(extract.run(ocr["pages"], texts, kind, options.get("fields")), ocr["pages"], texts,
+                            ocr["document_type"])
     out.update(engine=ocr["engine"], kind=ocr["kind"], page_count=ocr["page_count"], file=ocr["file"],
                pages=[{k: p.get(k) for k in ("page", "width", "height", "source", "confidence", "quality", "rotated",
                                              "checkboxes", "stamps", "signatures", "preview") if k in p}
@@ -249,6 +250,30 @@ def extract_fields(data: bytes, options: dict, max_pages: int) -> dict:
         out["text"] = ocr["text"]
     out["duration_ms"] = int((time.monotonic() - started) * 1000)
     return out
+
+
+# `type` values that say how to read a document, not what kind of document it is
+NOT_A_KIND = ("custom", "table", "table_grid")
+_UNSET = object()
+
+
+def name_document(doc: dict, pages: list, texts: list, identified=_UNSET) -> dict:  # noqa: ANN001
+    """Give an extracted document its name. `document_type` stays the kind its fields were read as.
+    Where that is a way of reading and no kind of document (custom fields, a table), or the
+    extraction failed, `identified_type` says what the reading itself shows the document to be.
+    `document_label` is the document's kind as people say it, whichever of the two gave it."""
+    kind = doc.get("document_type")
+    if kind is None or kind in NOT_A_KIND:
+        doc["identified_type"] = extract.identify(pages, texts) if identified is _UNSET else identified
+        kind = doc["identified_type"]
+    doc["document_label"] = extract.label(kind)
+    return doc
+
+
+def kind_of(doc: dict) -> Optional[str]:
+    """The kind of document a result (or one document of a file that held several) was found to be."""
+    kind = doc.get("document_type")
+    return doc.get("identified_type") if kind is None or kind in NOT_A_KIND else kind
 
 
 def run(data: bytes, options: dict, max_pages: int) -> dict:
@@ -317,9 +342,11 @@ def record_usage(db: Session, client_id: str, kind: str, ok: bool, pages: int, s
 
 def record_document(db: Session, client_id: str, kind: str, result: dict, job_id: Optional[str] = None,
                     external_ref: Optional[str] = None) -> None:
-    """The record of a document read: its kind by name, never its content."""
-    db.add(DocumentRecord(client_id=client_id, kind=kind, job_id=job_id, external_ref=external_ref,
-                          document_type=(result.get("document_type") or None), pages=len(result.get("pages") or [])))
+    """The record of a document read: its kind by name, never its content. A file that held
+    several documents gets a line for each."""
+    for doc in result.get("documents") or [result]:
+        db.add(DocumentRecord(client_id=client_id, kind=kind, job_id=job_id, external_ref=external_ref,
+                              document_type=kind_of(doc), pages=len(doc.get("pages") or [])))
 
 
 def document_out(row: DocumentRecord) -> dict:

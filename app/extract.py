@@ -761,10 +761,11 @@ def identify(pages: list[dict], texts: list[str]) -> Optional[str]:
     """What kind of document this is, by itself and without the model: the form whose reader
     knows it, else the kind its words name, else None (a picture that is no document this service
     knows, or one with no text)."""
-    for turned in (pages, _upside_down(pages)):
+    head = [p for p in pages[:3] if p.get("lines")]  # a document says what it is on its first pages
+    for turned in (head, _upside_down(head)) if head else ():
         for known, parse in FORMS.items():
             try:
-                if any(p.get("lines") for p in turned) and parse(turned) is not None:
+                if parse(turned) is not None:
                     return known
             except Exception:  # noqa: BLE001 - naming a document never fails a reading
                 continue

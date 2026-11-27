@@ -318,8 +318,9 @@ def job_out(job: Job, with_result: bool = True) -> dict:
         "completed_at": job.completed_at.isoformat() + "Z" if job.completed_at else None,
         "result_available": job.status == "completed" and not job.result_purged,
     }
-    if job.status == "completed" and not job.result_purged and isinstance(job.result, dict):
-        out["document_type"], out["document_label"] = job.result.get("document_type"), job.result.get("document_label")
+    if job.status == "completed" and not job.result_purged and isinstance(job.result, dict) and "documents" not in job.result:
+        # what the document was found to be, as its result says it (a file that held several names each one there)
+        out.update({k: job.result.get(k) for k in ("document_type", "identified_type", "document_label") if k in job.result})
     if with_result:
         out["result"] = job.result if job.status == "completed" else None
     return out

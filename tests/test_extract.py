@@ -1174,3 +1174,44 @@ def test_a_job_keeps_the_kind_of_its_document(client, api_key, need_engine):
     assert job["result"]["document_label"] == "Vehicle registration card (VOC, geran)"
     rows = client.get("/v1/documents?external_ref=car-9", headers=api_key).json()["documents"]
     assert [(d["how"], d["job_id"], d["document_type"]) for d in rows] == [("job", r.json()["id"], "vehicle_registration")]
+
+
+def test_custom_fields_do_not_hide_what_the_document_is(client, api_key, need_engine, fake_model):
+    answers, _ = fake_model
+    answers.append({"plate": "WXY1234"})
+    r = extract_image(client, api_key, CERTIFICATE, type="custom", fields='{"plate": "string"}', external_ref="custom-1")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # document_type stays the way the fields were read; the document itself is named beside it
+    assert (body["document_type"], body["identified_type"]) == ("custom", "vehicle_registration")
+    assert body["document_label"] == "Vehicle registration card (VOC, geran)" and body["fields"] == {"plate": "WXY1234"}
+    rows = client.get("/v1/documents?external_ref=custom-1", headers=api_key).json()["documents"]
+    assert [(d["document_type"], d["pages"]) for d in rows] == [("vehicle_registration", 1)]
+    # read as what it is, an extraction names it once and adds no second name
+    plain = extract_image(client, api_key, CERTIFICATE).json()
+    assert plain["document_type"] == "vehicle_registration" and "identified_type" not in plain
+    assert plain["document_label"] == "Vehicle registration card (VOC, geran)"
+
+
+def test_a_file_of_several_documents_gets_a_record_line_for_each(client, api_key, need_engine, fake_model):
+    answers, _ = fake_model
+    answers += [INVOICE, ORDER]
+    pdf = synth.scanned_pdf([INVOICE_LINES, ORDER_LINES])
+    r = client.post("/v1/extract", files={"file": ("b.pdf", pdf, "application/pdf")},
+                    data={"split": "true", "external_ref": "bundle-7"}, headers=api_key)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "document_type" not in body and "document_label" not in body  # the file as a whole has no one kind
+    assert [(d["document_type"], d["document_label"]) for d in body["documents"]] == [("invoice", "Invoice"), ("order", "Order list")]
+    rows = client.get("/v1/documents?external_ref=bundle-7", headers=api_key).json()["documents"]
+    assert sorted((d["document_type"], d["pages"]) for d in rows) == [("invoice", 1), ("order", 1)]
+
+
+def test_one_clients_record_is_not_shown_to_another(client, api_key, need_engine):
+    client.post("/v1/ocr", files={"file": ("a.png", synth.image_bytes(CERTIFICATE), "image/png")},
+                data={"external_ref": "only-mine"}, headers=api_key)
+    made = client.post("/admin/api/clients", json={"name": "another app"}, headers=ADMIN).json()
+    other = {"X-API-Key": made["api_key"]}
+    assert client.get("/v1/documents", headers=other).json() == {"documents": []}
+    assert client.get("/v1/documents?external_ref=only-mine", headers=other).json() == {"documents": []}
+    assert client.get("/v1/documents").status_code in (401, 403) and client.get("/admin/api/documents").status_code == 401

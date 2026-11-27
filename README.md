@@ -583,14 +583,22 @@ This gives what a card prints, for filling in a form. It does not show that a ca
 belongs to the person presenting it; verifying a person is what get.ekyc is for.
 
 **Every document is named by its kind.** Each answer of `/v1/ocr`, `/v1/extract` and a job carries
-`document_type` (for example `driving_licence`) and `document_label` ("Driving licence"), worked
-out from the reading itself with no model asked: the form whose reader knows the page, else the
-kind its words name. Both are `null` for a picture that is no document this service knows. The
-kind is also kept in a record of its own, one line per document read: when, for which client, how
-(direct or as a job), how many pages, your `external_ref` and the kind. `GET /v1/documents` lists
-a client's own lines (filter with `document_type=`, `document_type=none` or `external_ref=`), and
-the console's Documents tab shows them for every client with a count per kind. Nothing of a
-document's content is in that record.
+`document_type` (for example `driving_licence`) and `document_label` ("Driving licence"). For a
+plain reading the kind is worked out from the reading itself with no model asked: the form whose
+reader knows the page, else the kind its words name; both are `null` for a picture that is no
+document this service knows. In an extraction `document_type` is, as before, the kind the fields
+were read as; where that is a way of reading and no kind of document (`custom`, `table`,
+`table_grid`), `identified_type` says what the document itself is and `document_label` names
+that. A file read with `split` names each of its documents and not the file as a whole.
+
+The kind is also kept in a record of its own, one line per document read (a file that held
+several gets a line for each): when, for which client, how (in the call or as a job), how many
+pages, your `external_ref` and the kind. `GET /v1/documents` lists a client's own lines, newest
+first (filter with `document_type=`, `document_type=none` for those not recognised, or
+`external_ref=`), and the console's Documents tab shows them for every client with a count per
+kind. Nothing of a document's content is in that record, and a reading tried in the console is
+not recorded. A finished job read plainly now also follows a client's route for its kind
+(Routing by kind), as an extracted one always did.
 
 **The Malaysian vehicle ownership certificate (Sijil Pemilikan Kenderaan, JPJ) is read by its
 labels.** It is a form with a label at the left and the value at the right, so each value of

@@ -87,7 +87,7 @@ export interface OcrPage {
 export interface OcrResult {
   /** What kind of document this is, worked out from the reading itself; null when it was not recognised. */
   document_type: string | null;
-  /** The same as people say it, e.g. "Driving licence". */
+  /** The document's kind as people say it, e.g. "Driving licence"; null when it was not recognised. */
   document_label: string | null;
   engine: string;
   /** "image", "pdf", "docx" or "xlsx". */
@@ -107,7 +107,12 @@ export interface OcrCheck {
 }
 
 export interface ExtractResult {
+  /** The kind the fields were read as. With type "custom", "table" or "table_grid" it is that word: see identified_type. */
   document_type: string;
+  /** Only when document_type is a way of reading and no kind of document: what the document itself was found to be. */
+  identified_type?: string | null;
+  /** The document's kind as people say it, e.g. "Driving licence"; null when it was not recognised. */
+  document_label?: string | null;
   fields: Record<string, unknown>;
   checks: OcrCheck[];
   /** true only when every check that could be made passed. */
@@ -130,7 +135,26 @@ export interface OcrJob {
   created_at: string;
   completed_at: string | null;
   result_available: boolean;
+  /** Once completed: what the document was found to be, as in its result. */
+  document_type?: string | null;
+  identified_type?: string | null;
+  document_label?: string | null;
   result?: OcrResult | ExtractResult | null;
+}
+
+/** One line of the record of documents read: its kind by name, never its content. */
+export interface DocumentRecord {
+  id: number;
+  at: string;
+  /** "sync" (read in the call) or "job". */
+  how: string;
+  job_id: string | null;
+  external_ref: string | null;
+  /** null when the document was not recognised. */
+  document_type: string | null;
+  /** e.g. "Driving licence", or "Not recognised". */
+  document_label: string;
+  pages: number;
 }
 
 /** A call the server refused or could not serve. `code` is machine readable ("pdf_protected", "too_large", ...). */
@@ -191,6 +215,17 @@ export class GetOcr {
       if (Date.now() + everyMs > until) throw new OcrError(504, "timeout", "the job was not finished in time");
       await new Promise((r) => setTimeout(r, everyMs));
     }
+  }
+
+  /** The documents this key had read, newest first, each named by its kind. `type: "none"` lists those not recognised. */
+  async documents(filter: { type?: string; externalRef?: string; limit?: number } = {}): Promise<DocumentRecord[]> {
+    const q = new URLSearchParams();
+    if (filter.type) q.set("document_type", filter.type);
+    if (filter.externalRef) q.set("external_ref", filter.externalRef);
+    if (filter.limit) q.set("limit", String(filter.limit));
+    const query = q.toString();
+    const r = (await this.call("GET", "/v1/documents" + (query ? "?" + query : ""))) as { documents: DocumentRecord[] };
+    return r.documents;
   }
 
   /** The kinds of document extract() knows, each with its fields and checks. */
