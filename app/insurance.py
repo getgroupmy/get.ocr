@@ -24,7 +24,8 @@ MONTHS = {m: n for n, names in enumerate(
     ("JAN JANUARY JANUARI", "FEB FEBRUARY FEBRUARI", "MAC MAR MARCH", "APR APRIL", "MEI MAY", "JUN JUNE", "JUL JULY JULAI",
      "OGO OGOS AUG AUGUST", "SEP SEPT SEPTEMBER", "OKT OCT OCTOBER OKTOBER", "NOV NOVEMBER", "DIS DEC DECEMBER DISEMBER"), 1)
     for m in names.split()}
-_DAY = r"(\d{1,2})\s*[-/. ]\s*(\d{1,2}|[A-Za-z]{3,9})\s*[-/. ]\s*((?:19|20)\d{2})"
+_DAY = r"(?<!\d)(\d{1,2})\s*[-/. ]\s*(\d{1,2}|[A-Za-z]{3,9})\s*[-/. ]\s*((?:19|20)\d{2})(?!\d)"
+_ISO_DAY = r"(?<!\d)((?:19|20)\d{2})-(\d{2})-(\d{2})(?!\d)"
 _MONEY = r"(?<![\d.,])(\d{1,3}(?:[,.]\d{3})+|\d+)[.,](\d{2})(?![\d,.])"
 _PLATE = r"\b([A-Z]{1,3}\s?\d{1,4}\s?[A-Z]{0,2})\b"
 
@@ -77,14 +78,21 @@ def _identity(text: str) -> Optional[str]:
     return "".join(m.groups()) if m else None
 
 
+_NOT_A_NAME = re.compile(r"KENDERAAN|VEHICLE|DRIVER|PEMANDU|JADUAL|SCHEDULE|POLICY|POLISI|INSUR|TAKAFUL|PRIVATE|COMPREHENSIVE|"
+                         r"\b(?:TAMAN|JALAN|JLN|KAMPUNG|KG|LORONG|BLOK|BANDAR|TINGKAT|NAME|NAMA|ADDRESS|ALAMAT|DETAILS)\b")
+
+
 def _name(text: str) -> Optional[str]:
     text = _clean(text)
-    return text if re.fullmatch(r"[A-Z][A-Z .'/@&()\-]{4,60}", text) and len(text.split()) >= 2 else None
+    return text if re.fullmatch(r"[A-Z][A-Z .'/@&()\-]{4,60}", text) and len(text.split()) >= 2 and not _NOT_A_NAME.search(text) \
+        else None
 
 
 def _words(text: str) -> Optional[str]:
     text = _clean(text)
-    return text if re.fullmatch(r"[A-Z0-9][A-Z0-9 .,'/&()\-]{2,70}", text) and any(ch.isalpha() for ch in text) else None
+    if not re.fullmatch(r"[A-Z0-9][A-Z0-9 .,'/&()\-]{2,70}", text) or text.endswith("/") or re.search(r"\bRM\b", text):
+        return None  # the end of a label in two languages, not a value
+    return text if re.search(r"[A-Z]{3}", text) and not re.fullmatch(r"[A-Z0-9]{11,20}", text) else None
 
 
 def _percent(text: str) -> Optional[str]:
@@ -94,12 +102,13 @@ def _percent(text: str) -> Optional[str]:
 
 # field -> (label, what the value must look like)
 LABELS: list[tuple[str, str, Callable]] = [
-    ("policy_number", r"policy\s*(?:/\s*endorsement\s*)?n(?:o|umber)\b\.?|no\.?\s*polisi|nombor\s*polisi|no\.?\s*sijil|certificate\s*no\.?", _number),
+    ("policy_number", r"policy\s*(?:/\s*endorsement\s*)?n(?:o|umber)\b\.?|no\.?\s*polisi|nombor\s*polisi|no\.?\s*sijil|certificate\s*no\.?|"
+                      r"rujukan\s*sijil|certificate\s*ref\.?\s*no\.?", _number),
     ("cover_note_number", r"(?:e-?)?cover\s*note\s*no\.?|no\.?\s*nota(?:\s*perlindungan)?|e-?c/?note\s*no\.?", _number),
     ("insured_name", r"the\s*insured|pemegang\s*polisi|policy\s*holder|insured\s*name|name\s*of\s*insured|participant(?:\s*name)?"
                      r"|\binsured\b|\bpemunya\b|yang\s*diinsuranskan", _name),
     ("id_number", r"i\.?\s?c\.?\s*no\.?|nric(?:\s*no\.?)?|no\.?\s*kad\s*pengenalan|new\s*i/?c\s*no\.?|no\.?\s*k/?p(?:\s*baru)?", _identity),
-    ("plate_number", r"vehicle(?:/trailer)?\s*reg(?:istration|n)?\.?(?:/trailer)?(?:\s*no\.?)?|reg(?:istration|n)\.?\s*no\.?|"
+    ("plate_number", r"veh\w{3,5}(?:/trailer)?\s*reg\w*\.?(?:/trailer)?(?:\s*no\.?)?|reg(?:istration|n)\.?\s*no\.?|"
                      r"no\.?\s*pendaftaran(?:\s*kend\w*)?|vehicle\s*no\.?|index\s*mark", _plate),
     ("chassis_number", r"chassis\s*(?:no|number)\.?|no\.?\s*c[h]?as[ie]s|nombor\s*casis|chassis\b", _code(11, 20)),
     ("engine_number", r"engine(?:/motor)?\s*(?:no|number)\.?|no\.?\s*enjin(?:/motor)?|nombor\s*enjin|engin[ea]\b", _code(5, 16)),
@@ -117,7 +126,7 @@ AMOUNTS: list[tuple[str, str]] = [
     ("stamp_duty", r"sta[mn]p\s*dut[yi]i?(?!\s*paid)|duti\s*setem(?!\s*(?:telah|dibayar))"),
     ("total_payable", r"total\s*amount\s*(?:due|payable)|total\s*due(?!\s*\(otc\))|jumlah\s*berbayar(?!\s*di)|total\s*\(after\s*rounded\)|"
                       r"total\s*premium|jumlah\s*premium|payable\s*(?:contribution|premium)|amount\s*payable|total\s*payable|"
-                      r"total\s*contribution|^total\b|^jumlah\b"),
+                      r"total\s*contribution|jumlah\s*pembayaran|^total\b|^jumlah\b"),
     ("ncd_amount", r"\bncd\b|no\s*claim\s*discount|diskaun\s*tanpa\s*tuntutan"),
 ]
 # lines whose label only looks like the one wanted
@@ -249,13 +258,19 @@ def _page(lines: list[dict], width: float) -> dict:
     # the period: two dates with "to" between them
     joined = ["  ".join(" ".join(ln["text"].split()) for ln in row) for row in rows]
     for n, text in enumerate(joined):
-        if not re.search(r"period\s*of\s*(?:insurance|takaful|cover)|tempoh\s*(?:insurans|takaful|perlindungan)|\bfrom\b|\bdari\b", text, re.I):
+        if not re.search(r"period\s*of\s*(?:insurance|takaful|cover)|tempoh\s*(?:insurans?|takaful|perlindungan)|\bfrom\b|\bdari\b|"
+                         r"effective\s*date|expiry\s*date|inception|commencement|\bmula\b", text, re.I):
             continue
-        days = [d for d in (_iso(*m) for m in re.findall(_DAY, "  ".join(joined[n:n + 3]))) if d]
-        pair = next(((a, b) for a, b in zip(days, days[1:])
-                     if 25 <= (date.fromisoformat(b) - date.fromisoformat(a)).days <= 800), None)
-        if pair:  # the two dates may stand on separate lines, with the other language between them
-            f["period_start"], f["period_end"] = pair
+        # the two dates may stand on separate lines, with the other language between them, and the
+        # line that names the period may come after the first of them
+        window = "  ".join(joined[max(n - 1, 0):n + 5])
+        days = [d for d in ([_iso(*m) for m in re.findall(_DAY, window)]
+                            + [_iso(d, m, y) for y, m, d in re.findall(_ISO_DAY, window)]) if d]
+        pairs = [(a, b, (date.fromisoformat(b) - date.fromisoformat(a)).days) for a in days for b in days if a < b]
+        whole_terms = [p for p in pairs if any(abs(p[2] - t) <= 1 for t in (365, 364, 182, 183, 90, 91, 730))]
+        pair = (whole_terms or [p for p in pairs if 25 <= p[2] <= 800] or [None])[0]
+        if pair:
+            f["period_start"], f["period_end"] = pair[0], pair[1]
             break
     if "sum_insured" not in f:  # some schedules print the sum under its label, not beside it
         pattern = re.compile(AMOUNTS[0][1], re.I)
@@ -275,6 +290,13 @@ def _page(lines: list[dict], width: float) -> dict:
                 if under:
                     f["insured_name"] = under[0]
                     break
+    if "plate_number" not in f:
+        # a table whose values the photo has moved off their labels: the registration number is then
+        # the one line on the page that is nothing but a registration number
+        alone = {t.replace(" ", "") for _, _, t in placed if re.fullmatch(_PLATE.strip(r"\b"), t) and any(ch.isdigit() for ch in t)
+                 and len(t.replace(" ", "")) >= 4}
+        if len(alone) == 1:
+            f["plate_number"] = alone.pop()
     insurer = next((t for _, _, t in placed if re.search(r"(insurance|insurans|takaful|assurance).{0,30}(berhad|bhd)|motor\s*insurance\s*pool",
                                                          t, re.I)), None)
     if insurer:
