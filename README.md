@@ -566,6 +566,19 @@ by where each value stands and what it looks like, with no model asked. Both are
   worked out from the number. A vocational licence also gives `licence_types` and `e_hailing`:
   whether its class covers e-hailing.
 
+- `motor_insurance`: schedules, cover notes and takaful confirmations of the insurers seen so far.
+  Each value is looked for beside or under its label and taken only when it has the right shape;
+  the premium column is confirmed by its arithmetic (gross premium, service tax on it, stamp
+  duty, total), and amounts that cannot be confirmed are left out. Gives `e_hailing` (the cover
+  extends to e-hailing) and `expired`. Other layouts go to the model.
+- `driver_permit`: the e-hailing vehicle permit (Permit Kenderaan E-Hailing): `permit_type` EVP,
+  the owner, plate, `permit_number` and `sub_permit_number`, `vehicle_type`, `seating_capacity`,
+  the operator and its registration number, both dates and `expired`.
+- `vehicle_inspection`: the Puspakom report (Laporan Pemeriksaan Kenderaan) with the vehicle's
+  details, date, kind and result of the inspection; and the windscreen slip, with its serial,
+  plate, engine and chassis numbers, `fee`, what it is valid until (`expiry_date`, and
+  `meter_expiry_date` for a taxi meter) and `expired`.
+
 This gives what a card prints, for filling in a form. It does not show that a card is genuine or
 belongs to the person presenting it; verifying a person is what get.ekyc is for.
 

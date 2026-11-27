@@ -15,9 +15,10 @@ MONTHS = {m: n for n, names in enumerate(
     ("JAN", "FEB", "MAC MAR", "APR", "MEI MAY", "JUN", "JUL", "OGO OGOS AUG", "SEP SEPT", "OKT OCT", "NOV", "DIS DEC"), 1)
     for m in names.split()}
 _PLATE = re.compile(r"[A-Z]{1,4}\s?\d{1,4}\s?[A-Z]{0,2}")
-_PERIOD = re.compile(r"(?<!\d)(\d{2})(\d{2})(20\d{2})\s+(\d{2})(\d{2})(20\d{2})(?!\d)")
+_PERIOD = re.compile(r"(?<!\d)([0-3]\d)([01]\d)(20\d{2})\s*([0-3]\d)([01]\d)(20\d{2})(?!\d)")
 _DAY_MONTH = re.compile(r"(\d{1,2})\s*([A-Z]{3,4})")
-_FEE = re.compile(r"RM\s*(\d{1,5}[.,]\d{2})")
+_FEE = re.compile(r"RM\s*(\d{1,5})\s*[.,\s]\s*(\d{2})(?!\d)")
+_NOT_A_DISC = re.compile(r"PERAKUAN\s*PENDAFTARAN|SIJIL\s*PEMILIKAN|INSUR|TAKAFUL|SCHEDULE|JADUAL")  # these name the licence too
 _REGIONS = ("SEMENANJUNG", "SABAH", "SARAWAK", "LABUAN", "LANGKAWI", "PANGKOR")
 _USES = re.compile(r"PERSENDIRIAN|PERDAGANGAN|SYARIKAT|TEKSI|KERETA SEWA|SEWA PANDU|E-?HAILING|BAS|LORI|MOTOSIKAL|KERAJAAN")
 
@@ -38,7 +39,11 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
     """The disc's fields and checks, or None when the pages are not a road tax disc."""
     for page in pages:
         lines = page.get("lines") or []
-        if not TITLE.search(" ".join(ln["text"] for ln in lines)):
+        whole = " ".join(ln["text"].upper() for ln in lines)
+        # the heading is often folded away or cut off: the disc is then known by what only it prints,
+        # the period as two runs of eight digits beside a fee or a region
+        shaped = len(lines) <= 40 and _PERIOD.search(whole) and (_FEE.search(whole) or any(r in whole for r in _REGIONS))
+        if (not TITLE.search(whole) and not shaped) or _NOT_A_DISC.search(whole):
             continue
         f: dict = {}
         texts = [(ln, " ".join(ln["text"].upper().split())) for ln in lines]
@@ -52,7 +57,7 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
                 f["period_start"], f["expiry_date"] = _iso(*m.group(1, 2, 3)), _iso(*m.group(4, 5, 6))
             m = _FEE.search(t)
             if m and "amount" not in f:
-                f["amount"], f["currency"] = m.group(1).replace(",", "."), "MYR"
+                f["amount"], f["currency"] = m.group(1) + "." + m.group(2), "MYR"
                 cc = re.match(r"(\d{2,5})\s*[A-Z]", t)
                 if cc:
                     f["engine_capacity_cc"] = cc.group(1)

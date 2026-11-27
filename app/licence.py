@@ -13,8 +13,9 @@ from typing import Optional
 
 from . import mykad
 
-DRIVING = re.compile(r"lesen\s*memandu|driving\s*licen[cs]e", re.I)
-VOCATIONAL = re.compile(r"lesen\s*vokasional|vocational\s*licen[cs]e", re.I)
+# the first letter of a heading is often cut off by the edge of the photo
+DRIVING = re.compile(r"esen\s*meman|iving\s*lice", re.I)
+VOCATIONAL = re.compile(r"esen\s*vokasional|vocational\s*licen[cs]e|vokasional\s*malaysia", re.I)
 LABELS = [
     ("name", r"nama\s*/\s*name|nama\b|name\b"),
     ("id_number", r"no\.?\s*k\.?\s*p\.?(?:\s*/\s*[il1]\.?\s*d\.?)?|no\.?\s*pengenalan(?:\s*/\s*[il]dentity\s*no\.?)?|[il]dentity\s*no\.?"),
@@ -65,6 +66,66 @@ def _labels(lines: list[dict]) -> tuple[list, list]:
     return labels, values
 
 
+_DATE_LOOSE = r"(\d{1,2})\s*/+\s*(\d{1,2})\s*/+\s*((?:19|20)\d{2})"
+_TYPE = re.compile(r"(P[S5][VY]|G[DO0]L|CDL)\b")
+_CLASS = re.compile(r"[A-Z]\s*:\s*\S")
+
+
+def _vocational(lines: list[dict]) -> dict:
+    """The vocational licence by the shape of its values. Its small labels are printed over a
+    patterned background in a dot print and are often misread, so nothing here depends on them:
+    the number is twelve digits at the end of a line, the validity is two dates, the name is the
+    line of capitals above the number, and each class starts with a letter and a colon."""
+    f: dict = {}
+    rows = [(_box(ln), " ".join(ln["text"].split())) for ln in lines]
+    number = next(((b, m.group(1)) for b, t in rows for m in [re.search(r"(\d{12})\W*$", t)] if m), None)
+    dated = next(((b, re.findall(_DATE_LOOSE, t)) for b, t in rows if len(re.findall(_DATE_LOOSE, t)) >= 2), None)
+    if number:
+        f["id_number"] = number[1]
+        names = [t for b, t in rows if b[1] < number[0][1] - 5 and re.fullmatch(r"[A-Z][A-Z .'/@\-]{4,}", t)
+                 and not VOCATIONAL.search(t) and t != "MALAYSIA"]
+        if names:
+            f["holder_name"] = " ".join(names[-2:] if len(names) > 1 and len(names[-1].split()) == 1 else names[-1:])
+        if any(re.fullmatch(r"MAL\W?", t) for b, t in rows if abs(b[1] - number[0][1]) < (number[0][3] - number[0][1])):
+            f["nationality"] = "MAL"
+    if dated:
+        f["issue_date"], f["expiry_date"] = _iso(dated[1][0]), _iso(dated[1][-1])
+    start = (dated or number or ((0, 0, 0, 0),))[0][3]
+    kinds: list[str] = []
+    classes: list[str] = []
+    last = None  # where the last class line stands: the line under it carries on
+    for b, t in rows:
+        if b[1] < start - 5:
+            continue
+        if _STOP.search(t) or re.search(r"siri", t, re.I):
+            break
+        m = _TYPE.match(t)
+        if m:
+            kind = "GDL" if m.group(1).startswith("G") else "PSV" if m.group(1).startswith("P") else m.group(1)
+            if kind not in kinds:
+                kinds.append(kind)
+            t = t[m.end():].strip()
+            if not t:
+                continue
+        if _CLASS.match(t):
+            classes.append(re.sub(r"\s*:\s*", ":", t, count=1))
+            last = b
+        elif last is not None and classes and b[1] - last[1] < 2.2 * (last[3] - last[1]) and b[0] > last[0] - 120 \
+                and sum(ch.islower() for ch in t) < 2 and len(t) > 3:
+            classes[-1] = (classes[-1].rstrip("/") + "/" + t.lstrip("/")) if classes[-1].endswith("/") else classes[-1] + " " + t
+            last = b
+    # each class belongs to one type by the card's design: passenger classes to PSV, goods weights to GDL
+    joined = " ".join(classes).upper()
+    for kind, words in (("PSV", r"TEKSI|SEWA|HAIL|BAS\b"), ("GDL", r"BTM|\bKG\b")):
+        if kind not in kinds and re.search(words, joined):
+            kinds.append(kind)
+    if kinds:
+        f["licence_types"] = ", ".join(k for k in ("PSV", "GDL", "CDL") if k in kinds)
+    if classes:
+        f["classes"] = "; ".join(classes)
+    return f
+
+
 def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
     """The licence's kind ("driving_licence" or "vocational_licence"), fields and checks; None
     when the pages are neither."""
@@ -75,9 +136,21 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
         if kind is None:
             continue
         width = page.get("width") or max(_box(ln)[2] for ln in lines)
+        # a card photographed in a wallet has another card above it: only what stands under this card's title is its own
+        title = VOCATIONAL if kind == "vocational_licence" else DRIVING
+        top = min(_box(ln)[1] for ln in lines if title.search(ln["text"]))
+        lines = [ln for ln in lines if _box(ln)[1] >= top - 5]
+        if kind == "vocational_licence":
+            f = _vocational(lines)
+            if not f.get("id_number") and not f.get("expiry_date"):
+                continue
+            return _finish(kind, f, page, today)
         labels, values = _labels([ln for ln in lines if not (DRIVING.search(ln["text"]) or VOCATIONAL.search(ln["text"]))])
-        if not labels:
-            continue
+        if not labels:  # no label was read: the address then starts under the two dates
+            dates = next((v for v in values if len(re.findall(_DATE_LOOSE, v[3])) >= 2), None)
+            if dates is None:
+                continue
+            labels = [{"field": "address", "x": dates[0], "y": dates[2] - 1, "bottom": dates[2]}]
         first = min(lb["y"] for lb in labels)
         got: dict = {}
         # the holder's number is twelve digits wherever its label was read or not; the nationality stands beside it
@@ -89,6 +162,11 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
             if beside:
                 got["nationality"] = [beside[0][3]]
             values = [v for v in values if v is not number and v not in beside]
+        # the validity is two dates on one line, whether its label was read or not
+        dated = next((v for v in values if len(re.findall(_DATE_LOOSE, v[3])) >= 2), None)
+        if dated is not None and kind == "driving_licence":
+            got["validity"] = [dated[3]]
+            values = [v for v in values if v is not dated]
         for x, y, bottom, text, ln in values:
             if _STOP.search(text) and "nationality" not in [lb["field"] for lb in labels if lb["y"] < y]:
                 continue
@@ -113,59 +191,46 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
             got.setdefault(owner["field"], []).append(text)
         f: dict = {}
         if got.get("name"):
-            f["holder_name"] = " ".join(got["name"])
+            f["holder_name"] = re.sub(r"(?<=\w) (A)[ .]?([LP]) (?=\w)", r" \1/\2 ", " ".join(got["name"]))  # A/L, A/P
         digits = re.search(r"(?<!\d)\d{12}(?!\d)", re.sub(r"(?<=\d)[\s\-](?=\d)", "", " ".join(got.get("id_number", []))))
         if digits:
             f["id_number"] = digits.group(0)
         country = [t for t in got.get("nationality", []) + got.get("id_number", []) if re.fullmatch(r"[A-Z]{3,}", t)]
         if country:
             f["nationality"] = country[0]
-        dates = re.findall(_DATE, " ".join(got.get("validity", [])))
+        dates = re.findall(_DATE_LOOSE, " ".join(got.get("validity", [])))
         if dates:
             f["issue_date"], f["expiry_date"] = (_iso(dates[0]), _iso(dates[-1])) if len(dates) > 1 else (None, _iso(dates[0]))
         birth = re.search(_DATE, " ".join(got.get("date_of_birth", [])))
         if birth:
             f["date_of_birth"] = _iso(birth.groups())
         if got.get("address"):
-            f["address"] = ", ".join(re.sub(r"^NO(?=\d)", "NO ", row) for row in got["address"])
-        rows = got.get("type", []) + got.get("classes", [])
-        if kind == "vocational_licence":
-            # PSV and GDL each start a row; what follows, over one or two lines, is that licence's class
-            parts: list[list[str]] = []
-            for text in sorted(set(rows), key=rows.index):
-                m = re.match(r"(%s)\b\s*(.*)" % "|".join(_KINDS), text)
-                if m:
-                    parts.append([m.group(1), m.group(2)])
-                elif parts:
-                    parts[-1][1] = (parts[-1][1] + " " + text).strip()
-                else:
-                    parts.append(["", text])
-            kinds = [p[0] for p in parts if p[0]]
-            # the type and its class are side by side, so the reader may give them as separate lines
-            loose = [p[1] for p in parts if not p[0]]
-            for p in parts:
-                if p[0] and not p[1] and loose:
-                    p[1] = loose.pop(0)
-            if kinds:
-                f["licence_types"] = ", ".join(kinds)
-            f["classes"] = "; ".join((p[0] + " " + p[1]).strip() for p in parts if p[0] or p[1]) or None
-        else:
-            if got.get("classes"):  # the class codes, set apart: "B2D" is B2 and D
-                codes = re.findall(r"B2|B1|E1|E2|A1|DA|[A-IM]", "".join(got["classes"]).replace(" ", ""))
-                f["classes"] = " ".join(codes) or " ".join(got["classes"])
+            f["address"] = ", ".join(re.sub(r"^(NO|\d{5})(?=(?<=NO)\d|(?<=\d)[A-Z])", r"\1 ", row) for row in got["address"])
+        if not got.get("classes"):
+            code = [v[3] for v in values if re.fullmatch(r"(?:(?:B2|B1|E1|E2|A1|DA|[A-IM])\s?){1,8}", v[3]) and len(v[3]) <= 16
+                    and v[3] not in got.get("name", [])]
+            if code:
+                got["classes"] = code[:1]
+        if got.get("classes"):  # the class codes, set apart: "B2D" is B2 and D
+            codes = re.findall(r"B2|B1|E1|E2|A1|DA|[A-IM]", "".join(got["classes"]).replace(" ", ""))
+            f["classes"] = " ".join(codes) or " ".join(got["classes"])
         if not f.get("id_number") and not f.get("expiry_date"):
             continue
-        checks, extra = [], {}
-        if f.get("id_number"):
-            by_number = mykad.born(f["id_number"], today)
-            if f.get("date_of_birth"):
-                checks.append({"name": "birth_date_matches_number", "passed": by_number == f["date_of_birth"],
-                               "detail": f"the number gives {by_number}, the card prints {f['date_of_birth']}"})
-            elif by_number and f.get("nationality", "MAL").startswith("MAL"):
-                f["date_of_birth"] = by_number
-        if f.get("expiry_date"):
-            extra["expired"] = date.fromisoformat(f["expiry_date"]) < (today or date.today())
-        if kind == "vocational_licence":
-            extra["e_hailing"] = bool(re.search(r"e\s*-?\s*hailing", f.get("classes") or "", re.I))
-        return {"kind": kind, "fields": f, "checks": checks, "extra": extra, "page": page.get("page", 1)}
+        return _finish(kind, f, page, today)
     return None
+
+
+def _finish(kind: str, f: dict, page: dict, today: Optional[date]) -> dict:
+    checks, extra = [], {}
+    if f.get("id_number"):
+        by_number = mykad.born(f["id_number"], today)
+        if f.get("date_of_birth"):
+            checks.append({"name": "birth_date_matches_number", "passed": by_number == f["date_of_birth"],
+                           "detail": f"the number gives {by_number}, the card prints {f['date_of_birth']}"})
+        elif by_number and f.get("nationality", "MAL").startswith("MAL"):
+            f["date_of_birth"] = by_number
+    if f.get("expiry_date"):
+        extra["expired"] = date.fromisoformat(f["expiry_date"]) < (today or date.today())
+    if kind == "vocational_licence":
+        extra["e_hailing"] = bool(re.search(r"e\s*-?\s*hailing", f.get("classes") or "", re.I))
+    return {"kind": kind, "fields": f, "checks": checks, "extra": extra, "page": page.get("page", 1)}

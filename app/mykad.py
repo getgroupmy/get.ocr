@@ -15,6 +15,10 @@ from datetime import date
 from typing import Optional
 
 TITLE = re.compile(r"kad\s*pengenalan|mykad|identity\s*card", re.I)
+# a line that is the card's heading, not a form's label "No. Kad Pengenalan" (insurance schedules print that)
+_HEADING = re.compile(r"\W*(?:kad\s*pengenalan|mykad|(?:malaysia\s*)?identity\s*card)\W*", re.I)
+_OTHER = re.compile(r"insur|takaful|polis[iy]|schedule|jadual|premium|lesen|licen[cs]e|sijil|permit", re.I)
+MAX_LINES = 40  # a card holds a dozen lines; a page that names an identity card number holds many more
 _NUMBER = re.compile(r"(?<!\d)(\d{6})[\s\-]*(\d{2})[\s\-]*(\d{4})(?!\d)")
 _GENDERS = {"LELAKI": "male", "PEREMPUAN": "female"}
 _CITIZEN = re.compile(r"WARGA\s*NEGARA|PEMASTAUTIN\s*TETAP|BUKAN\s*WARGANEGARA", re.I)
@@ -57,7 +61,7 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
     for page in pages:
         lines = page.get("lines") or []
         whole = " ".join(ln["text"] for ln in lines)
-        if not TITLE.search(whole):
+        if not any(_HEADING.fullmatch(ln["text"].strip()) for ln in lines) or len(lines) > MAX_LINES or _OTHER.search(whole):
             continue
         holder = next((ln for ln in sorted(lines, key=_top) if _NUMBER.search(ln["text"])), None)
         if holder is None:
