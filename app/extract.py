@@ -741,6 +741,17 @@ def _licence(kind: str):  # noqa: ANN202
     return parse
 
 
+def _upside_down(pages: list[dict]) -> list[dict]:
+    """The same pages with every place turned half a circle, as the lines of a page that was
+    photographed upside down have to be laid out before a reader that goes by position sees them."""
+    out = []
+    for p in pages:
+        w, h = p.get("width") or 0, p.get("height") or 0
+        lines = [{**ln, "box": [[w - x, h - y] for x, y in ln["box"]]} for ln in p.get("lines") or []]
+        out.append({**p, "lines": lines})
+    return out
+
+
 FORMS = {"vehicle_registration": vehicle.parse, "road_tax": roadtax.parse, "vocational_licence": _licence("vocational_licence"),
          "driving_licence": _licence("driving_licence"), "mykad": mykad.parse, "driver_permit": permits.evp, "vehicle_inspection": permits.inspection,
          "motor_insurance": insurance.parse}
@@ -752,11 +763,14 @@ def run(pages: list[dict], texts: list[str], wanted: str, custom: Optional[dict]
     if not any(t.strip() for t in texts):
         raise ApiError(422, "no_text", "no text was found in the document, so there is nothing to extract")
     form = None
-    for known, parse in FORMS.items():  # forms read by position say themselves whether a page is theirs
-        if wanted in ("auto", known):
-            form = parse(pages)
-            if form is not None:
-                break
+    for turned in (pages, _upside_down(pages)):
+        for known, parse in FORMS.items():  # forms read by position say themselves whether a page is theirs
+            if wanted in ("auto", known):
+                form = parse(turned)
+                if form is not None:
+                    break
+        if form is not None:
+            break  # a page photographed upside down is read line by line all the same: only the places are turned
     kind = known if form is not None else wanted if wanted != "auto" else _guess_pack(texts)
     if kind == "table":
         table = tables.parse(pages)

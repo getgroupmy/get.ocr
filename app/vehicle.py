@@ -64,8 +64,10 @@ def _is_heading(text: str) -> bool:
     if _HEADING.fullmatch(text):
         return True
     key = re.sub(r"[^a-z]", "", text.lower())
-    return 14 <= len(key) <= 30 and any(difflib.SequenceMatcher(None, key, t[:len(key) + 1]).ratio() >= 0.85
-                                        for t in ("sijilpemilikankenderaan", "perakuanpendaftarankenderaan"))
+    return 14 <= len(key) <= 30 and any(
+        difflib.SequenceMatcher(None, key, part).ratio() >= 0.85
+        for t in ("sijilpemilikankenderaan", "perakuanpendaftarankenderaan")
+        for part in (t[:len(key) + 1], t[-len(key) - 1:]))  # its start or its end may be cut off or stand on another line
 
 
 def _value(text: str) -> Optional[str]:
