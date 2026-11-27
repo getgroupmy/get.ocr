@@ -7,6 +7,7 @@ import pytest
 from app import engine, extract, llm
 from app.config import Settings, is_local_url
 from tests import synth
+from tests.conftest import ADMIN
 from tests.test_api import wait_for
 
 INVOICE_LINES = ["ACME SUPPLIES SDN BHD", "Invoice No: INV-2026-00417", "Date: 03/04/2026",
@@ -1130,3 +1131,46 @@ def test_a_certificate_heading_split_or_cut_is_still_a_heading():
     assert vehicle._is_heading("PEMILIKAN KENDERAAN") and vehicle._is_heading("SPEMILIKAN KENDERAAN")
     assert vehicle._is_heading("PERANUAN PENDAFTARAN KENDERAAN") and vehicle._is_heading("PERAKUAN PENDAFTARAN KENDER")
     assert not vehicle._is_heading("No Perakuan Pendaftaran Kenderaan : A/R") and not vehicle._is_heading("JABATAN PENGANGKUTAN JALAN")
+
+
+# --- every document is named by its kind, and that is kept in its record ------------------------
+def test_a_document_is_named_from_the_reading_itself(fake_model):
+    def named(lines):
+        return extract.identify([{"page": 1, "width": 1400, "height": 800, "lines": lines}], ["\n".join(ln["text"] for ln in lines)])
+    assert named(DRIVING) == "driving_licence" and named(VOCATIONAL) == "vocational_licence" and named(MYKAD) == "mykad"
+    assert named(ROAD_TAX) == "road_tax" and named(PERMIT) == "driver_permit" and named(_schedule()[0]["lines"]) == "motor_insurance"
+    assert named([_at("TAX INVOICE", 10, 10), _at("Invoice No. 2026-0042, total RM 120.00", 10, 50)]) == "invoice"
+    assert named([_at("VISITOR PARKING", 10, 10), _at("PARK AT YOUR OWN RISK", 10, 50)]) is None  # no document this service knows
+    assert named([]) is None
+    assert extract.label("driving_licence") == "Driving licence" and extract.label(None) is None
+
+
+def test_every_reading_says_what_the_document_is_and_keeps_it_in_its_record(client, api_key, need_engine):
+    png = synth.image_bytes(CERTIFICATE)
+    r = client.post("/v1/ocr", files={"file": ("a.png", png, "image/png")}, data={"external_ref": "driver-17"}, headers=api_key)
+    assert r.status_code == 200, r.text
+    assert (r.json()["document_type"], r.json()["document_label"]) == ("vehicle_registration", "Vehicle registration card (VOC, geran)")
+    other = client.post("/v1/ocr", files={"file": ("b.png", synth.image_bytes(["hello there, this is a note"]), "image/png")},
+                        data={"detail": "text"}, headers=api_key).json()
+    assert other["document_type"] is None and other["document_label"] is None
+    mine = client.get("/v1/documents", headers=api_key).json()["documents"]
+    assert [(d["document_type"], d["document_label"], d["how"], d["external_ref"]) for d in mine[:2]] == [
+        (None, "Not recognised", "sync", None), ("vehicle_registration", "Vehicle registration card (VOC, geran)", "sync", "driver-17")]
+    unnamed = client.get("/v1/documents?document_type=none", headers=api_key).json()["documents"]
+    assert unnamed and all(d["document_type"] is None for d in unnamed)
+    assert len(client.get("/v1/documents?external_ref=driver-17", headers=api_key).json()["documents"]) == 1
+    seen = client.get("/admin/api/documents", headers=ADMIN).json()
+    assert any(k["document_type"] == "vehicle_registration" and k["count"] >= 1
+               and k["document_label"] == "Vehicle registration card (VOC, geran)" for k in seen["by_type"])
+    assert seen["documents"][0]["client"] and "text" not in seen["documents"][0]
+
+
+def test_a_job_keeps_the_kind_of_its_document(client, api_key, need_engine):
+    r = client.post("/v1/jobs", files={"file": ("a.png", synth.image_bytes(CERTIFICATE), "image/png")},
+                    data={"external_ref": "car-9"}, headers=api_key)
+    assert r.status_code in (200, 201, 202), r.text
+    job = wait_for(client, api_key, r.json()["id"])
+    assert job["status"] == "completed" and job["document_type"] == "vehicle_registration"
+    assert job["result"]["document_label"] == "Vehicle registration card (VOC, geran)"
+    rows = client.get("/v1/documents?external_ref=car-9", headers=api_key).json()["documents"]
+    assert [(d["how"], d["job_id"], d["document_type"]) for d in rows] == [("job", r.json()["id"], "vehicle_registration")]

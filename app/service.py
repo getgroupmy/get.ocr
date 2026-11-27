@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from . import codes, crypto, engine, extract, gaps, jawi, lists, marks, scripts, signatures, storage, vision, webhooks
 from .config import get_settings
-from .db import ApiClient, Correction, Job, Route, Seen, Usage, session_scope, utcnow
+from .db import ApiClient, Correction, DocumentRecord, Job, Route, Seen, Usage, session_scope, utcnow
 from .documents import Document, parse_pages
 from .errors import ApiError
 
@@ -77,6 +77,7 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
         if glm and doc.kind in ("docx", "xlsx"):
             raise ApiError(422, "bad_engine", "a Word or Excel file is read from its own text: leave the engine out")
         pages = []
+        seen = []  # every page with its lines, whatever detail was asked for: the document is named from them
         looked = 0  # text pages whose pictures were read as well
         for n in numbers:
             page = doc.page(n, use_text_layer=not options.get("force_ocr") and not glm,
@@ -121,6 +122,7 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
                 conf = round(sum(ln["confidence"] for ln in lines) / len(lines), 4) if lines else None
                 out.update(source="ocr", text=engine.layout_text(lines), confidence=conf,
                            quality=engine.quality(page.image))
+            seen.append({"page": n, "width": out["width"], "height": out["height"], "lines": lines, "text": out["text"]})
             if options.get("detail", "lines") == "lines":
                 out["lines"] = lines
             want_codes = options.get("codes")
@@ -159,7 +161,12 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
                     ok, jpeg = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 80])
                     out["preview"] = "data:image/jpeg;base64," + base64.b64encode(jpeg.tobytes()).decode() if ok else None
             pages.append(out)
+        named = None if options.get("task") in ("table", "formula", "seal", "chart") else extract.identify(
+            seen, [engine.layout_columns(p["lines"]) if p["lines"] else p["text"] for p in seen])
         return {
+            # what kind of document this is, worked out from the reading itself (None: not recognised)
+            "document_type": named,
+            "document_label": extract.label(named),
             "engine": vision.model(reader) if glm else engine.NAME + "+" + (jawi.NAME if script == "jawi" else "scripts" if script == "detect" else scripts.name(script)) if script
             else engine.NAME,
             "kind": doc.kind,
@@ -228,6 +235,10 @@ def extract_fields(data: bytes, options: dict, max_pages: int) -> dict:
         out = {"documents": documents}
     else:
         out = extract.run(ocr["pages"], texts, kind, options.get("fields"))
+    if "document_type" not in out:  # several documents in one file: the first one names the file
+        first = next((d.get("document_type") for d in out.get("documents", []) if d.get("document_type")), ocr["document_type"])
+        out["document_type"] = first
+    out["document_label"] = extract.label(out["document_type"])
     out.update(engine=ocr["engine"], kind=ocr["kind"], page_count=ocr["page_count"], file=ocr["file"],
                pages=[{k: p.get(k) for k in ("page", "width", "height", "source", "confidence", "quality", "rotated",
                                              "checkboxes", "stamps", "signatures", "preview") if k in p}
@@ -304,6 +315,19 @@ def record_usage(db: Session, client_id: str, kind: str, ok: bool, pages: int, s
     db.add(Usage(client_id=client_id, kind=kind, ok=ok, pages=pages, size_bytes=size, duration_ms=ms))
 
 
+def record_document(db: Session, client_id: str, kind: str, result: dict, job_id: Optional[str] = None,
+                    external_ref: Optional[str] = None) -> None:
+    """The record of a document read: its kind by name, never its content."""
+    db.add(DocumentRecord(client_id=client_id, kind=kind, job_id=job_id, external_ref=external_ref,
+                          document_type=(result.get("document_type") or None), pages=len(result.get("pages") or [])))
+
+
+def document_out(row: DocumentRecord) -> dict:
+    return {"id": row.id, "at": row.at.isoformat() + "Z", "how": row.kind, "job_id": row.job_id, "external_ref": row.external_ref,
+            "document_type": row.document_type, "document_label": extract.label(row.document_type) or "Not recognised",
+            "pages": row.pages}
+
+
 # --- job queue -----------------------------------------------------------------
 _queue: "queue.Queue[Optional[str]]" = queue.Queue()
 _stop = threading.Event()
@@ -350,6 +374,7 @@ def process(job_id: str) -> None:
                 apply_corrections(db, client_id, result)
                 note_duplicates(db, client_id, data, result)
             job.status, job.result, job.pages = "completed", result, len(result["pages"])
+            record_document(db, client_id, "job", result, job_id, job.external_ref)
         record_usage(db, client_id, "job", error is None, job.pages or 0, size,
                      int((time.monotonic() - started) * 1000))
         storage.delete(job_id)

@@ -752,6 +752,39 @@ def _upside_down(pages: list[dict]) -> list[dict]:
     return out
 
 
+_TITLES = (("credit_note", r"credit\s*note|nota\s*kredit"), ("debit_note", r"debit\s*note|nota\s*debit"),
+           ("delivery_order", r"delivery\s*order|pesanan\s*penghantaran"), ("purchase_order", r"purchase\s*order|pesanan\s*belian"),
+           ("quotation", r"quotation|sebut\s*harga"), ("invoice", r"invoice|invois"), ("receipt", r"receipt|resit"))
+
+
+def identify(pages: list[dict], texts: list[str]) -> Optional[str]:
+    """What kind of document this is, by itself and without the model: the form whose reader
+    knows it, else the kind its words name, else None (a picture that is no document this service
+    knows, or one with no text)."""
+    for turned in (pages, _upside_down(pages)):
+        for known, parse in FORMS.items():
+            try:
+                if any(p.get("lines") for p in turned) and parse(turned) is not None:
+                    return known
+            except Exception:  # noqa: BLE001 - naming a document never fails a reading
+                continue
+    text = "\n".join(texts)
+    if len(text.strip()) < 20:
+        return None
+    kind = _guess_pack(texts)
+    if kind != "invoice":
+        return kind
+    head = "\n".join(text.splitlines()[:25])
+    return next((name for name, words in _TITLES if re.search(words, head, re.I)), None)
+
+
+def label(kind: Optional[str]) -> Optional[str]:
+    """The name of a kind as people say it: "Driving licence" for driving_licence."""
+    if kind is None:
+        return None
+    return next((c["label"] for c in catalogue() if c["type"] == kind), kind.replace("_", " ").capitalize())
+
+
 FORMS = {"vehicle_registration": vehicle.parse, "road_tax": roadtax.parse, "vocational_licence": _licence("vocational_licence"),
          "driving_licence": _licence("driving_licence"), "mykad": mykad.parse, "driver_permit": permits.evp, "vehicle_inspection": permits.inspection,
          "motor_insurance": insurance.parse}

@@ -123,6 +123,20 @@ class Route(Base):
     url: Mapped[str] = mapped_column(String(500))
 
 
+class DocumentRecord(Base):
+    """One line for every document read: when, for which client, how, and what kind of document
+    it was found to be. Nothing of the document's content is kept here."""
+    __tablename__ = "documents"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    client_id: Mapped[str] = mapped_column(ForeignKey("api_clients.id"), index=True)
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    kind: Mapped[str] = mapped_column(String(10))  # sync | job
+    job_id: Mapped[Optional[str]] = mapped_column(String(40), index=True)
+    external_ref: Mapped[Optional[str]] = mapped_column(String(200))
+    document_type: Mapped[Optional[str]] = mapped_column(String(40), index=True)  # None: not recognised
+    pages: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class AdminUser(Base):
     """A person who may use the console with a token of their own. role: admin, or viewer (may look and try, not change)."""
     __tablename__ = "admin_users"

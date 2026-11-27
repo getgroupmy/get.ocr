@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from .. import crypto, extract, service
 from ..auth import new_api_key, require_admin
 from ..config import get_settings, resolves_to_internal
-from ..db import AdminPassword, AdminTotp, AdminUser, ApiClient, Audit, Job, Route, Usage, get_db
+from ..db import AdminPassword, AdminTotp, AdminUser, ApiClient, Audit, DocumentRecord, Job, Route, Usage, get_db
 from ..errors import ApiError
 from .ocr import job_out, read_input
 
@@ -265,6 +265,18 @@ def list_jobs(limit: int = 100, db: Session = Depends(get_db)):
     names = dict(db.execute(select(ApiClient.id, ApiClient.name)).all())
     jobs = db.scalars(select(Job).order_by(Job.created_at.desc()).limit(max(1, min(limit, 500))))
     return {"jobs": [{**job_out(j, with_result=False), "client": names.get(j.client_id)} for j in jobs]}
+
+
+@router.get("/documents")
+def list_documents(limit: int = 100, db: Session = Depends(get_db)):
+    """The documents read for every client, newest first, each named by its kind, and how many of
+    each kind there have been. Never the text."""
+    names = dict(db.execute(select(ApiClient.id, ApiClient.name)).all())
+    rows = db.scalars(select(DocumentRecord).order_by(DocumentRecord.id.desc()).limit(max(1, min(limit, 500))))
+    counts = db.execute(select(DocumentRecord.document_type, func.count()).group_by(DocumentRecord.document_type)
+                        .order_by(func.count().desc())).all()
+    return {"documents": [{**service.document_out(r), "client": names.get(r.client_id)} for r in rows],
+            "by_type": [{"document_type": t, "document_label": extract.label(t) or "Not recognised", "count": n} for t, n in counts]}
 
 
 @router.post("/try")

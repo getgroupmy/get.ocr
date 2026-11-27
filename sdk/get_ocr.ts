@@ -85,6 +85,10 @@ export interface OcrPage {
 }
 
 export interface OcrResult {
+  /** What kind of document this is, worked out from the reading itself; null when it was not recognised. */
+  document_type: string | null;
+  /** The same as people say it, e.g. "Driving licence". */
+  document_label: string | null;
   engine: string;
   /** "image", "pdf", "docx" or "xlsx". */
   kind: string;
