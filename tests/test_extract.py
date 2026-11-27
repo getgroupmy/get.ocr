@@ -965,3 +965,10 @@ def test_a_long_pack_is_named_by_its_first_pages():
     assert extract.guess_type(schedule) == "motor_insurance"
     assert extract._guess_pack([schedule] + [wording] * 30) == "motor_insurance"
     assert extract._guess_pack(["nothing that names a document", "nor here", "nor here", schedule]) == "motor_insurance"
+
+
+def test_a_licence_in_a_wallet_under_another_card_keeps_its_name():
+    from app import licence
+    wallet = [_at("0105011", 900, 5), _at("Jenis / Type : Kelas / Class :", 650, 20, 16), _at("No SIRI: G 902030", 240, 40)]
+    f = licence.parse([{"page": 1, "width": 1136, "lines": wallet + DRIVING}])["fields"]
+    assert f["holder_name"] == "LIM AH KOW BIN ABDULLAH" and f["classes"] == "B2 D"

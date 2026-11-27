@@ -75,6 +75,10 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
         if kind is None:
             continue
         width = page.get("width") or max(_box(ln)[2] for ln in lines)
+        # a card photographed in a wallet has another card above it: only what stands under this card's title is its own
+        title = VOCATIONAL if kind == "vocational_licence" else DRIVING
+        top = min(_box(ln)[1] for ln in lines if title.search(ln["text"]))
+        lines = [ln for ln in lines if _box(ln)[1] >= top - 5]
         labels, values = _labels([ln for ln in lines if not (DRIVING.search(ln["text"]) or VOCATIONAL.search(ln["text"]))])
         if not labels:
             continue
