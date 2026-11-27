@@ -559,6 +559,13 @@ by where each value stands and what it looks like, with no model asked. Both are
   `gender_matches_number` (the last digit is odd for a man, even for a woman). A stroke lost in
   "A/L" or "A/P" is put back, and `name_as_read` then gives the name as it was read.
 
+- `driving_licence` (Lesen Memandu) and `vocational_licence` (Lesen Vokasional: PSV, GDL): the
+  holder's name, `id_number`, `nationality`, `classes`, the validity as `issue_date` and
+  `expiry_date`, the address on a driving licence, and `expired`. The date of birth is the printed
+  one when the card has it (then checked against the number, `birth_date_matches_number`), or
+  worked out from the number. A vocational licence also gives `licence_types` and `e_hailing`:
+  whether its class covers e-hailing.
+
 This gives what a card prints, for filling in a form. It does not show that a card is genuine or
 belongs to the person presenting it; verifying a person is what get.ekyc is for.
 

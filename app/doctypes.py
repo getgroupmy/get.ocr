@@ -299,10 +299,18 @@ DOCS: dict[str, dict] = {
     # --- vehicles: claims, purchase and running costs -----------------------------------
     "driving_licence": _doc(
         "Driving licence", "a driving licence",
-        "holder_name, id_number, licence_number, nationality, classes, licence_type, issue_date:d, expiry_date:d, address",
+        "holder_name, id_number, licence_number, nationality, classes, licence_type, issue_date:d, expiry_date:d, address, "
+        "date_of_birth:d",
         checks=(("order", "validity", "issue_date", "expiry_date"),),
         words=r"lesen memandu|driving licen[cs]e|kelas|tempoh sah|\bcdl\b|\bgdl\b|\bpdl\b",
         hints="classes are the vehicle classes as printed (for example \"B2 D\"); licence_type is CDL, PDL, LDL, GDL or PSV."),
+    "vocational_licence": _doc(
+        "Vocational licence (PSV, GDL)", "a Malaysian vocational driving licence (Lesen Vokasional: PSV or GDL)",
+        "holder_name, id_number, nationality, licence_types, classes, issue_date:d, expiry_date:d, date_of_birth:d",
+        checks=(("order", "validity", "issue_date", "expiry_date"),),
+        words=r"lesen\s*vokasional|vocational\s*licen[cs]e|\bpsv\b|\bgdl\b|e-?hailing|teksi",
+        hints="licence_types is PSV, GDL or both; classes is what each allows, as printed (for example "
+              "\"PSV D:TEKSI/TEKSI MEWAH/KERETA SEWA/E-HAILING\")."),
     "accident_report": _doc(
         "Accident or police report", "a police report or accident report",
         "station_name, report_number, report_date:d, report_time, reporter_name, id_number, phone, incident_date:d, "

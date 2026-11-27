@@ -882,3 +882,64 @@ def test_forms_read_by_position_are_recognised_on_auto(fake_model):
     pages = [{"page": 1, "width": 2000, "height": 1500, "lines": ROAD_TAX, "text": "\n".join(ln["text"] for ln in ROAD_TAX)}]
     out = extract.run(pages, [pages[0]["text"]], "auto")
     assert out["document_type"] == "road_tax" and out["fields"]["amount"] == 90.0 and "expired" in out["fields"]
+
+
+# --- driving and vocational licences, read by their labels ------------------------------------
+DRIVING = [_at("LESEN MEMANDU", 240, 80), _at("DRIVING LICENCE", 240, 110), _at("MALAYSIA", 790, 80, 30),
+           _at("LIM AH KOW BIN", 400, 170, 30), _at("ABDULLAH", 400, 204, 30),
+           _at("Warganegara / Nationality", 400, 250, 16), _at("No. Pengenalan / Identity No.", 740, 250, 16),
+           _at("MALAYSIA", 400, 270), _at("850203075271", 740, 270), _at("Kelas / Class", 400, 310, 16),
+           _at("Tarikh Lahir / Date Of Birth", 740, 310, 16), _at("B2 D", 400, 330), _at("03/02/1985", 740, 330),
+           _at("Tempoh / Validity", 400, 370, 16), _at("26/01/2024 - 01/02/2025", 400, 395),
+           _at("Alamat / Address", 400, 440, 16), _at("43 JALAN SHAIK MADAR", 400, 470), _at("11500 AYER ITAM", 400, 500),
+           _at("PULAU PINANG", 400, 530)]
+VOCATIONAL = [_at("LESEN VOKASIONAL MALAYSIA", 180, 40, 30), _at("MALAYSIAN VOCATIONAL LICENCE", 260, 75),
+              _at("Nama / Name :", 300, 125, 16), _at("RAVI A/L MUTHU", 298, 150), _at("No. K.P. / I.D. : 900716055765", 296, 242),
+              _at("MAL", 722, 250), _at("Tempoh / Valid Until :", 296, 280, 16), _at("07/09/2022 - 16/07/2024", 292, 305),
+              _at("Jenis / Type : Kelas / Class :", 292, 345, 16), _at("PSV", 288, 370), _at("D:TEKSI/TEKSI MEWAH/", 410, 370),
+              _at("KERETA SEWA/E-HAILING", 436, 400), _at("GDL", 288, 430), _at("E:BTM > 7500 KG (BERAT KEJUR)", 410, 430),
+              _at("Ketua Pengarah Pengangkutan Jalan", 30, 510, 14)]
+
+
+def test_the_driving_licence_is_read_by_its_labels():
+    from datetime import date
+    from app import licence
+    out = licence.parse([{"page": 1, "width": 1136, "lines": DRIVING}], today=date(2024, 6, 1))
+    f = out["fields"]
+    assert out["kind"] == "driving_licence" and f["holder_name"] == "LIM AH KOW BIN ABDULLAH"  # a name over two lines
+    assert (f["id_number"], f["nationality"], f["classes"]) == ("850203075271", "MALAYSIA", "B2 D")
+    assert (f["issue_date"], f["expiry_date"], f["date_of_birth"]) == ("2024-01-26", "2025-02-01", "1985-02-03")
+    assert f["address"] == "43 JALAN SHAIK MADAR, 11500 AYER ITAM, PULAU PINANG"
+    assert out["checks"] == [{"name": "birth_date_matches_number", "passed": True,
+                              "detail": "the number gives 1985-02-03, the card prints 1985-02-03"}]
+    assert out["extra"] == {"expired": False}
+    # the older card prints no date of birth: it is worked out from the number
+    older = [ln for ln in DRIVING if ln["text"] not in ("Tarikh Lahir / Date Of Birth", "03/02/1985")]
+    out = licence.parse([{"page": 1, "width": 1136, "lines": older}], today=date(2026, 1, 1))
+    assert out["fields"]["date_of_birth"] == "1985-02-03" and out["checks"] == [] and out["extra"] == {"expired": True}
+
+
+def test_the_vocational_licence_gives_its_types_and_whether_it_covers_e_hailing():
+    from datetime import date
+    from app import licence
+    out = licence.parse([{"page": 1, "width": 855, "lines": VOCATIONAL}], today=date(2024, 1, 1))
+    f = out["fields"]
+    assert out["kind"] == "vocational_licence" and (f["holder_name"], f["id_number"], f["nationality"]) == \
+        ("RAVI A/L MUTHU", "900716055765", "MAL")
+    assert (f["issue_date"], f["expiry_date"], f["licence_types"]) == ("2022-09-07", "2024-07-16", "PSV, GDL")
+    assert f["classes"] == "PSV D:TEKSI/TEKSI MEWAH/ KERETA SEWA/E-HAILING; GDL E:BTM > 7500 KG (BERAT KEJUR)"
+    assert out["extra"] == {"expired": False, "e_hailing": True}
+    # the reader may give a type and its class as one line
+    joined = [ln for ln in VOCATIONAL if ln["text"] not in ("PSV", "D:TEKSI/TEKSI MEWAH/", "GDL", "E:BTM > 7500 KG (BERAT KEJUR)")]
+    joined.append(_at("PSV D:TEKSI/TEKSI MEWAH/", 288, 370))
+    out = licence.parse([{"page": 1, "width": 855, "lines": joined}])
+    assert out["fields"]["licence_types"] == "PSV" and out["extra"]["e_hailing"] is True
+    assert licence.parse([{"page": 1, "width": 855, "lines": [_at("LESEN KENDERAAN MOTOR", 10, 10)]}]) is None
+
+
+def test_licences_are_recognised_on_auto_and_nothing_is_reported_as_not_found(fake_model):
+    for lines, kind in ((DRIVING, "driving_licence"), (VOCATIONAL, "vocational_licence"), (MYKAD, "mykad")):
+        pages = [{"page": 1, "width": 1136, "height": 720, "lines": lines, "text": "\n".join(ln["text"] for ln in lines)}]
+        out = extract.run(pages, [pages[0]["text"]], "auto")
+        assert out["document_type"] == kind and out["read_by"] == "labels" and out["not_found_in_text"] == []
+        assert out["checks_passed"] is True and "expired" in out["fields"] or kind == "mykad"
