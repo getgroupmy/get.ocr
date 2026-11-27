@@ -818,3 +818,150 @@ def test_the_older_certificate_with_a_label_for_each_value_is_read_too():
         ("4G15P123456", "PL1C22SNL8B123456", "PROTON", "SAGA 1.3", "2008")
     assert f["registration_conditions"] == "1. Tidak boleh tukar milik dalam 4 tahun"
     assert vehicle.parse([{"page": 1, "width": 1400, "lines": [line("INVOICE", 100, 100)]}]) is None
+
+
+# --- the road tax disc and the identity card, read by position --------------------------------
+def _at(text, x, y, h=24):
+    return {"text": text, "confidence": 0.99, "box": [[x, y], [x + 12 * len(text), y], [x + 12 * len(text), y + h], [x, y + h]]}
+
+
+ROAD_TAX = [_at("LESEN KENDERAAN MOTOR", 190, 150, 60), _at("2024", 790, 460, 80), _at("WXY1234", 320, 620, 60),
+            _at("30 JUN", 790, 620, 60), _at("0116001 I8imwY3 01072023", 267, 727), _at("01072023 30062024", 783, 723),
+            _at("1496SP AB RM90.00", 782, 759), _at("SEMENANJUNG", 267, 798), _at("PERSENDIRIAN", 783, 795),
+            _at("998877665", 1724, 474), _at("77665", 1062, 521)]
+
+
+def test_the_road_tax_disc_is_read_by_shape_and_its_expiry_is_checked():
+    from datetime import date
+    from app import roadtax
+    out = roadtax.parse([{"page": 1, "width": 2000, "lines": ROAD_TAX}], today=date(2024, 1, 15))
+    f = out["fields"]
+    assert (f["plate_number"], f["period_start"], f["expiry_date"]) == ("WXY1234", "2023-07-01", "2024-06-30")
+    assert (f["amount"], f["currency"], f["engine_capacity_cc"]) == ("90.00", "MYR", "1496")
+    assert (f["region"], f["usage_class"], f["serial_number"]) == ("SEMENANJUNG", "PERSENDIRIAN", "998877665")
+    assert out["checks"][0]["name"] == "expiry_matches" and out["checks"][0]["passed"] is True
+    assert out["extra"] == {"expired": False}
+    assert roadtax.parse([{"page": 1, "width": 2000, "lines": ROAD_TAX}], today=date(2024, 7, 1))["extra"] == {"expired": True}
+    altered = [ln if ln["text"] != "30 JUN" else _at("30 DIS", 790, 620, 60) for ln in ROAD_TAX]
+    assert roadtax.parse([{"page": 1, "width": 2000, "lines": altered}])["checks"][0]["passed"] is False
+    assert roadtax.parse([{"page": 1, "width": 2000, "lines": [_at("INVOICE 2024", 10, 10)]}]) is None
+
+
+MYKAD = [_at("KAD PENGENALAN", 120, 22), _at("MyKad", 754, 42), _at("900412 10 5678", 32, 167),
+         _at("TAN MEI LING", 34, 531), _at("NO 8 JALAN SS 2/4", 36, 607), _at("TAMAN SEA", 37, 641),
+         _at("47300 PETALING JAYA", 37, 675), _at("SELANGOR", 36, 709), _at("WARGANEGARA", 900, 694),
+         _at("PEREMPUAN", 1000, 721)]
+
+
+def test_the_identity_card_is_read_by_position_and_checked_against_its_number():
+    from datetime import date
+    from app import mykad
+    out = mykad.parse([{"page": 1, "width": 1280, "lines": MYKAD}], today=date(2026, 1, 1))
+    f = out["fields"]
+    assert (f["id_number"], f["name"], f["gender"], f["citizenship"]) == ("900412-10-5678", "TAN MEI LING", "female", "WARGANEGARA")
+    assert f["address"] == "NO 8 JALAN SS 2/4, TAMAN SEA, 47300 PETALING JAYA, SELANGOR"
+    assert (f["postcode"], f["city"], f["state"]) == ("47300", "PETALING JAYA", "SELANGOR")
+    assert (f["date_of_birth"], f["place_of_birth"]) == ("1990-04-12", "Selangor")
+    assert [c["passed"] for c in out["checks"]] == [True, True] and out["extra"] == {}
+    # a stroke lost in the name is put back, and what was read is kept beside it
+    lost = [ln if ln["text"] != "TAN MEI LING" else _at("RAVI AL MUTHU", 34, 531) for ln in MYKAD]
+    out = mykad.parse([{"page": 1, "width": 1280, "lines": lost}])
+    assert out["fields"]["name"] == "RAVI A/L MUTHU" and out["extra"] == {"name_as_read": "RAVI AL MUTHU"}
+    assert out["checks"][1]["passed"] is True  # 8 is even, the card prints a woman
+    wrong = [ln if ln["text"] != "PEREMPUAN" else _at("LELAKI", 1000, 721) for ln in MYKAD]
+    assert mykad.parse([{"page": 1, "width": 1280, "lines": wrong}])["checks"][1]["passed"] is False
+    assert mykad.born("051301105678") is None and mykad.born("050228105678", date(2026, 1, 1)) == "2005-02-28"
+    assert mykad.parse([{"page": 1, "width": 1280, "lines": [_at("KAD PELAJAR", 10, 10)]}]) is None
+
+
+def test_forms_read_by_position_are_recognised_on_auto(fake_model):
+    pages = [{"page": 1, "width": 1280, "height": 800, "lines": MYKAD, "text": "\n".join(ln["text"] for ln in MYKAD)}]
+    out = extract.run(pages, [pages[0]["text"]], "auto")
+    assert out["document_type"] == "mykad" and out["read_by"] == "labels" and out["model_calls"] == 0
+    assert out["fields"]["id_number"] == "900412-10-5678" and out["checks_passed"] is True
+    pages = [{"page": 1, "width": 2000, "height": 1500, "lines": ROAD_TAX, "text": "\n".join(ln["text"] for ln in ROAD_TAX)}]
+    out = extract.run(pages, [pages[0]["text"]], "auto")
+    assert out["document_type"] == "road_tax" and out["fields"]["amount"] == 90.0 and "expired" in out["fields"]
+
+
+# --- driving and vocational licences, read by their labels ------------------------------------
+DRIVING = [_at("LESEN MEMANDU", 240, 80), _at("DRIVING LICENCE", 240, 110), _at("MALAYSIA", 790, 80, 30),
+           _at("LIM AH KOW BIN", 400, 170, 30), _at("ABDULLAH", 400, 204, 30),
+           _at("Warganegara / Nationality", 400, 250, 16), _at("No. Pengenalan / Identity No.", 740, 250, 16),
+           _at("MALAYSIA", 400, 270), _at("850203075271", 740, 270), _at("Kelas / Class", 400, 310, 16),
+           _at("Tarikh Lahir / Date Of Birth", 740, 310, 16), _at("B2 D", 400, 330), _at("03/02/1985", 740, 330),
+           _at("Tempoh / Validity", 400, 370, 16), _at("26/01/2024 - 01/02/2025", 400, 395),
+           _at("Alamat / Address", 400, 440, 16), _at("43 JALAN SHAIK MADAR", 400, 470), _at("11500 AYER ITAM", 400, 500),
+           _at("PULAU PINANG", 400, 530)]
+VOCATIONAL = [_at("LESEN VOKASIONAL MALAYSIA", 180, 40, 30), _at("MALAYSIAN VOCATIONAL LICENCE", 260, 75),
+              _at("Nama / Name :", 300, 125, 16), _at("RAVI A/L MUTHU", 298, 150), _at("No. K.P. / I.D. : 900716055765", 296, 242),
+              _at("MAL", 722, 250), _at("Tempoh / Valid Until :", 296, 280, 16), _at("07/09/2022 - 16/07/2024", 292, 305),
+              _at("Jenis / Type : Kelas / Class :", 292, 345, 16), _at("PSV", 288, 370), _at("D:TEKSI/TEKSI MEWAH/", 410, 370),
+              _at("KERETA SEWA/E-HAILING", 436, 400), _at("GDL", 288, 430), _at("E:BTM > 7500 KG (BERAT KEJUR)", 410, 430),
+              _at("Ketua Pengarah Pengangkutan Jalan", 30, 510, 14)]
+
+
+def test_the_driving_licence_is_read_by_its_labels():
+    from datetime import date
+    from app import licence
+    out = licence.parse([{"page": 1, "width": 1136, "lines": DRIVING}], today=date(2024, 6, 1))
+    f = out["fields"]
+    assert out["kind"] == "driving_licence" and f["holder_name"] == "LIM AH KOW BIN ABDULLAH"  # a name over two lines
+    assert (f["id_number"], f["nationality"], f["classes"]) == ("850203075271", "MALAYSIA", "B2 D")
+    assert (f["issue_date"], f["expiry_date"], f["date_of_birth"]) == ("2024-01-26", "2025-02-01", "1985-02-03")
+    assert f["address"] == "43 JALAN SHAIK MADAR, 11500 AYER ITAM, PULAU PINANG"
+    assert out["checks"] == [{"name": "birth_date_matches_number", "passed": True,
+                              "detail": "the number gives 1985-02-03, the card prints 1985-02-03"}]
+    assert out["extra"] == {"expired": False}
+    # the older card prints no date of birth: it is worked out from the number
+    older = [ln for ln in DRIVING if ln["text"] not in ("Tarikh Lahir / Date Of Birth", "03/02/1985")]
+    out = licence.parse([{"page": 1, "width": 1136, "lines": older}], today=date(2026, 1, 1))
+    assert out["fields"]["date_of_birth"] == "1985-02-03" and out["checks"] == [] and out["extra"] == {"expired": True}
+
+
+def test_the_vocational_licence_gives_its_types_and_whether_it_covers_e_hailing():
+    from datetime import date
+    from app import licence
+    out = licence.parse([{"page": 1, "width": 855, "lines": VOCATIONAL}], today=date(2024, 1, 1))
+    f = out["fields"]
+    assert out["kind"] == "vocational_licence" and (f["holder_name"], f["id_number"], f["nationality"]) == \
+        ("RAVI A/L MUTHU", "900716055765", "MAL")
+    assert (f["issue_date"], f["expiry_date"], f["licence_types"]) == ("2022-09-07", "2024-07-16", "PSV, GDL")
+    assert f["classes"] == "PSV D:TEKSI/TEKSI MEWAH/ KERETA SEWA/E-HAILING; GDL E:BTM > 7500 KG (BERAT KEJUR)"
+    assert out["extra"] == {"expired": False, "e_hailing": True}
+    # the reader may give a type and its class as one line
+    joined = [ln for ln in VOCATIONAL if ln["text"] not in ("PSV", "D:TEKSI/TEKSI MEWAH/", "GDL", "E:BTM > 7500 KG (BERAT KEJUR)")]
+    joined.append(_at("PSV D:TEKSI/TEKSI MEWAH/", 288, 370))
+    out = licence.parse([{"page": 1, "width": 855, "lines": joined}])
+    assert out["fields"]["licence_types"] == "PSV" and out["extra"]["e_hailing"] is True
+    assert licence.parse([{"page": 1, "width": 855, "lines": [_at("LESEN KENDERAAN MOTOR", 10, 10)]}]) is None
+
+
+def test_licences_are_recognised_on_auto_and_nothing_is_reported_as_not_found(fake_model):
+    for lines, kind in ((DRIVING, "driving_licence"), (VOCATIONAL, "vocational_licence"), (MYKAD, "mykad")):
+        pages = [{"page": 1, "width": 1136, "height": 720, "lines": lines, "text": "\n".join(ln["text"] for ln in lines)}]
+        out = extract.run(pages, [pages[0]["text"]], "auto")
+        assert out["document_type"] == kind and out["read_by"] == "labels" and out["not_found_in_text"] == []
+        assert out["checks_passed"] is True and "expired" in out["fields"] or kind == "mykad"
+
+
+def test_a_driving_licence_with_a_label_unread_and_background_letters_is_still_read():
+    from app import licence
+    # a blurred photo: the nationality and number labels are not read, a label is misread, the class
+    # letters of the card's background are picked up near the name, and the classes run together
+    lines = [ln for ln in DRIVING if ln["text"] not in ("Warganegara / Nationality", "No. Pengenalan / Identity No.",
+                                                        "Kelas / Class", "B2 D", "Tarikh Lahir / Date Of Birth", "03/02/1985")]
+    lines += [_at("B1", 800, 140), _at("88", 700, 150), _at("A", 600, 225), _at("Kelas / Cless", 400, 310, 16), _at("B2D", 400, 330),
+              _at("NO1", 400, 455)]
+    f = licence.parse([{"page": 1, "width": 1136, "lines": lines}])["fields"]
+    assert f["holder_name"] == "LIM AH KOW BIN ABDULLAH" and (f["id_number"], f["nationality"]) == ("850203075271", "MALAYSIA")
+    assert f["classes"] == "B2 D" and f["address"].startswith("NO 1, 43 JALAN SHAIK MADAR")
+
+
+def test_a_long_pack_is_named_by_its_first_pages():
+    schedule = ("PRIVATE CAR SCHEDULE\nPolicy No. AB123\nSum Insured 26,000.00\nNCD 30%\nGross Premium 589.49\n"
+                "Certificate of Insurance\nThe Insured: A PERSON")
+    wording = "Bil elektrik dan bil air anda. Tunggakan bil. Caj semasa. Jumlah perlu dibayar. Meter reading. kWh."
+    assert extract.guess_type(schedule) == "motor_insurance"
+    assert extract._guess_pack([schedule] + [wording] * 30) == "motor_insurance"
+    assert extract._guess_pack(["nothing that names a document", "nor here", "nor here", schedule]) == "motor_insurance"

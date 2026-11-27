@@ -11,7 +11,7 @@ import json
 import re
 from datetime import date
 
-from . import doctypes, llm, statement, tables, vehicle
+from . import doctypes, licence, llm, mykad, roadtax, statement, tables, vehicle
 from .config import get_settings
 from .errors import ApiError
 
@@ -167,6 +167,17 @@ def guess_type(text: str) -> str:
     if dt:
         return dt
     return "invoice"
+
+
+def _guess_pack(texts: list[str]) -> str:
+    """A document says what it is on its first pages: a policy schedule followed by thirty pages
+    of wording is an insurance policy, whatever words the wording uses. The whole text decides
+    only when the first pages name nothing."""
+    for page in texts[:3] if len(texts) > 3 else []:
+        kind = guess_type(page)
+        if kind != "invoice" or doctypes.guess(page):
+            return kind
+    return guess_type("\n".join(texts))
 
 
 # --- cleaning what the model answered ----------------------------------------
@@ -723,12 +734,29 @@ def split_pages(texts: list[str]) -> list[list[int]]:
     return groups
 
 
+def _licence(kind: str):  # noqa: ANN202
+    def parse(pages: list[dict]) -> Optional[dict]:
+        found = licence.parse(pages)
+        return found if found and found["kind"] == kind else None
+    return parse
+
+
+FORMS = {"vehicle_registration": vehicle.parse, "road_tax": roadtax.parse, "vocational_licence": _licence("vocational_licence"),
+         "driving_licence": _licence("driving_licence"), "mykad": mykad.parse}
+
+
 def run(pages: list[dict], texts: list[str], wanted: str, custom: Optional[dict] = None) -> dict:
     """`pages` as service.recognise returns them (with lines); `texts` the
     column-keeping text of each page. Returns the extraction part of the answer."""
     if not any(t.strip() for t in texts):
         raise ApiError(422, "no_text", "no text was found in the document, so there is nothing to extract")
-    kind = wanted if wanted != "auto" else guess_type("\n".join(texts))
+    form = None
+    for known, parse in FORMS.items():  # forms read by position say themselves whether a page is theirs
+        if wanted in ("auto", known):
+            form = parse(pages)
+            if form is not None:
+                break
+    kind = known if form is not None else wanted if wanted != "auto" else _guess_pack(texts)
     if kind == "table":
         table = tables.parse(pages)
         if not table["rows"]:
@@ -740,14 +768,14 @@ def run(pages: list[dict], texts: list[str], wanted: str, custom: Optional[dict]
              "repaired": 0, "method": "table"}
     elif kind in STATEMENT_TYPES:
         r = _statement(pages, texts, kind)
-    elif kind == "vehicle_registration" and vehicle.parse(pages):
-        # the ownership certificate is a form: each value is taken from the line of its label, no model is asked
+    elif form is not None:
+        # a form this service knows: each value is taken from its place on the page, no model is asked
         bad_dates: list[str] = []
         schema = catalogue_schema(kind)
-        fields = _clean(vehicle.parse(pages)["fields"], schema, bad_dates)
-        r = {"document_type": kind, "fields": fields, "checks": doctypes.run_checks(kind, fields), "attempts": 0,
-             "bad_dates": bad_dates, "truncated": False, "list_key": None, "repaired": 0, "method": "labels",
-             "dates": tuple(k for k, v in schema["properties"].items() if v is _DATE)}
+        fields = {**_clean(form["fields"], schema, bad_dates), **form.get("extra", {})}
+        r = {"document_type": kind, "fields": fields, "checks": doctypes.run_checks(kind, fields) + form.get("checks", []),
+             "attempts": 0, "bad_dates": bad_dates, "truncated": False, "list_key": None, "repaired": 0,
+             "method": "labels", "dates": tuple(k for k, v in schema["properties"].items() if v is _DATE)}
     elif kind in doctypes.DOCS:
         d = doctypes.DOCS[kind]
         r = _simple(kind, doctypes.prompt(kind), catalogue_schema(kind), lambda f: doctypes.run_checks(kind, f),
@@ -768,6 +796,8 @@ def run(pages: list[dict], texts: list[str], wanted: str, custom: Optional[dict]
     # rows read from the table by position are the printed text already; only the model's values are looked up
     missing, sources = ([], {}) if kind == "table" else ground(
         r["fields"], r["list_key"], pages, check_rows=r.get("method") != "table", dates=r.get("dates", ()))
+    if r.get("method") == "labels":
+        missing = []  # each value was taken from a line of the page, or worked out from one (a date of birth)
     done = [c for c in r["checks"] if c["passed"] is not None]
     failed = any(c["passed"] is False for c in done)
     evidence = {}
