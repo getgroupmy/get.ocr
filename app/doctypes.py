@@ -44,11 +44,14 @@ DOCS: dict[str, dict] = {
     "vehicle_registration": _doc(
         "Vehicle registration card (VOC, geran)", "a vehicle ownership or registration certificate",
         "plate_number, chassis_number, engine_number, make, model, year_made:n, engine_capacity_cc:n, fuel_type, colour, "
-        "owner_name, owner_id_number, owner_address, registration_date:d, ownership_claim",
+        "owner_name, owner_id_number, owner_address, registration_date:d, ownership_claim, origin_status, usage_class, "
+        "body_type, weights, registration_conditions, certificate_serial, print_date:d",
         checks=(("format", "chassis_number", "chassis_number", r"[A-Z0-9]{8,17}", "8 to 17 letters and digits"),),
-        words=r"sijil pemilikan kenderaan|vehicle ownership certificate|no\.? casis|no\.? enjin|chassis no|engine no|"
-              r"keupayaan enjin|hak milik",
-        hints="ownership_claim is the bank or financier with a claim on the vehicle, when one is printed."),
+        words=r"sijil\s*pemilikan\s*kenderaan|vehicle ownership certificate|no\.? ?ch?asis|no\.? ?enjin|chassis no|engine no|"
+              r"keupayaan ?enjin|hak milik|kelas ?kegunaan|tarikh ?pendaftaran|bahan ?bakar",
+        hints="ownership_claim is the bank or financier with a claim on the vehicle, when one is printed. origin_status is "
+              "Status Asal, usage_class is Kelas Kegunaan, body_type is Jenis Badan, weights is B.D.M/B.G.K/BTM as printed, "
+              "certificate_serial is the certificate's own number at the top right."),
     "road_tax": _doc(
         "Road tax (motor vehicle licence)", "a road tax disc or motor vehicle licence receipt",
         "plate_number, owner_name, receipt_number, period_start:d, expiry_date:d, amount:n, currency",

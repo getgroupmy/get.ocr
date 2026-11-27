@@ -545,6 +545,17 @@ of a number).
 | `gate_pass` | Gate pass | none |
 | `stock_count_sheet` | Stock count sheet | `quantity_sum` |
 
+**The Malaysian vehicle ownership certificate (Sijil Pemilikan Kenderaan, JPJ) is read by its
+labels.** It is a form with a label at the left and the value at the right, so each value of
+`vehicle_registration` is taken from the line of its label and no model is asked: the answer has
+`"read_by": "labels"` and `"model_calls": 0`. Both printings are read: the one with a label for
+each value, and the later one that puts two on a line (`No. Chasis/No. Enjin`, `Buatan/Nama
+Model`, `Jenis Badan/Tahun Dibuat`). A photo lying on its side is turned upright first. Besides
+the fields above it gives `origin_status`, `usage_class`, `body_type`, `weights`,
+`registration_conditions`, `certificate_serial` and `print_date`. The letter O and the digit 0
+look alike in the certificate's dot print: check an engine or chassis number that could hold
+either. Any other registration document goes to the model as before.
+
 A new kind is one entry in `app/doctypes.py`: its fields, its table of lines, its checks and the
 words `auto` knows it by.
 
