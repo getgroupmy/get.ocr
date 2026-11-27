@@ -54,9 +54,10 @@ DOCS: dict[str, dict] = {
               "certificate_serial is the certificate's own number at the top right."),
     "road_tax": _doc(
         "Road tax (motor vehicle licence)", "a road tax disc or motor vehicle licence receipt",
-        "plate_number, owner_name, receipt_number, period_start:d, expiry_date:d, amount:n, currency",
+        "plate_number, owner_name, receipt_number, period_start:d, expiry_date:d, amount:n, currency, "
+        "engine_capacity_cc:n, region, usage_class, serial_number",
         checks=(("order", "period", "period_start", "expiry_date"),),
-        words=r"lesen kenderaan motor|road ?tax|cukai jalan|\blkm\b|tarikh luput|motor vehicle licence"),
+        words=r"lesen\s*kenderaan\s*motor|road ?tax|cukai jalan|\blkm\b|tarikh luput|motor vehicle licence"),
     "motor_insurance": _doc(
         "Motor insurance cover note or schedule", "a motor insurance or takaful cover note, certificate or policy schedule",
         "insurer_name, policy_number, cover_note_number, insured_name, id_number, plate_number, chassis_number, "
@@ -555,6 +556,13 @@ DOCS: dict[str, dict] = {
         words=r"sijil kelahiran|birth certificate|sijil perkahwinan|marriage certificate|sijil kematian|death certificate|"
               r"jabatan pendaftaran negara",
         hints="certificate_type is birth, marriage or death; second_person_name is the spouse on a marriage certificate."),
+    "mykad": _doc(
+        "MyKad (Malaysian identity card), front", "the front of a Malaysian identity card (MyKad)",
+        "id_number, name, address, postcode, city, state, citizenship, gender, religion, date_of_birth:d, place_of_birth",
+        checks=(("format", "id_number", "id_number", r"\d{6}-\d{2}-\d{4}", "six digits, two digits, four digits"),),
+        words=r"kad\s*pengenalan|mykad|warganegara|identity\s*card|lelaki|perempuan",
+        hints="id_number is the 12-digit number at the top left, written as 000000-00-0000. gender is male or female. "
+              "date_of_birth is the number's first six digits (year, month, day)."),
     "id_card_other": _doc(
         "Student, staff or OKU card", "a student card, staff card, membership card or disability (OKU) card",
         "card_type, issuer_name, holder_name, id_number, card_number, category, issue_date:d, expiry_date:d",

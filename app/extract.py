@@ -11,7 +11,7 @@ import json
 import re
 from datetime import date
 
-from . import doctypes, llm, statement, tables, vehicle
+from . import doctypes, llm, mykad, roadtax, statement, tables, vehicle
 from .config import get_settings
 from .errors import ApiError
 
@@ -723,12 +723,21 @@ def split_pages(texts: list[str]) -> list[list[int]]:
     return groups
 
 
+FORMS = {"vehicle_registration": vehicle.parse, "road_tax": roadtax.parse, "mykad": mykad.parse}
+
+
 def run(pages: list[dict], texts: list[str], wanted: str, custom: Optional[dict] = None) -> dict:
     """`pages` as service.recognise returns them (with lines); `texts` the
     column-keeping text of each page. Returns the extraction part of the answer."""
     if not any(t.strip() for t in texts):
         raise ApiError(422, "no_text", "no text was found in the document, so there is nothing to extract")
-    kind = wanted if wanted != "auto" else guess_type("\n".join(texts))
+    form = None
+    for known, parse in FORMS.items():  # forms read by position say themselves whether a page is theirs
+        if wanted in ("auto", known):
+            form = parse(pages)
+            if form is not None:
+                break
+    kind = known if form is not None else wanted if wanted != "auto" else guess_type("\n".join(texts))
     if kind == "table":
         table = tables.parse(pages)
         if not table["rows"]:
@@ -740,14 +749,14 @@ def run(pages: list[dict], texts: list[str], wanted: str, custom: Optional[dict]
              "repaired": 0, "method": "table"}
     elif kind in STATEMENT_TYPES:
         r = _statement(pages, texts, kind)
-    elif kind == "vehicle_registration" and vehicle.parse(pages):
-        # the ownership certificate is a form: each value is taken from the line of its label, no model is asked
+    elif form is not None:
+        # a form this service knows: each value is taken from its place on the page, no model is asked
         bad_dates: list[str] = []
         schema = catalogue_schema(kind)
-        fields = _clean(vehicle.parse(pages)["fields"], schema, bad_dates)
-        r = {"document_type": kind, "fields": fields, "checks": doctypes.run_checks(kind, fields), "attempts": 0,
-             "bad_dates": bad_dates, "truncated": False, "list_key": None, "repaired": 0, "method": "labels",
-             "dates": tuple(k for k, v in schema["properties"].items() if v is _DATE)}
+        fields = {**_clean(form["fields"], schema, bad_dates), **form.get("extra", {})}
+        r = {"document_type": kind, "fields": fields, "checks": doctypes.run_checks(kind, fields) + form.get("checks", []),
+             "attempts": 0, "bad_dates": bad_dates, "truncated": False, "list_key": None, "repaired": 0,
+             "method": "labels", "dates": tuple(k for k, v in schema["properties"].items() if v is _DATE)}
     elif kind in doctypes.DOCS:
         d = doctypes.DOCS[kind]
         r = _simple(kind, doctypes.prompt(kind), catalogue_schema(kind), lambda f: doctypes.run_checks(kind, f),

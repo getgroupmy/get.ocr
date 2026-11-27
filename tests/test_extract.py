@@ -818,3 +818,67 @@ def test_the_older_certificate_with_a_label_for_each_value_is_read_too():
         ("4G15P123456", "PL1C22SNL8B123456", "PROTON", "SAGA 1.3", "2008")
     assert f["registration_conditions"] == "1. Tidak boleh tukar milik dalam 4 tahun"
     assert vehicle.parse([{"page": 1, "width": 1400, "lines": [line("INVOICE", 100, 100)]}]) is None
+
+
+# --- the road tax disc and the identity card, read by position --------------------------------
+def _at(text, x, y, h=24):
+    return {"text": text, "confidence": 0.99, "box": [[x, y], [x + 12 * len(text), y], [x + 12 * len(text), y + h], [x, y + h]]}
+
+
+ROAD_TAX = [_at("LESEN KENDERAAN MOTOR", 190, 150, 60), _at("2024", 790, 460, 80), _at("WXY1234", 320, 620, 60),
+            _at("30 JUN", 790, 620, 60), _at("0116001 I8imwY3 01072023", 267, 727), _at("01072023 30062024", 783, 723),
+            _at("1496SP AB RM90.00", 782, 759), _at("SEMENANJUNG", 267, 798), _at("PERSENDIRIAN", 783, 795),
+            _at("998877665", 1724, 474), _at("77665", 1062, 521)]
+
+
+def test_the_road_tax_disc_is_read_by_shape_and_its_expiry_is_checked():
+    from datetime import date
+    from app import roadtax
+    out = roadtax.parse([{"page": 1, "width": 2000, "lines": ROAD_TAX}], today=date(2024, 1, 15))
+    f = out["fields"]
+    assert (f["plate_number"], f["period_start"], f["expiry_date"]) == ("WXY1234", "2023-07-01", "2024-06-30")
+    assert (f["amount"], f["currency"], f["engine_capacity_cc"]) == ("90.00", "MYR", "1496")
+    assert (f["region"], f["usage_class"], f["serial_number"]) == ("SEMENANJUNG", "PERSENDIRIAN", "998877665")
+    assert out["checks"][0]["name"] == "expiry_matches" and out["checks"][0]["passed"] is True
+    assert out["extra"] == {"expired": False}
+    assert roadtax.parse([{"page": 1, "width": 2000, "lines": ROAD_TAX}], today=date(2024, 7, 1))["extra"] == {"expired": True}
+    altered = [ln if ln["text"] != "30 JUN" else _at("30 DIS", 790, 620, 60) for ln in ROAD_TAX]
+    assert roadtax.parse([{"page": 1, "width": 2000, "lines": altered}])["checks"][0]["passed"] is False
+    assert roadtax.parse([{"page": 1, "width": 2000, "lines": [_at("INVOICE 2024", 10, 10)]}]) is None
+
+
+MYKAD = [_at("KAD PENGENALAN", 120, 22), _at("MyKad", 754, 42), _at("900412 10 5678", 32, 167),
+         _at("TAN MEI LING", 34, 531), _at("NO 8 JALAN SS 2/4", 36, 607), _at("TAMAN SEA", 37, 641),
+         _at("47300 PETALING JAYA", 37, 675), _at("SELANGOR", 36, 709), _at("WARGANEGARA", 900, 694),
+         _at("PEREMPUAN", 1000, 721)]
+
+
+def test_the_identity_card_is_read_by_position_and_checked_against_its_number():
+    from datetime import date
+    from app import mykad
+    out = mykad.parse([{"page": 1, "width": 1280, "lines": MYKAD}], today=date(2026, 1, 1))
+    f = out["fields"]
+    assert (f["id_number"], f["name"], f["gender"], f["citizenship"]) == ("900412-10-5678", "TAN MEI LING", "female", "WARGANEGARA")
+    assert f["address"] == "NO 8 JALAN SS 2/4, TAMAN SEA, 47300 PETALING JAYA, SELANGOR"
+    assert (f["postcode"], f["city"], f["state"]) == ("47300", "PETALING JAYA", "SELANGOR")
+    assert (f["date_of_birth"], f["place_of_birth"]) == ("1990-04-12", "Selangor")
+    assert [c["passed"] for c in out["checks"]] == [True, True] and out["extra"] == {}
+    # a stroke lost in the name is put back, and what was read is kept beside it
+    lost = [ln if ln["text"] != "TAN MEI LING" else _at("RAVI AL MUTHU", 34, 531) for ln in MYKAD]
+    out = mykad.parse([{"page": 1, "width": 1280, "lines": lost}])
+    assert out["fields"]["name"] == "RAVI A/L MUTHU" and out["extra"] == {"name_as_read": "RAVI AL MUTHU"}
+    assert out["checks"][1]["passed"] is True  # 8 is even, the card prints a woman
+    wrong = [ln if ln["text"] != "PEREMPUAN" else _at("LELAKI", 1000, 721) for ln in MYKAD]
+    assert mykad.parse([{"page": 1, "width": 1280, "lines": wrong}])["checks"][1]["passed"] is False
+    assert mykad.born("051301105678") is None and mykad.born("050228105678", date(2026, 1, 1)) == "2005-02-28"
+    assert mykad.parse([{"page": 1, "width": 1280, "lines": [_at("KAD PELAJAR", 10, 10)]}]) is None
+
+
+def test_forms_read_by_position_are_recognised_on_auto(fake_model):
+    pages = [{"page": 1, "width": 1280, "height": 800, "lines": MYKAD, "text": "\n".join(ln["text"] for ln in MYKAD)}]
+    out = extract.run(pages, [pages[0]["text"]], "auto")
+    assert out["document_type"] == "mykad" and out["read_by"] == "labels" and out["model_calls"] == 0
+    assert out["fields"]["id_number"] == "900412-10-5678" and out["checks_passed"] is True
+    pages = [{"page": 1, "width": 2000, "height": 1500, "lines": ROAD_TAX, "text": "\n".join(ln["text"] for ln in ROAD_TAX)}]
+    out = extract.run(pages, [pages[0]["text"]], "auto")
+    assert out["document_type"] == "road_tax" and out["fields"]["amount"] == 90.0 and "expired" in out["fields"]

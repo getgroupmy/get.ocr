@@ -545,6 +545,23 @@ of a number).
 | `gate_pass` | Gate pass | none |
 | `stock_count_sheet` | Stock count sheet | `quantity_sum` |
 
+**The road tax disc (Lesen Kenderaan Motor) and the front of a MyKad are read the same way,**
+by where each value stands and what it looks like, with no model asked. Both are recognised on
+`type=auto`.
+
+- `road_tax`: the plate, the period from the two runs of eight digits (`period_start`,
+  `expiry_date`), the fee, `engine_capacity_cc`, `region`, `usage_class` and `serial_number`. The
+  check `expiry_matches` compares the expiry in large print with the end of the period, and
+  `expired` says whether that date has passed.
+- `mykad`: `id_number` (written 000000-00-0000), `name`, `address` with `postcode`, `city` and
+  `state`, `citizenship`, `gender`, `religion` when printed, and `date_of_birth` and
+  `place_of_birth` worked out from the number. The checks are `number_holds_a_date` and
+  `gender_matches_number` (the last digit is odd for a man, even for a woman). A stroke lost in
+  "A/L" or "A/P" is put back, and `name_as_read` then gives the name as it was read.
+
+This gives what a card prints, for filling in a form. It does not show that a card is genuine or
+belongs to the person presenting it; verifying a person is what get.ekyc is for.
+
 **The Malaysian vehicle ownership certificate (Sijil Pemilikan Kenderaan, JPJ) is read by its
 labels.** It is a form with a label at the left and the value at the right, so each value of
 `vehicle_registration` is taken from the line of its label and no model is asked: the answer has
