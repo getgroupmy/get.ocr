@@ -768,3 +768,53 @@ def test_a_table_read_by_the_vision_model_lists_what_else_is_on_the_page(client,
                        headers=api_key).json()["pages"][0]
     assert page["text"].startswith("<table>") and "NORTHWIND" not in page["text"]
     assert [a["text"] for a in page["other_lines"]] == ["NORTHWIND TRADING"] and "added_lines" not in page
+
+
+# --- the vehicle ownership certificate, read by its labels ------------------------------------
+CERTIFICATE = ["SIJIL PEMILIKAN KENDERAAN", "JABATAN PENGANGKUTAN JALAN", "No. Pendaftaran : WXY1234",
+               "No. ID : 800101145678", "Nama Pemunya Berdaftar : AHMAD BIN ALI", "Alamat : 12 JALAN MERANTI 3",
+               "No. Chasis/No. Enjin : PM2B301S009912345 / 1NR7654", "Buatan/Nama Model : PERODUA / MYVI 1.5",
+               "Keupayaan Enjin : 1496", "Bahan Bakar : PETROL", "Status Asal : PEMASANGAN TEMPATAN",
+               "Kelas Kegunaan : PERSENDIRIAN", "Jenis Badan/Tahun Dibuat : MOTOKAR / 2021",
+               "Tarikh Pendaftaran : 05/03/2021", "B.D.M/B.G.K/BTM : -", "Syarat Pendaftaran 1 : -"]
+
+
+def test_the_vehicle_certificate_is_read_by_its_labels_without_the_model(client, api_key, need_engine, fake_model):
+    r = client.post("/v1/extract", files={"file": ("geran.png", synth.image_bytes(CERTIFICATE), "image/png")}, headers=api_key)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    ex = body.get("extraction") or body
+    f = ex["fields"]
+    assert ex["document_type"] == "vehicle_registration" and ex["read_by"] == "labels" and ex["model_calls"] == 0
+    assert (f["plate_number"], f["owner_id_number"], f["owner_name"]) == ("WXY1234", "800101145678", "AHMAD BIN ALI")
+    assert (f["chassis_number"], f["engine_number"]) == ("PM2B301S009912345", "1NR7654")
+    assert (f["make"], f["model"], f["body_type"], f["year_made"]) == ("PERODUA", "MYVI 1.5", "MOTOKAR", 2021)
+    assert (f["engine_capacity_cc"], f["fuel_type"], f["registration_date"]) == (1496, "PETROL", "2021-03-05")
+    assert f["weights"] is None and f["registration_conditions"] is None and f["colour"] is None
+    assert ex["checks_passed"] is True
+
+
+def test_the_older_certificate_with_a_label_for_each_value_is_read_too():
+    from app import vehicle
+
+    def line(text, x, y):
+        return {"text": text, "confidence": 0.99, "box": [[x, y], [x + 12 * len(text), y], [x + 12 * len(text), y + 24], [x, y + 24]]}
+    rows = [("SIJIL PEMILIKAN KENDERAAN", None), ("No. Pendaftaran", "BKV 8821"), ("Nama Pemunya Berdaftar", ": SITI BINTI OMAR"),
+            ("Alamat", ": 4 LORONG KENANGA"), (None, "81200 JOHOR BAHRU JOHOR"), ("No.Enjin", ": 4G15P123456"),
+            ("No. Casis", ": PL1C22SNL8B123456"), ("Buatan", ": PROTON"), ("Nama Model", ": SAGA 1.3"),
+            ("Tahun Dibuat", ": 2008"), ("Tarikh Pendaftaran", ": 21/07/2008"),
+            ("SYARAT-SYARAT PENDAFTARAN", None), ("1. Tidak boleh tukar milik dalam 4 tahun", None)]
+    lines = []
+    for n, (label, value) in enumerate(rows):
+        if label:
+            lines.append(line(label, 260, 60 + 40 * n))
+        if value:
+            lines.append(line(value, 620, 60 + 40 * n))
+    lines += [line("No. ID : 850505015432", 800, 100), line("0012345", 1220, 60)]
+    f = vehicle.parse([{"page": 1, "width": 1400, "lines": lines}])["fields"]
+    assert (f["plate_number"], f["owner_id_number"], f["certificate_serial"]) == ("BKV8821", "850505015432", "0012345")
+    assert f["owner_address"] == "4 LORONG KENANGA, 81200 JOHOR BAHRU JOHOR"
+    assert (f["engine_number"], f["chassis_number"], f["make"], f["model"], f["year_made"]) == \
+        ("4G15P123456", "PL1C22SNL8B123456", "PROTON", "SAGA 1.3", "2008")
+    assert f["registration_conditions"] == "1. Tidak boleh tukar milik dalam 4 tahun"
+    assert vehicle.parse([{"page": 1, "width": 1400, "lines": [line("INVOICE", 100, 100)]}]) is None
