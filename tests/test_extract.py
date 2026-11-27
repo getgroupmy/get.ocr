@@ -1044,3 +1044,61 @@ def test_an_insurance_schedule_is_recognised_on_auto_without_the_model(fake_mode
               "text": "INVOICE 123\nInsurance premium 100.00"}]
     from app import insurance
     assert insurance.parse(other) is None
+
+
+# --- the e-hailing vehicle permit and the Puspakom inspection ----------------------------------
+PERMIT = [_at("PERMIT KENDERAAN E-HAILING", 600, 70, 50), _at("AGENSI PENGANGKUTAN AWAM DARAT", 600, 190, 40),
+          _at("Pemegang Lesen Perniagaan Pengantaraan", 550, 420, 40), _at("NORTHWIND RIDES SDN BHD (202201099999)", 400, 500, 45),
+          _at("Nama pemilik kenderaan", 110, 620), _at("AHMAD BIN ALI", 730, 620), _at("No. pendaftaran kenderaan", 110, 673),
+          _at("WXY1234", 730, 674), _at("Muatan tempat duduk", 110, 729), _at("5", 730, 729), _at("Jenis kenderaan", 110, 779),
+          _at("PERSENDIRIAN", 730, 781), _at("No. rujukan permit (Induk)", 110, 836), _at("TE-WXY1234", 730, 836),
+          _at("No. rujukan permit (SUB)", 110, 890), _at("NWR001170", 730, 890), _at("Tarikh mula permit", 110, 944),
+          _at("13-Oct-2023", 730, 944), _at("Tarikh sahlaku permit", 110, 996), _at("12-Oct-2024", 730, 998),
+          _at("Permit ini merupakan perakuan bahawa kenderaan ini didaftarkan sebagai kenderaan e-hailing", 160, 1100)]
+
+
+def test_the_e_hailing_vehicle_permit_is_read_by_its_labels():
+    from datetime import date
+    from app import permits
+    out = permits.evp([{"page": 1, "width": 1800, "lines": PERMIT}], today=date(2024, 1, 1))
+    f = out["fields"]
+    assert (f["permit_type"], f["holder_name"], f["plate_number"]) == ("EVP", "AHMAD BIN ALI", "WXY1234")
+    assert (f["permit_number"], f["sub_permit_number"], f["vehicle_type"], f["seating_capacity"]) == \
+        ("TE-WXY1234", "NWR001170", "PERSENDIRIAN", "5")
+    assert (f["issue_date"], f["expiry_date"]) == ("2023-10-13", "2024-10-12") and out["extra"] == {"expired": False}
+    assert (f["operator_name"], f["operator_registration"]) == ("NORTHWIND RIDES SDN BHD", "202201099999")
+    assert permits.evp([{"page": 1, "width": 800, "lines": [_at("E-HAILING INSURANCE PREMIUM", 10, 10)]}]) is None
+
+
+def test_the_inspection_report_and_the_windscreen_slip_are_read():
+    from datetime import date
+    from app import permits
+    report = [_at("LAPORAN PEMERIKSAAN KENDERAAN", 400, 290, 60), _at("PUSPAKOM", 170, 400), _at("NO. KEPUTUSAN: A 3053923", 1260, 446),
+              _at("PEMILIK", 166, 508), _at("AHMAD BIN ALI", 383, 506), _at("PEMBAWA:AHMAD BIN ALI", 1019, 499),
+              _at("NO PENDAFTARAN", 167, 635), _at("WXY1234", 456, 632), _at("NO. CASIS TRELER #", 1021, 625),
+              _at("NO. ENJIN/MOTOR #", 167, 676), _at("S4PHVK6058", 457, 674), _at("BUATAN", 1024, 665), _at("PROTON", 1337, 661),
+              _at("NO. CASIS #", 167, 718), _at("PL1BH6STRJG032754", 457, 715), _at("MODEL", 1023, 705), _at("PERSONA 1.6L CVT", 1338, 701),
+              _at("TAHUN DIPERBUAT", 1026, 746), _at("2017", 1340, 742), _at("KEUPAYAAN ENJIN/MOTOR 1597", 171, 838),
+              _at("TARIKH PEMERIKSAAN AKHIR", 1029, 825), _at("TARIKH PEMERIKSAAN", 1030, 907), _at("24-DEC-2023", 1344, 900),
+              _at("JENIS PEMERIKSAAN", 1032, 948), _at("BERKALA SEMULA", 1347, 940), _at("KOD PUSAT", 1032, 988),
+              _at("J01 PUSPAKOM JOHOR BAHRU", 1348, 980), _at("KEPUTUSAN: LULUS", 170, 1300)]
+    f = permits.inspection([{"page": 1, "width": 1920, "lines": report}])["fields"]
+    assert (f["report_number"], f["owner_name"], f["plate_number"]) == ("A 3053923", "AHMAD BIN ALI", "WXY1234")
+    assert (f["engine_number"], f["chassis_number"], f["make"], f["model"]) == ("S4PHVK6058", "PL1BH6STRJG032754", "PROTON", "PERSONA 1.6L CVT")
+    assert (f["year_made"], f["engine_capacity_cc"], f["inspection_date"]) == ("2017", "1597", "2023-12-24")
+    assert (f["inspection_type"], f["centre_name"], f["result"]) == ("BERKALA SEMULA", "J01 PUSPAKOM JOHOR BAHRU", "LULUS")
+    slip = [_at("PERAKUAN", 30, 180), _at("PEMERIKSAAN", 220, 70), _at("W031683303", 150, 204), _at("WXY1234", 190, 237), _at("PUSPA", 340, 232),
+            _at("SAH SEHINGGA/VALID UNTIL", 96, 285), _at("BERKALA-05-NOV-2024", 65, 311), _at("METER TEKSI-28-0CT-2028", 25, 342),
+            _at("RM 50.00", 54, 376), _at("1TRA670040", 166, 391), _at("PN1JW3EMQ03030791", 121, 426), _at("28-OCT-2023", 162, 463)]
+    out = permits.inspection([{"page": 1, "width": 480, "lines": slip}], today=date(2024, 1, 1))
+    f = out["fields"]
+    assert (f["report_number"], f["plate_number"], f["inspection_type"]) == ("W031683303", "WXY1234", "BERKALA")
+    assert (f["expiry_date"], f["meter_expiry_date"], f["inspection_date"], f["fee"]) == ("2024-11-05", "2028-10-28", "2023-10-28", "50.00")
+    assert (f["engine_number"], f["chassis_number"]) == ("1TRA670040", "PN1JW3EMQ03030791") and out["extra"] == {"expired": False}
+
+
+def test_permit_and_inspection_are_recognised_on_auto_without_the_model(fake_model):
+    pages = [{"page": 1, "width": 1800, "height": 1200, "lines": PERMIT, "text": "\n".join(ln["text"] for ln in PERMIT)}]
+    out = extract.run(pages, [pages[0]["text"]], "auto")
+    assert out["document_type"] == "driver_permit" and out["read_by"] == "labels" and out["model_calls"] == 0
+    assert out["fields"]["expiry_date"] == "2024-10-12" and out["fields"]["seating_capacity"] == 5 and "expired" in out["fields"]

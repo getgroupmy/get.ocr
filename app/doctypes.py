@@ -71,11 +71,13 @@ DOCS: dict[str, dict] = {
     "vehicle_inspection": _doc(
         "Vehicle inspection report", "a vehicle inspection report (for example from Puspakom)",
         "centre_name, report_number, plate_number, chassis_number, inspection_type, inspection_date:d, result, "
-        "expiry_date:d, mileage_km:n",
+        "expiry_date:d, mileage_km:n, engine_number, owner_name, make, model, year_made:n, usage_class, body_type, "
+        "fuel_type, engine_capacity_cc:n, registration_date:d, meter_expiry_date:d, fee:n",
         words=r"puspakom|laporan pemeriksaan|inspection report|pemeriksaan kenderaan|vehicle inspection|lulus|gagal"),
     "driver_permit": _doc(
         "E-hailing permit or PSV licence", "an e-hailing vehicle permit (EVP) or a vocational driving licence (PSV)",
-        "permit_type, permit_number, holder_name, id_number, plate_number, operator_name, issue_date:d, expiry_date:d",
+        "permit_type, permit_number, holder_name, id_number, plate_number, operator_name, issue_date:d, expiry_date:d, "
+        "sub_permit_number, vehicle_type, seating_capacity:n, operator_registration",
         checks=(("order", "validity", "issue_date", "expiry_date"),),
         words=r"e-?hailing|\bevp\b|\bpsv\b|permit kenderaan|lesen vokasional|vocational licence|\bapad\b",
         hints="operator_name is the e-hailing company the permit is tied to."),
