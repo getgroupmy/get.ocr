@@ -943,3 +943,16 @@ def test_licences_are_recognised_on_auto_and_nothing_is_reported_as_not_found(fa
         out = extract.run(pages, [pages[0]["text"]], "auto")
         assert out["document_type"] == kind and out["read_by"] == "labels" and out["not_found_in_text"] == []
         assert out["checks_passed"] is True and "expired" in out["fields"] or kind == "mykad"
+
+
+def test_a_driving_licence_with_a_label_unread_and_background_letters_is_still_read():
+    from app import licence
+    # a blurred photo: the nationality and number labels are not read, a label is misread, the class
+    # letters of the card's background are picked up near the name, and the classes run together
+    lines = [ln for ln in DRIVING if ln["text"] not in ("Warganegara / Nationality", "No. Pengenalan / Identity No.",
+                                                        "Kelas / Class", "B2 D", "Tarikh Lahir / Date Of Birth", "03/02/1985")]
+    lines += [_at("B1", 800, 140), _at("88", 700, 150), _at("A", 600, 225), _at("Kelas / Cless", 400, 310, 16), _at("B2D", 400, 330),
+              _at("NO1", 400, 455)]
+    f = licence.parse([{"page": 1, "width": 1136, "lines": lines}])["fields"]
+    assert f["holder_name"] == "LIM AH KOW BIN ABDULLAH" and (f["id_number"], f["nationality"]) == ("850203075271", "MALAYSIA")
+    assert f["classes"] == "B2 D" and f["address"].startswith("NO 1, 43 JALAN SHAIK MADAR")

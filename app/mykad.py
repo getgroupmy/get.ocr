@@ -94,7 +94,7 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
             read = " ".join(" ".join(ln["text"].split()) for ln in column[:cut])
             name = re.sub(r"(?<=\w) (A)[ .]?([LP]) (?=\w)", r" \1/\2 ", read)  # A/L, A/P: the stroke is often lost
             f["name"] = name
-            address = [" ".join(ln["text"].split()) for ln in column[cut:]]
+            address = [re.sub(r"^NO(?=\d)", "NO ", " ".join(ln["text"].split())) for ln in column[cut:]]
             if address:
                 f["address"] = ", ".join(address)
                 for n, row in enumerate(address):
