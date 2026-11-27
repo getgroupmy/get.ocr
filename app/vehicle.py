@@ -19,7 +19,7 @@ TITLE = re.compile(r"sijil\s*pemilikan\s*kenderaan|perakuan\s*pendaftaran\s*kend
 _WEIGHTS = re.compile(r"[B8]\s?\.?\s?[DGT]\s?\.?\s?[\dMTKGB./ ]*[:\-– ]*|berat\s*kerb[:\-– ]*", re.I)
 # a line that is the document's own heading: insurance schedules print "No. Perakuan Pendaftaran Kenderaan" as a label
 _HEADING = re.compile(r"\W*(?:sijil\s*pemilikan\s*kenderaan|perakuan\s*pendaftaran\s*kenderaan)\W*", re.I)
-_OTHER = re.compile(r"insur|takaful|polis[iy]\b|schedule|jadual|premium", re.I)
+_OTHER = re.compile(r"insur|takaful|polis[iy]\b|schedule|jadual", re.I)
 # label -> the field, or the two fields of a line that carries two values
 LABELS = [
     (r"(?:n[oö0]\.?\s*)?c[h]?as+is\s*/\s*(?:n[oö0]\.?\s*)?enjin", ("chassis_number", "engine_number")),

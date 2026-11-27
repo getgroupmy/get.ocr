@@ -987,3 +987,60 @@ def test_a_vocational_licence_is_read_when_its_labels_are_misread():
     assert (f["holder_name"], f["id_number"], f["nationality"]) == ("RAVI A/L MUTHU", "900716055765", "MAL")
     assert (f["issue_date"], f["expiry_date"], f["licence_types"]) == ("2022-09-07", "2024-07-16", "PSV")
     assert f["classes"] == "D:TEKSI/TEKSI MEWAH/ERETA SEWA/E-HAILING" and out["extra"]["e_hailing"] is True
+
+
+# --- the motor insurance schedule, read by its labels and confirmed by its arithmetic ----------
+def _schedule(shift=0):
+    """A schedule as insurers lay it out: labels at the left with values beside or under them, and
+    a premium column at the right. `shift` moves the amounts off their labels' level, as a photo does."""
+    left = [("PRIVATE CAR SCHEDULE / JADUAL KERETA PERSENDIRIAN", 200, 40), ("Northwind General Insurance Berhad", 60, 10),
+            ("The Insured / Pemegang Polisi", 60, 100), ("AHMAD BIN ALI", 60, 130), ("I.C. No. / No.Kad Pengenalan", 60, 200),
+            ("800101145678", 60, 230), ("Registration No. /", 60, 300), ("No.Pendaftaran", 60, 325), ("WXY1234", 60, 355),
+            ("Engine/Motor No. / No. Enjin/Motor", 60, 420), ("1NR7654321", 60, 450), ("Chassis No. / No. Casis", 60, 500),
+            ("PM2B301S009912345", 60, 530), ("Sum Insured / Jumlah", 420, 300), ("Diinsuranskan (RM)", 420, 325),
+            ("26,000.00", 420, 355), ("Policy No. / No. Polisi", 700, 100), ("JVE4495625", 700, 130),
+            ("Period of Insurance / Tempoh Insurans", 700, 170), ("From / Dari 00:00:01 AM 31-10-2023 To / Hingga 30-10-2024", 700, 200),
+            ("Optional Cover", 700, 420), ("Private Hire Car / Kereta Sewa Persendirian", 700, 445), ("(e-Hailing)", 700, 470)]
+    column = [("Premium / Premium", 831.42, 260), ("NCD / Diskaun Tanpa Tuntutan 30.00%", 249.43, 300),
+              ("Gross Premium / Premium Kasar", 589.49, 520), ("Service Tax / Cukai Perkhidmatan 6%", 35.37, 560),
+              ("Stamp Duty / Duti Setem", 10.00, 600), ("Total Due / Jumlah Berbayar", 634.86, 700)]
+    lines = [_at(t, x, y) for t, x, y in left]
+    for label, amount, y in column:
+        lines += [_at(label, 700, y), _at("%.2f" % amount, 1250, y + shift)]
+    return [{"page": 1, "width": 1400, "height": 800, "lines": lines, "text": "\n".join(ln["text"] for ln in lines)}]
+
+
+def test_the_insurance_schedule_is_read_by_its_labels():
+    from datetime import date
+    from app import insurance
+    out = insurance.parse(_schedule(), today=date(2024, 1, 1))
+    f = out["fields"]
+    assert (f["policy_number"], f["insured_name"], f["id_number"]) == ("JVE4495625", "AHMAD BIN ALI", "800101145678")
+    assert (f["plate_number"], f["engine_number"], f["chassis_number"]) == ("WXY1234", "1NR7654321", "PM2B301S009912345")
+    assert (f["period_start"], f["period_end"], f["sum_insured"]) == ("2023-10-31", "2024-10-30", "26000.00")
+    assert (f["gross_premium"], f["service_tax"], f["stamp_duty"], f["total_payable"]) == ("589.49", "35.37", "10.00", "634.86")
+    assert f["ncd_percent"] == "30.00" and f["insurer_name"] == "Northwind General Insurance Berhad"
+    assert out["extra"] == {"e_hailing": True, "expired": False}
+
+
+def test_amounts_off_their_labels_level_are_found_by_what_they_must_add_up_to():
+    from app import insurance
+    f = insurance.parse(_schedule(shift=34))["fields"]  # a photo: every amount stands a line lower than its label
+    assert (f["gross_premium"], f["service_tax"], f["stamp_duty"], f["total_payable"]) == ("589.49", "35.37", "10.00", "634.86")
+    # amounts that cannot be confirmed are left out, not guessed
+    page = _schedule(shift=34)
+    page[0]["lines"] = [ln for ln in page[0]["lines"] if ln["text"] not in ("35.37", "634.86")]
+    f = insurance.parse(page)["fields"]
+    assert "service_tax" not in f and "total_payable" not in f
+
+
+def test_an_insurance_schedule_is_recognised_on_auto_without_the_model(fake_model):
+    pages = _schedule()
+    out = extract.run(pages, [pages[0]["text"]], "auto")
+    assert out["document_type"] == "motor_insurance" and out["read_by"] == "labels" and out["model_calls"] == 0
+    assert out["fields"]["total_payable"] == 634.86 and out["fields"]["e_hailing"] is True and out["checks_passed"] is True
+    # an invoice that mentions insurance is still an invoice
+    other = [{"page": 1, "width": 800, "height": 600, "lines": [_at("INVOICE 123", 10, 10), _at("Insurance premium 100.00", 10, 50)],
+              "text": "INVOICE 123\nInsurance premium 100.00"}]
+    from app import insurance
+    assert insurance.parse(other) is None

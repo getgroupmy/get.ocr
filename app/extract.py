@@ -11,7 +11,7 @@ import json
 import re
 from datetime import date
 
-from . import doctypes, licence, llm, mykad, roadtax, statement, tables, vehicle
+from . import doctypes, insurance, licence, llm, mykad, roadtax, statement, tables, vehicle
 from .config import get_settings
 from .errors import ApiError
 
@@ -742,7 +742,7 @@ def _licence(kind: str):  # noqa: ANN202
 
 
 FORMS = {"vehicle_registration": vehicle.parse, "road_tax": roadtax.parse, "vocational_licence": _licence("vocational_licence"),
-         "driving_licence": _licence("driving_licence"), "mykad": mykad.parse}
+         "driving_licence": _licence("driving_licence"), "mykad": mykad.parse, "motor_insurance": insurance.parse}
 
 
 def run(pages: list[dict], texts: list[str], wanted: str, custom: Optional[dict] = None) -> dict:
