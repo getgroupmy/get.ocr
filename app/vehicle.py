@@ -7,6 +7,7 @@ read: the one with a label of its own for each value, and the later one that put
 line ("No. Chasis/No. Enjin : A / B"). Anything else goes to the model as before."""
 from __future__ import annotations
 
+import difflib
 import re
 from typing import Optional
 
@@ -57,6 +58,16 @@ FIELDS = ("plate_number", "owner_id_number", "owner_name", "owner_address", "cha
           "owner_status")
 
 
+def _is_heading(text: str) -> bool:
+    """The document's own heading, also with a letter or two misread or its end cut off by the photo."""
+    text = text.strip()
+    if _HEADING.fullmatch(text):
+        return True
+    key = re.sub(r"[^a-z]", "", text.lower())
+    return 14 <= len(key) <= 30 and any(difflib.SequenceMatcher(None, key, t[:len(key) + 1]).ratio() >= 0.85
+                                        for t in ("sijilpemilikankenderaan", "perakuanpendaftarankenderaan"))
+
+
 def _value(text: str) -> Optional[str]:
     text = re.sub(r"^[\s:;.]+", "", text).strip()
     return None if _EMPTY.match(text) else " ".join(text.split())
@@ -72,7 +83,7 @@ def parse(pages: list[dict]) -> Optional[dict]:
     for page in pages:
         lines = page.get("lines") or []
         whole = " ".join(ln["text"] for ln in lines)
-        if not any(_HEADING.fullmatch(ln["text"].strip()) for ln in lines) or _OTHER.search(whole):
+        if not any(_is_heading(ln["text"]) for ln in lines) or _OTHER.search(whole):
             continue
         found = _page(lines, page.get("width") or 0)
         if found[0].get("plate_number") or sum(1 for v in found[0].values() if v) >= 4:
@@ -84,7 +95,7 @@ def _page(lines: list[dict], width: float):  # noqa: ANN202
     fields: dict = {name: None for name in FIELDS}
     sure: dict = {}
     conditions: list[str] = []
-    old_card = any(re.search(r"perakuan\s*pendaftaran", ln["text"], re.I) for ln in lines)
+    old_card = not any(re.search(r"sijil\s*pemilikan|pemilikan\s*ken", ln["text"], re.I) for ln in lines)
     if old_card:
         right = [ln for ln in lines if width and _left(ln) > 0.5 * width]
         lines = [ln for ln in lines if not (ln in right and _WEIGHTS.fullmatch(ln["text"].strip()))]
@@ -102,7 +113,7 @@ def _page(lines: list[dict], width: float):  # noqa: ANN202
     for row in rows:
         text = "  ".join(ln["text"] for ln in row)
         marks = list(_LABEL.finditer(text))
-        if TITLE.search(text) or re.search(r"jabatan\s*pengangkutan", text, re.I):
+        if TITLE.search(text) or re.search(r"jabatan\s*pengangkutan", text, re.I) or any(_is_heading(ln["text"]) for ln in row):
             for ln in row:  # the certificate's own number stands at the right of the heading
                 if width and _left(ln) > 0.7 * width and re.fullmatch(r"[A-Z0-9]{6,12}", ln["text"].strip()):
                     serial = ln

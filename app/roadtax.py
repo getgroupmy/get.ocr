@@ -15,7 +15,7 @@ MONTHS = {m: n for n, names in enumerate(
     ("JAN", "FEB", "MAC MAR", "APR", "MEI MAY", "JUN", "JUL", "OGO OGOS AUG", "SEP SEPT", "OKT OCT", "NOV", "DIS DEC"), 1)
     for m in names.split()}
 _PLATE = re.compile(r"[A-Z]{1,4}\s?\d{1,4}\s?[A-Z]{0,2}")
-_PERIOD = re.compile(r"(?<!\d)(\d{2})(\d{2})(20\d{2})\s+(\d{2})(\d{2})(20\d{2})(?!\d)")
+_PERIOD = re.compile(r"(?<!\d)([0-3]\d)([01]\d)(20\d{2})\s*([0-3]\d)([01]\d)(20\d{2})(?!\d)")
 _DAY_MONTH = re.compile(r"(\d{1,2})\s*([A-Z]{3,4})")
 _FEE = re.compile(r"RM\s*(\d{1,5})\s*[.,\s]\s*(\d{2})(?!\d)")
 _NOT_A_DISC = re.compile(r"PERAKUAN\s*PENDAFTARAN|SIJIL\s*PEMILIKAN|INSUR|TAKAFUL|SCHEDULE|JADUAL")  # these name the licence too

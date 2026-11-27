@@ -14,7 +14,7 @@ from typing import Optional
 from . import mykad
 
 # the first letter of a heading is often cut off by the edge of the photo
-DRIVING = re.compile(r"esen\s*memandu|[dbr]?[rl]?iving\s*licen[cs]e", re.I)
+DRIVING = re.compile(r"esen\s*meman|iving\s*lice", re.I)
 VOCATIONAL = re.compile(r"esen\s*vokasional|vocational\s*licen[cs]e|vokasional\s*malaysia", re.I)
 LABELS = [
     ("name", r"nama\s*/\s*name|nama\b|name\b"),
@@ -146,8 +146,11 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
                 continue
             return _finish(kind, f, page, today)
         labels, values = _labels([ln for ln in lines if not (DRIVING.search(ln["text"]) or VOCATIONAL.search(ln["text"]))])
-        if not labels:
-            continue
+        if not labels:  # no label was read: the address then starts under the two dates
+            dates = next((v for v in values if len(re.findall(_DATE_LOOSE, v[3])) >= 2), None)
+            if dates is None:
+                continue
+            labels = [{"field": "address", "x": dates[0], "y": dates[2] - 1, "bottom": dates[2]}]
         first = min(lb["y"] for lb in labels)
         got: dict = {}
         # the holder's number is twelve digits wherever its label was read or not; the nationality stands beside it
@@ -203,6 +206,11 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
             f["date_of_birth"] = _iso(birth.groups())
         if got.get("address"):
             f["address"] = ", ".join(re.sub(r"^(NO|\d{5})(?=(?<=NO)\d|(?<=\d)[A-Z])", r"\1 ", row) for row in got["address"])
+        if not got.get("classes"):
+            code = [v[3] for v in values if re.fullmatch(r"(?:(?:B2|B1|E1|E2|A1|DA|[A-IM])\s?){1,8}", v[3]) and len(v[3]) <= 16
+                    and v[3] not in got.get("name", [])]
+            if code:
+                got["classes"] = code[:1]
         if got.get("classes"):  # the class codes, set apart: "B2D" is B2 and D
             codes = re.findall(r"B2|B1|E1|E2|A1|DA|[A-IM]", "".join(got["classes"]).replace(" ", ""))
             f["classes"] = " ".join(codes) or " ".join(got["classes"])
