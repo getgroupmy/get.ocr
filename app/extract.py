@@ -169,6 +169,17 @@ def guess_type(text: str) -> str:
     return "invoice"
 
 
+def _guess_pack(texts: list[str]) -> str:
+    """A document says what it is on its first pages: a policy schedule followed by thirty pages
+    of wording is an insurance policy, whatever words the wording uses. The whole text decides
+    only when the first pages name nothing."""
+    for page in texts[:3] if len(texts) > 3 else []:
+        kind = guess_type(page)
+        if kind != "invoice" or doctypes.guess(page):
+            return kind
+    return guess_type("\n".join(texts))
+
+
 # --- cleaning what the model answered ----------------------------------------
 def _num(v) -> Optional[float]:  # noqa: ANN001
     if isinstance(v, bool) or v is None:
@@ -745,7 +756,7 @@ def run(pages: list[dict], texts: list[str], wanted: str, custom: Optional[dict]
             form = parse(pages)
             if form is not None:
                 break
-    kind = known if form is not None else wanted if wanted != "auto" else guess_type("\n".join(texts))
+    kind = known if form is not None else wanted if wanted != "auto" else _guess_pack(texts)
     if kind == "table":
         table = tables.parse(pages)
         if not table["rows"]:

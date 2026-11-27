@@ -956,3 +956,12 @@ def test_a_driving_licence_with_a_label_unread_and_background_letters_is_still_r
     f = licence.parse([{"page": 1, "width": 1136, "lines": lines}])["fields"]
     assert f["holder_name"] == "LIM AH KOW BIN ABDULLAH" and (f["id_number"], f["nationality"]) == ("850203075271", "MALAYSIA")
     assert f["classes"] == "B2 D" and f["address"].startswith("NO 1, 43 JALAN SHAIK MADAR")
+
+
+def test_a_long_pack_is_named_by_its_first_pages():
+    schedule = ("PRIVATE CAR SCHEDULE\nPolicy No. AB123\nSum Insured 26,000.00\nNCD 30%\nGross Premium 589.49\n"
+                "Certificate of Insurance\nThe Insured: A PERSON")
+    wording = "Bil elektrik dan bil air anda. Tunggakan bil. Caj semasa. Jumlah perlu dibayar. Meter reading. kWh."
+    assert extract.guess_type(schedule) == "motor_insurance"
+    assert extract._guess_pack([schedule] + [wording] * 30) == "motor_insurance"
+    assert extract._guess_pack(["nothing that names a document", "nor here", "nor here", schedule]) == "motor_insurance"
