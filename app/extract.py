@@ -904,7 +904,9 @@ def run(pages: list[dict], texts: list[str], wanted: str, custom: Optional[dict]
         looked = look or pages
         kind, turned = name_form(looked)
         if kind in FORMS:
-            form = FORMS[kind](_upside_down(pages) if turned else pages)
+            # the way up the form was known by, then the other: a form may be known either way up and read only one
+            ways = (_upside_down(pages), pages) if turned else (pages, _upside_down(pages))
+            form = FORMS[kind](ways[0]) or FORMS[kind](ways[1])
         elif kind is None:
             kind = _guess_pack(texts)
             # the words point at a form whose own test said the pages are not it; where no test could

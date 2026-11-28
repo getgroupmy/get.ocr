@@ -557,7 +557,12 @@ by where each value stands and what it looks like, with no model asked. Both are
   `state`, `citizenship`, `gender`, `religion` when printed, and `date_of_birth` and
   `place_of_birth` worked out from the number. The checks are `number_holds_a_date` and
   `gender_matches_number` (the last digit is odd for a man, even for a woman). A stroke lost in
-  "A/L" or "A/P" is put back, and `name_as_read` then gives the name as it was read.
+  "A/L" or "A/P" is put back, and `name_as_read` then gives the name as it was read. A name that
+  runs on to a second line ("RAVI A/L" over "MUTHUSAMY") is kept whole and out of the address,
+  and the card may fill any part of the picture (on a table, or inside a phone's screen). Both
+  designs are read: the card issued until 2026, and the new-generation card issued from
+  September 2026, which has the photo at the left and the citizenship, religion and gender under
+  it. Only the front is read.
 
 - `driving_licence` (Lesen Memandu) and `vocational_licence` (Lesen Vokasional: PSV, GDL): the
   holder's name, `id_number`, `nationality`, `classes`, the validity as `issue_date` and
@@ -720,7 +725,12 @@ saved with the file.
 reading, and a page that leans (a scan fed in crooked, a photo taken at a slant of 1.5 to 40
 degrees) is made level first. The page then carries `rotated`, how far it was turned clockwise: 90,
 180 or 270, or a number in between for a tilted page (356.5 for a page that leaned 3.5 degrees),
-and its positions are on the page as it was read. The words of a tilted page were read either way;
+and its positions are on the page as it was read. A picture on its side can be turned either way to
+make its lines level, and each line is then read the right way round whichever way that was; the
+turn taken is the one whose lines stand upright, so the page is not left on its head with its lines
+in the wrong places (of 77 real photos lying on their side, 9 took the other turn after this
+rule, none was named differently, and no reader had to turn a page over afterwards, where two had
+to before). The words of a tilted page were read either way;
 what straightening saves is the rows. Measured on 13 pages (12 scanned forms and a Jawi page)
 tilted by 2 to 15 degrees either way: without it 4% to 41% of a page's rows of text came out as
 the same rows as on the level page, with it 57% to 66%, and every page tilted by 4 degrees or more
@@ -844,7 +854,10 @@ you how far to trust it:
 | `truncated` | `true` when the text was longer than the model can take and the end was left out |
 
 `GET /health` shows `"extraction": true` when the model server answers and the model is installed.
-Without it `/v1/extract` answers 503 `extraction_unavailable`; plain reading keeps working.
+Without it `/v1/extract` answers 503 `extraction_unavailable` for what the model reads; plain
+reading keeps working, and so do a table and the forms read by position (an identity card, a
+licence, a road tax disc, a vehicle certificate, a permit, an inspection report, a motor insurance
+schedule), which ask no model.
 
 ### Queue a long PDF
 

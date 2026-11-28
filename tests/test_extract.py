@@ -164,9 +164,23 @@ def test_extraction_off_answers_503_and_health_says_so(client, api_key, need_eng
     llm._status = (0.0, False)
     r = post_invoice(client, api_key)
     assert r.status_code == 503 and r.json()["error"] == "extraction_unavailable"
+    assert post_invoice(client, api_key, type="payslip").json()["error"] == "extraction_unavailable"
     h = client.get("/health").json()
     assert h["extraction"] is False and h["status"] == "ok"  # plain reading still works
     assert post_invoice(client, api_key, type="passport").json()["error"] == "bad_type"
+
+
+def test_a_form_read_by_position_needs_no_model_server(client, api_key, need_engine):
+    llm._status = (0.0, False)  # the model server is not running, as in every test that does not fake it
+    card_lines = ["KAD PENGENALAN", "850412-10-5759", "LIM AH KOW", "NO 5 JALAN 3", "43000 KAJANG", "SELANGOR", "LELAKI"]
+    for kind in ("mykad", "auto"):
+        r = client.post("/v1/extract", files={"file": ("c.png", synth.image_bytes(card_lines), "image/png")}, data={"type": kind},
+                        headers=api_key)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert (body["document_type"], body["read_by"], body["model_calls"]) == ("mykad", "labels", 0)
+        assert (body["fields"]["id_number"], body["fields"]["name"]) == ("850412-10-5759", "LIM AH KOW")
+        assert body["fields"]["address"] == "NO 5 JALAN 3, 43000 KAJANG, SELANGOR" and body["fields"]["date_of_birth"] == "1985-04-12"
 
 
 def test_extracts_an_invoice(client, api_key, need_engine, fake_model):
@@ -873,6 +887,167 @@ def test_the_identity_card_is_read_by_position_and_checked_against_its_number():
     assert mykad.parse([{"page": 1, "width": 1280, "lines": wrong}])["checks"][1]["passed"] is False
     assert mykad.born("051301105678") is None and mykad.born("050228105678", date(2026, 1, 1)) == "2005-02-28"
     assert mykad.parse([{"page": 1, "width": 1280, "lines": [_at("KAD PELAJAR", 10, 10)]}]) is None
+
+
+def card(name, address, right=("WARGANEGARA", "LELAKI"), number="850412-10-5759", x=40, y=20, extra=()):
+    """A made-up MyKad as the reader sees it: the lines of the name, then of the address, which ends at the
+    card's foot whatever its length, with the citizenship and the gender beside its last rows."""
+    foot = y + 722  # a name of two lines over an address of five leaves 36 between them, the lines 26 to 30 apart
+    rows = [foot - 30 * (len(address) - n) for n in range(len(address))]
+    lines = [_at("KAD PENGENALAN", x + 90, y), _at("MyKad", x + 720, y + 20), _at(number, x, y + 145)]
+    lines += [_at(t, x + 2, y + 510 + 26 * n) for n, t in enumerate(name)]
+    lines += [_at(t, x + 3, row) for t, row in zip(address, rows)]
+    lines += [_at(t, x + 760 + 100 * n, foot - 60 + 28 * n) for n, t in enumerate(right)]
+    return lines + list(extra)
+
+
+def test_a_name_that_runs_on_to_a_second_line_stays_out_of_the_address():
+    from app import mykad
+
+    def read(lines, width=1280):
+        return mykad.parse([{"page": 1, "width": width, "lines": lines}])["fields"]
+
+    long = ["NO 70 LADANG", "TANJUNG BARU", "JALAN SINTOK", "06010 CHANGLUN", "KEDAH"]
+    # the name is broken after A/L, and with five lines of address the two blocks nearly touch
+    f = read(card(["RAVI A/L", "MUTHUSAMY"], long))
+    assert f["name"] == "RAVI A/L MUTHUSAMY" and f["address"] == ", ".join(long)
+    assert (f["postcode"], f["city"], f["state"], f["citizenship"], f["gender"]) == ("06010", "CHANGLUN", "KEDAH", "WARGANEGARA", "male")
+    # the same card filling a part of a larger picture, as on a table or inside a phone's screen
+    inside = card(["RAVI A/L", "MUTHUSAMY"], long, x=900, y=1400, extra=[_at("11:13", 150, 60), _at("id_front_179462350383.jpg", 200, 220)])
+    assert read(inside, width=2400) == f
+    short = ["LOT 12 KAMPUNG BARU", "15000 KOTA BHARU", "KELANTAN"]
+    # the line above ends on a joining word, or the line itself starts with one
+    assert read(card(["MUHAMMAD AMIRUL HAKIM BIN", "ABDUL RAHMAN"], short))["name"] == "MUHAMMAD AMIRUL HAKIM BIN ABDUL RAHMAN"
+    f = read(card(["NUR AISYAH HUMAIRA", "BINTI ZULKIFLI"], short, right=("WARGANEGARA", "ISLAM", "PEREMPUAN")))
+    assert (f["name"], f["address"], f["religion"]) == ("NUR AISYAH HUMAIRA BINTI ZULKIFLI", ", ".join(short), "ISLAM")
+    # a single word under the name, with the address starting under it
+    assert read(card(["SITI NORHALIZA BINTI MOHD", "ZULKIFLI"], short))["name"] == "SITI NORHALIZA BINTI MOHD ZULKIFLI"
+    # more than three lines above the postcode: an address has three lines of its own at most
+    f = read(card(["WONG SIEW LING", "MARY ANNE"], ["NO 1 JALAN 2", "TAMAN MELATI", "BANDAR BARU", "43000 KAJANG", "SELANGOR"]))
+    assert f["name"] == "WONG SIEW LING MARY ANNE" and f["address"].startswith("NO 1 JALAN 2, TAMAN MELATI")
+    # an address that begins without a number is no part of the name
+    for first in ("KAMPUNG PAYA BESAR", "TANJUNG GENTING", "PUCHONG"):
+        f = read(card(["LIM AH KOW"], [first, "06000 JITRA", "KEDAH"]))
+        assert (f["name"], f["address"]) == ("LIM AH KOW", first + ", 06000 JITRA, KEDAH")
+    f = read(card(["LIM AH KOW"], ["TAMAN SEA", "JALAN SS 2", "47300 PETALING JAYA", "SELANGOR"]))
+    assert (f["name"], f["state"]) == ("LIM AH KOW", "SELANGOR")
+    # what stands under the state is not the card's, nor is the tiny print of its background
+    f = read(card(["LIM AH KOW"], short, extra=[_at("Shot on a phone", 42, 900), _at("KERAJAANMALAYSIAKERAJAAN", 44, 600)]))
+    assert (f["name"], f["address"]) == ("LIM AH KOW", ", ".join(short))
+    # the large number could not be read and the small one under the photo was: the number and what follows from
+    # it are given, and the name and the address, which there is nothing left to place by, are left out
+    faded = card(["LIM AH KOW"], short, number="85O4I2-1O-57S9") + [_at("850412-10-5759", 760, 600, 12)]
+    f = read(faded)
+    assert (f["id_number"], f["date_of_birth"], f["gender"], f["citizenship"]) == ("850412-10-5759", "1985-04-12", "male", "WARGANEGARA")
+    assert "name" not in f and "address" not in f
+
+
+def _span(text, x0, x1, y, h=44):
+    return {"text": text, "confidence": 0.99, "box": [[x0, y], [x1, y], [x1, y + h], [x0, y + h]]}
+
+
+def new_card(name, address, beside, number="900412-10-5678"):
+    """A made-up new-generation card (from September 2026), in the places a reader gave for the published
+    specimen: the photo at the left, the number, the name and the address right of it under one another, and
+    `beside`, the lines a reader made of the citizenship, religion and gender under the photo (alone, or run
+    together with the address's line on their row)."""
+    lines = [_span("KADPENGENALAN", 487, 1089, 111), _span("MALAYSIA", 491, 1094, 145, 80), _span("MyKad", 1212, 1391, 149, 60),
+             _span("IDENTITYCARD", 495, 1090, 212), _span(number, 483, 1018, 325, 70)]
+    lines += [_span(t, 483, 483 + 33 * len(t), 535 + 48 * n, 55) for n, t in enumerate(name)]
+    rows = [900 - 43 * (len(address) - 1 - n) for n in range(len(address))]
+    lines += [_span(t, 484, 484 + 24 * len(t), row) for t, row in zip(address, rows) if t]
+    return lines + list(beside)
+
+
+ONE = ["NO 5 JALAN 3", "43000 KAJANG", "SELANGOR"]
+TWO = ["LOT 12 KAMPUNG BARU", "MUKIM PAYA", "15000 KOTA BHARU", "KELANTAN"]
+THREE = ["NO 70 LADANG", "TANJUNG BARU", "JALAN SINTOK", "06010 CHANGLUN", "KEDAH"]
+SHAPES = [  # the name's lines, the address's lines, the name they give
+    (["AHMAD FAIZAL BIN", "ABDUL RAHMAN"], ONE, "AHMAD FAIZAL BIN ABDUL RAHMAN"),
+    (["AHMAD FAIZAL", "BIN ABDUL RAHMAN"], TWO, "AHMAD FAIZAL BIN ABDUL RAHMAN"),
+    (["NUR AISYAH BINTI MOHD", "ZAINAL ABIDIN"], ONE, "NUR AISYAH BINTI MOHD ZAINAL ABIDIN"),
+    (["NUR AISYAH BINTI MOHD", "ZAINAL ABIDIN"], TWO, "NUR AISYAH BINTI MOHD ZAINAL ABIDIN"),
+    (["NUR AISYAH BINTI MOHD", "ZAINAL ABIDIN"], THREE, "NUR AISYAH BINTI MOHD ZAINAL ABIDIN"),
+    (["TAN AH KOW @", "TAN KIM SENG"], ONE, "TAN AH KOW @ TAN KIM SENG"),
+    (["TAN AH KOW", "@ TAN KIM SENG"], ONE, "TAN AH KOW @ TAN KIM SENG"),
+    (["KAVITHA A/P", "RAMASAMY"], TWO, "KAVITHA A/P RAMASAMY"),
+    (["KAVITHA AP", "RAMASAMY"], TWO, "KAVITHA A/P RAMASAMY"),
+    (["RAVI A L", "MUTHU KUMAR"], ONE, "RAVI A/L MUTHU KUMAR"),
+    (["JUGAH ANAK", "BARIENG"], ONE, "JUGAH ANAK BARIENG"),
+    (["JUGAH AK", "BARIENG"], ONE, "JUGAH AK BARIENG"),
+    (["TENGKU MUHAMMAD FAIZ PETRA IBNI", "ALMARHUM SULTAN ISMAIL", "PETRA"], ONE, "TENGKU MUHAMMAD FAIZ PETRA IBNI ALMARHUM SULTAN ISMAIL PETRA"),
+    (["SUPARMAN"], TWO, "SUPARMAN"),
+    (["HARJIT SINGH A/L", "GURDEV SINGH"], THREE, "HARJIT SINGH A/L GURDEV SINGH"),
+    (["SITI AMINAH BT", "ABU BAKAR"], ONE, "SITI AMINAH BT ABU BAKAR"),
+    (["NIK NUR A'ISYAH BINTI", "NIK ABDUL-AZIZ"], ONE, "NIK NUR A'ISYAH BINTI NIK ABDUL-AZIZ"),
+    (["LIM AH KOW"], ["SEKOLAH KEBANGSAAN SERI", "JALAN 2", "TAMAN MELATI", "43000 KAJANG", "SELANGOR"], "LIM AH KOW"),
+    (["LIM AH KOW"], ["ESPEK TANJUNG", "06010 CHANGLUN", "KEDAH"], "LIM AH KOW"),
+    (["LIM AH KOW"], ["RUMAH PANJANG ENTAWAU", "SUNGAI ASSAN", "ULU OYA", "96000 SIBU", "SARAWAK"], "LIM AH KOW"),
+    (["LIM AH KOW"], ["SUBANG", "NO 5 JALAN 3", "47500 SUBANG JAYA", "SELANGOR"], "LIM AH KOW"),
+    (["DAYANG NURFAIZAH BINTI", "AWANG"], ["PETI SURAT 123", "89007 KENINGAU", "SABAH"], "DAYANG NURFAIZAH BINTI AWANG"),
+    (["LIM AH KOW"], ["D/A KEDAI RUNCIT AH SENG", "KAMPUNG BARU", "28400 MENTAKAB", "PAHANG"], "LIM AH KOW"),
+    (["LIM AH KOW"], ["8 JALAN 10 LEMBAH JAYA", "68000AMPANG", "SELANGOR"], "LIM AH KOW"),
+    (["LIM AH KOW"], ["8 JALAN 10 LEMBAH JAYA", "68000 AMPANG"], "LIM AH KOW"),
+    (["LIM AH KOW BIN", "ABDULLAH"], ["68000 AMPANG", "SELANGOR"], "LIM AH KOW BIN ABDULLAH"),
+    (["LIM AH KOW"], ["NO 70 LADANG", "O6010 CHANGLUN", "KEDAH"], "LIM AH KOW"),
+    (["WONG SIEW LING"], ["12-3A", "JALAN TELAWI", "59100 KUALA LUMPUR", "W. PERSEKUTUAN(KL)"], "WONG SIEW LING"),
+]
+
+
+def test_names_and_addresses_of_many_shapes_on_both_designs():
+    from app import mykad
+    under_photo = [_span("WARGANEGARA", 67, 330, 857), _span("LELAKI", 65, 216, 900)]
+    for name, address, whole in SHAPES:
+        for lines in (card(name, address), new_card(name, address, under_photo, number="850412-10-5759")):
+            f = mykad.parse([{"page": 1, "width": 1562, "lines": lines}])["fields"]
+            assert (f["name"], f["address"].split(", ")) == (whole, address), (name, address, f)
+            assert (f["gender"], f["citizenship"]) == ("male", "WARGANEGARA")
+    # photographed at an angle: the card's left edge slants, each line starting further left than the one above
+    for name, address, whole in SHAPES[:6]:
+        slanted = [{**ln, "box": [[x - 0.13 * y, y] for x, y in ln["box"]]} for ln in card(name, address, x=200)]
+        f = mykad.parse([{"page": 1, "width": 1562, "lines": slanted}])["fields"]
+        assert (f["name"], f["address"].split(", "), f["gender"]) == (whole, address, "male"), (name, address, f)
+    # a card left on its head (each line is read the right way round, only the places are turned): nothing is
+    # read from it that way up, and the page turned over gives the whole card, asked for by name or not
+    upright = card(["RAVI A/L", "MUTHUSAMY"], THREE)
+    on_its_head = {"page": 1, "width": 1280, "height": 800, "text": "\n".join(ln["text"] for ln in upright),
+                   "lines": [{**ln, "box": [[1280 - x, 800 - y] for x, y in ln["box"]]} for ln in upright]}
+    assert mykad.parse([on_its_head]) is None
+    for wanted in ("mykad", "auto"):
+        out = extract.run([on_its_head], [on_its_head["text"]], wanted)
+        assert (out["document_type"], out["read_by"], out["model_calls"]) == ("mykad", "labels", 0)
+        assert (out["fields"]["name"], out["fields"]["address"]) == ("RAVI A/L MUTHUSAMY", ", ".join(THREE))
+    # a second card lower in the picture, its lines starting where the first one's do, is not read into the first
+    two = card(["LIM AH KOW"], ONE) + card(["TAN MEI LING"], TWO, y=900, number="900412-10-5678")
+    f = mykad.parse([{"page": 1, "width": 1280, "lines": two}])["fields"]
+    assert (f["id_number"], f["name"], f["address"]) == ("850412-10-5759", "LIM AH KOW", ", ".join(ONE))
+    # the words at the lower right run together, and a letter for a native of Sabah or Sarawak beside them
+    f = mykad.parse([{"page": 1, "width": 1280, "lines": card(["LIM AH KOW"], ONE, right=("WARGANEGARA", "ISLAMLELAKI", "K"))}])["fields"]
+    assert (f["citizenship"], f["religion"], f["gender"]) == ("WARGANEGARA", "ISLAM", "male")
+
+
+def test_the_new_generation_card_is_read_with_its_photo_at_the_left():
+    from app import mykad
+
+    def read(lines):
+        return mykad.parse([{"page": 1, "width": 1562, "height": 1003, "lines": lines}])["fields"]
+
+    # as a reader gave the specimen: the words under the photo run into the address's lines on their rows
+    f = read(new_card(["TAN MEI LING"], ["NO.20", "JALAN MERANTI 3", "TAMAN SEA, SEKSYEN 2", "", ""],
+                      [_span("WARGANEGARA K BANDAR BARU SELATAN", 67, 994, 857), _span("PEREMPUAN", 65, 280, 895),
+                       _span("ISLAM47300 W.P KUALA LUMPUR", 330, 960, 894)]))
+    assert (f["name"], f["citizenship"], f["religion"], f["gender"]) == ("TAN MEI LING", "WARGANEGARA", "ISLAM", "female")
+    assert f["address"] == "NO. 20, JALAN MERANTI 3, TAMAN SEA, SEKSYEN 2, BANDAR BARU SELATAN, 47300 W.P KUALA LUMPUR"
+    assert (f["postcode"], f["city"], f["state"]) == ("47300", "W.P KUALA LUMPUR", "W.P KUALA LUMPUR")  # a territory is its own town
+    # each read on its own, with the state on a line under the postcode, and a word with a letter lost
+    apart = [_span("WARGANEGARA", 67, 330, 857), _span("K", 400, 425, 857), _span("LELAKI", 65, 216, 900), _span("ISAM", 330, 478, 900)]
+    f = read(new_card(["RAVI A/L", "MUTHUSAMY"], ["NO 7 JALAN 2", "43000 KAJANG", "SELANGOR"], apart, number="850412-10-5759"))
+    assert (f["name"], f["address"]) == ("RAVI A/L MUTHUSAMY", "NO 7 JALAN 2, 43000 KAJANG, SELANGOR")
+    assert (f["state"], f["citizenship"], f["religion"], f["gender"]) == ("SELANGOR", "WARGANEGARA", "ISLAM", "male")
+    # a line of the address that begins as those words do stays the address's: it starts where the column does
+    f = read(new_card(["LIM AH KOW"], ["ISLAMIC CENTRE QUARTERS", "JALAN PERDANA", "50480 KUALA LUMPUR", "W.P KUALA LUMPUR"],
+                      [_span("WARGANEGARA", 67, 330, 857), _span("LELAKI", 65, 216, 900)], number="850412-10-5759"))
+    assert f["address"].startswith("ISLAMIC CENTRE QUARTERS, JALAN PERDANA") and "religion" not in f and f["gender"] == "male"
 
 
 def test_forms_read_by_position_are_recognised_on_auto(fake_model):

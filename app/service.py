@@ -226,7 +226,11 @@ def extract_fields(data: bytes, options: dict, max_pages: int) -> dict:
     from . import llm
     if options.get("extract") == "table_grid":
         return table_grids(data, options, max_pages)
-    if options.get("extract") != "table" and not llm.ready():  # a table is read by position, without the model
+    # A table and the forms this service knows (an identity card, a licence, a road tax disc ...) are read by
+    # position, without the model: with the model server down they are still read, and it is asked for, and
+    # found missing, only where no reader by position answers. Any other kind needs it from the start.
+    by_position = (options.get("extract") or "auto") in ("table", "auto") or options.get("extract") in extract.FORMS
+    if not by_position and not llm.ready():
         raise ApiError(503, "extraction_unavailable",
                        "field extraction is not available: the model server on this machine is not answering, "
                        "or the model is not installed")
