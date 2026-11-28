@@ -557,7 +557,9 @@ by where each value stands and what it looks like, with no model asked. Both are
   `state`, `citizenship`, `gender`, `religion` when printed, and `date_of_birth` and
   `place_of_birth` worked out from the number. The checks are `number_holds_a_date` and
   `gender_matches_number` (the last digit is odd for a man, even for a woman). A stroke lost in
-  "A/L" or "A/P" is put back, and `name_as_read` then gives the name as it was read.
+  "A/L" or "A/P" is put back, and `name_as_read` then gives the name as it was read. A name that
+  runs on to a second line ("RAVI A/L" over "MUTHUSAMY") is kept whole and out of the address,
+  and the card may fill any part of the picture (on a table, or inside a phone's screen).
 
 - `driving_licence` (Lesen Memandu) and `vocational_licence` (Lesen Vokasional: PSV, GDL): the
   holder's name, `id_number`, `nationality`, `classes`, the validity as `issue_date` and

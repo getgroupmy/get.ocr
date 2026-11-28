@@ -875,6 +875,59 @@ def test_the_identity_card_is_read_by_position_and_checked_against_its_number():
     assert mykad.parse([{"page": 1, "width": 1280, "lines": [_at("KAD PELAJAR", 10, 10)]}]) is None
 
 
+def card(name, address, right=("WARGANEGARA", "LELAKI"), number="850412-10-5759", x=40, y=20, extra=()):
+    """A made-up MyKad as the reader sees it: the lines of the name, then of the address, which ends at the
+    card's foot whatever its length, with the citizenship and the gender beside its last rows."""
+    foot = y + 700
+    rows = [foot - 30 * (len(address) - n) for n in range(len(address))]
+    lines = [_at("KAD PENGENALAN", x + 90, y), _at("MyKad", x + 720, y + 20), _at(number, x, y + 145)]
+    lines += [_at(t, x + 2, y + 510 + 26 * n) for n, t in enumerate(name)]
+    lines += [_at(t, x + 3, row) for t, row in zip(address, rows)]
+    lines += [_at(t, x + 760 + 100 * n, foot - 60 + 28 * n) for n, t in enumerate(right)]
+    return lines + list(extra)
+
+
+def test_a_name_that_runs_on_to_a_second_line_stays_out_of_the_address():
+    from app import mykad
+
+    def read(lines, width=1280):
+        return mykad.parse([{"page": 1, "width": width, "lines": lines}])["fields"]
+
+    long = ["NO 70 LADANG", "TANJUNG BARU", "JALAN SINTOK", "06010 CHANGLUN", "KEDAH"]
+    # the name is broken after A/L, and with five lines of address the two blocks nearly touch
+    f = read(card(["RAVI A/L", "MUTHUSAMY"], long))
+    assert f["name"] == "RAVI A/L MUTHUSAMY" and f["address"] == ", ".join(long)
+    assert (f["postcode"], f["city"], f["state"], f["citizenship"], f["gender"]) == ("06010", "CHANGLUN", "KEDAH", "WARGANEGARA", "male")
+    # the same card filling a part of a larger picture, as on a table or inside a phone's screen
+    inside = card(["RAVI A/L", "MUTHUSAMY"], long, x=900, y=1400, extra=[_at("11:13", 150, 60), _at("id_front_179462350383.jpg", 200, 220)])
+    assert read(inside, width=2400) == f
+    short = ["LOT 12 KAMPUNG BARU", "15000 KOTA BHARU", "KELANTAN"]
+    # the line above ends on a joining word, or the line itself starts with one
+    assert read(card(["MUHAMMAD AMIRUL HAKIM BIN", "ABDUL RAHMAN"], short))["name"] == "MUHAMMAD AMIRUL HAKIM BIN ABDUL RAHMAN"
+    f = read(card(["NUR AISYAH HUMAIRA", "BINTI ZULKIFLI"], short, right=("WARGANEGARA", "ISLAM", "PEREMPUAN")))
+    assert (f["name"], f["address"], f["religion"]) == ("NUR AISYAH HUMAIRA BINTI ZULKIFLI", ", ".join(short), "ISLAM")
+    # a single word under the name, with the address starting under it
+    assert read(card(["SITI NORHALIZA BINTI MOHD", "ZULKIFLI"], short))["name"] == "SITI NORHALIZA BINTI MOHD ZULKIFLI"
+    # more than three lines above the postcode: an address has three lines of its own at most
+    f = read(card(["WONG SIEW LING", "MARY ANNE"], ["NO 1 JALAN 2", "TAMAN MELATI", "BANDAR BARU", "43000 KAJANG", "SELANGOR"]))
+    assert f["name"] == "WONG SIEW LING MARY ANNE" and f["address"].startswith("NO 1 JALAN 2, TAMAN MELATI")
+    # an address that begins without a number is no part of the name
+    for first in ("KAMPUNG PAYA BESAR", "TANJUNG GENTING", "PUCHONG"):
+        f = read(card(["LIM AH KOW"], [first, "06000 JITRA", "KEDAH"]))
+        assert (f["name"], f["address"]) == ("LIM AH KOW", first + ", 06000 JITRA, KEDAH")
+    f = read(card(["LIM AH KOW"], ["TAMAN SEA", "JALAN SS 2", "47300 PETALING JAYA", "SELANGOR"]))
+    assert (f["name"], f["state"]) == ("LIM AH KOW", "SELANGOR")
+    # what stands under the state is not the card's, nor is the tiny print of its background
+    f = read(card(["LIM AH KOW"], short, extra=[_at("Shot on a phone", 42, 900), _at("KERAJAANMALAYSIAKERAJAAN", 44, 600)]))
+    assert (f["name"], f["address"]) == ("LIM AH KOW", ", ".join(short))
+    # the large number could not be read and the small one under the photo was: the number and what follows from
+    # it are given, and the name and the address, which there is nothing left to place by, are left out
+    faded = card(["LIM AH KOW"], short, number="85O4I2-1O-57S9") + [_at("850412-10-5759", 760, 600, 12)]
+    f = read(faded)
+    assert (f["id_number"], f["date_of_birth"], f["gender"], f["citizenship"]) == ("850412-10-5759", "1985-04-12", "male", "WARGANEGARA")
+    assert "name" not in f and "address" not in f
+
+
 def test_forms_read_by_position_are_recognised_on_auto(fake_model):
     pages = [{"page": 1, "width": 1280, "height": 800, "lines": MYKAD, "text": "\n".join(ln["text"] for ln in MYKAD)}]
     out = extract.run(pages, [pages[0]["text"]], "auto")
