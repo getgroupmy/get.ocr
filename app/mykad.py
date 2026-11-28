@@ -25,9 +25,18 @@ import re
 from datetime import date
 from typing import Optional
 
+from . import headings
+
 TITLE = re.compile(r"kad\s*pengenalan|mykad|identity\s*card", re.I)
 # a line that is the card's heading, not a form's label "No. Kad Pengenalan" (insurance schedules print that)
 _HEADING = re.compile(r"\W*(?:kad\s*pengenalan|mykad|(?:malaysia\s*)?identity\s*card)\W*", re.I)
+TITLES = ("kadpengenalan", "identitycard", "malaysiaidentitycard", "mykad")
+
+
+def _is_heading(text: str) -> bool:
+    """A line that is the card's heading: whole, or with a letter lost to the hologram that lies over it
+    ("IENTITYCARD")."""
+    return bool(_HEADING.fullmatch(text.strip())) or headings.is_title(text, TITLES)
 _OTHER = re.compile(r"insur|takaful|polis[iy]|schedule|jadual|premium|lesen|licen[cs]e|sijil|permit", re.I)
 MAX_LINES = 40  # a card holds a dozen lines; a page that names an identity card number holds many more
 _NUMBER = re.compile(r"(?<!\d)(\d{6})[\s\-]*(\d{2})[\s\-]*(\d{4})(?!\d)")
@@ -117,7 +126,7 @@ def is_card(lines: list[dict]) -> bool:
     texts = [" ".join(ln["text"].split()) for ln in lines]
     if _OTHER.search(" ".join(texts)):
         return False
-    heads = {re.sub(r"[^a-z]", "", t.lower()) for t in texts if _HEADING.fullmatch(t)}
+    heads = {re.sub(r"[^a-z]", "", t.lower()) for t in texts if _is_heading(t)}
     if not heads or not any(_ALONE.fullmatch(t) for t in texts):
         return False
     marks = any(t.upper() in _GENDERS or _CITIZEN.fullmatch(t) for t in texts)
@@ -131,6 +140,36 @@ def _misread(text: str) -> Optional[str]:
         if abs(len(text) - len(word)) <= 1 and difflib.SequenceMatcher(None, text, word).ratio() >= 0.8:
             return word
     return None
+
+
+# Where each postcode is used, by its first two digits. A town on a border may use its neighbour's: both are named.
+POSTCODES = {}
+for _range, _states in (
+        ("01 02", "Perlis"), ("05 06 07 08 09", "Kedah"), ("10 11 12 13", "Pulau Pinang"), ("14", "Pulau Pinang, Kedah"),
+        ("15 16 17 18", "Kelantan"), ("20 21 22 23 24", "Terengganu"), ("25 26 27 28 39 49 69", "Pahang"),
+        ("30 31 32 33 35 36", "Perak"), ("34", "Perak, Kedah"), ("40 41 42 43 44 45 46 47 48 63 64", "Selangor"),
+        ("50 51 52 53 54 55 56 57 58 59 60 68", "Kuala Lumpur, Selangor"), ("62", "Putrajaya"),
+        ("70 71 72 73", "Negeri Sembilan"), ("75 76 77 78", "Melaka"), ("79 80 81 82 83 84 85 86", "Johor"),
+        ("87", "Labuan"), ("88 89 90 91", "Sabah"), ("93 94 95 96 97 98", "Sarawak")):
+    for _two in _range.split():
+        POSTCODES[_two] = tuple(_states.split(", "))
+_STATE_WORDS = (("JOHOR", "Johor"), ("KEDAH", "Kedah"), ("KELANTAN", "Kelantan"), ("MELAKA", "Melaka"), ("SEMBILAN", "Negeri Sembilan"),
+                ("PAHANG", "Pahang"), ("PINANG", "Pulau Pinang"), ("PERAK", "Perak"), ("PERLIS", "Perlis"), ("SELANGOR", "Selangor"),
+                ("TERENGGANU", "Terengganu"), ("SABAH", "Sabah"), ("SARAWAK", "Sarawak"), ("LABUAN", "Labuan"),
+                ("PUTRAJAYA", "Putrajaya"), ("KUALA LUMPUR", "Kuala Lumpur"), ("(KL)", "Kuala Lumpur"))
+
+
+def _state_named(text: Optional[str]) -> Optional[str]:
+    """The state a card's last address line names ("W. PERSEKUTUAN(KL)", "N. SEMBILAN"); None when it names none."""
+    upper = " ".join((text or "").upper().split())
+    return next((state for word, state in _STATE_WORDS if word in upper), None)
+
+
+def _reads_as_a_card(lines: list[dict]) -> bool:
+    """A card whose heading could not be read at all, for a caller who says it is one: its number alone on a
+    line, and the gender or the citizenship standing alone as the card prints them."""
+    texts = [" ".join(ln["text"].split()).upper() for ln in lines]
+    return any(_ALONE.fullmatch(t) for t in texts) and any(t in _GENDERS or _CITIZEN.fullmatch(t) for t in texts)
 
 
 def _is_background(text: str) -> bool:
@@ -179,12 +218,15 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
     for page in pages:
         lines = page.get("lines") or []
         whole = " ".join(ln["text"] for ln in lines)
-        if not any(_HEADING.fullmatch(ln["text"].strip()) for ln in lines) or len(lines) > MAX_LINES or _OTHER.search(whole):
+        if len(lines) > MAX_LINES or _OTHER.search(whole):
+            continue
+        heads = [ln for ln in lines if _is_heading(ln["text"])]
+        if not heads and not _reads_as_a_card(lines):
             continue
         # the card's number: under the heading, alone on its line (a twelve-digit run in a file's name or a
         # clock above the card is not it). A number that stands only above the heading is a card on its head:
         # nothing is read from it this way up, and the caller reads the page turned over.
-        under = min(_top(ln) for ln in lines if _HEADING.fullmatch(ln["text"].strip()))
+        under = min(_top(ln) for ln in heads) if heads else min(_top(ln) for ln in lines) - 1
         numbered = [ln for ln in sorted(lines, key=_top) if _NUMBER.search(ln["text"]) and _top(ln) >= under]
         holder = next((ln for ln in numbered if _ALONE.fullmatch(ln["text"].strip())), None) or (numbered[0] if numbered else None)
         if holder is None:
@@ -241,6 +283,8 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
                 f["citizenship"] = text.replace("WARGA NEGARA", "WARGANEGARA")
             elif _RELIGION.fullmatch(text):
                 f["religion"] = text
+        if not heads and not column:
+            continue  # no heading to tell which way up the card is, and nothing under the number this way up
         read = None
         if column:
             texts = [" ".join(ln["text"].split()) for ln in column]
@@ -250,6 +294,8 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
             # the address ends with its state, the line under the postcode: what stands lower is not the card's
             last = len(texts) if post is None else min(post + 2, len(texts))
             address = [re.sub(r"^NO(\.?)(?=\d)", r"NO\1 ", t) for t in texts[cut:last]][:6]
+            if post is not None and cut <= post < cut + len(address):  # "98000MIRI": the postcode and its town run together
+                address[post - cut] = re.sub(r"^(\W*\d{5})(?=[A-Za-z])", r"\1 ", address[post - cut])
             if address:
                 f["address"] = ", ".join(address)
             if post is not None and post >= cut:
@@ -270,5 +316,9 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
             by_number = "male" if int(digits[-1]) % 2 else "female"
             checks.append({"name": "gender_matches_number", "passed": by_number == f["gender"],
                            "detail": f"the number's last digit says {by_number}, the card prints {f['gender']}"})
+        printed, of_postcode = _state_named(f.get("state")), POSTCODES.get((f.get("postcode") or "")[:2])
+        if printed and of_postcode:
+            checks.append({"name": "postcode_matches_state", "passed": printed in of_postcode,
+                           "detail": f"postcode {f['postcode']} is used in {' and '.join(of_postcode)}, the card prints {f['state']}"})
         return {"fields": f, "checks": checks, "extra": extra, "page": page.get("page", 1)}
     return None
