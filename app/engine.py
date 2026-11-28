@@ -5,6 +5,7 @@ set with OCR_ENGINE. One page is read at a time; each reading already uses
 every core."""
 from __future__ import annotations
 
+import difflib
 import logging
 import threading
 from typing import Optional
@@ -154,11 +155,81 @@ def straighten(img: np.ndarray, degrees: float) -> np.ndarray:
     return cv2.warpAffine(img, m, (nw, nh), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
 
 
+def ground_colour(img: np.ndarray, lines: list[dict]) -> Optional[int]:
+    """Which of a picture's three colours the ground under its text is brightest in (0 blue, 1 green,
+    2 red), where it is clearly one of them; None for a white or grey ground. It is measured where
+    the lines stand, not over the whole picture: a blue card photographed on a brown table is blue."""
+    weight = np.zeros(3)
+    for ln in lines:
+        xs, ys = [int(p[0]) for p in ln["box"]], [int(p[1]) for p in ln["box"]]
+        crop = img[max(min(ys), 0):max(ys), max(min(xs), 0):max(xs)]
+        if crop.size < 30:
+            continue
+        dots = crop.reshape(-1, 3).astype(float)
+        light = dots[dots.sum(axis=1) >= np.median(dots.sum(axis=1))]  # the ground: the lighter half of the line's box
+        weight += np.median(light, axis=0) * len(ln["text"])
+    if not weight.any():
+        return None
+    weight /= weight.max()
+    first, second = np.argsort(weight)[-1], np.argsort(weight)[-2]
+    return int(first) if weight[first] - weight[second] >= 0.05 else None
+
+
+def _same_line(a: list, b: list) -> bool:
+    """Does box b cover most of box a without being much larger: the same line of the picture, read twice?"""
+    ax0, ay0, ax1, ay1 = min(p[0] for p in a), min(p[1] for p in a), max(p[0] for p in a), max(p[1] for p in a)
+    bx0, by0, bx1, by1 = min(p[0] for p in b), min(p[1] for p in b), max(p[0] for p in b), max(p[1] for p in b)
+    w, h = min(ax1, bx1) - max(ax0, bx0), min(ay1, by1) - max(ay0, by0)
+    size = max((ax1 - ax0) * (ay1 - ay0), 1)
+    return w > 0 and h > 0 and w * h >= 0.6 * size and (bx1 - bx0) * (by1 - by0) <= 1.8 * size
+
+
+def surer(first: list[dict], second: list[dict]) -> list[dict]:
+    """The first reading of a picture, with a line replaced by a second reading's where that is the
+    same line read more surely. The second reading may add to a line, never take from it: it must
+    hold at least as many characters, be like the first, and be clearly surer, or longer by two
+    characters and as sure. Where the two differ only in their spaces, the one with more of them is
+    taken (a reader loses spaces, it does not make them). No line is added or removed."""
+    out = []
+    for a in first:
+        same = [b for b in second if _same_line(a["box"], b["box"])]
+        if len(same) == 1:
+            b = same[0]
+            ta, tb, ca, cb = a["text"].strip(), b["text"].strip(), a["confidence"], b["confidence"]
+            bare_a, bare_b = ta.replace(" ", ""), tb.replace(" ", "")
+            if bare_a == bare_b:
+                better = len(tb) > len(ta) and cb >= 0.9
+            else:
+                better = len(bare_b) >= len(bare_a) and difflib.SequenceMatcher(None, ta.upper(), tb.upper()).ratio() >= 0.6 \
+                    and (cb >= ca + 0.03 or (len(bare_b) >= len(bare_a) + 2 and cb >= max(ca - 0.02, 0.9)))
+            if better:
+                out.append({**a, "text": tb, "confidence": cb, "box": b["box"]})
+                continue
+        out.append(a)
+    return out
+
+
 def read_upright(img: np.ndarray, script: Optional[str] = None) -> tuple[list[dict], np.ndarray, float]:
     """Read a picture, turned upright first when it lies on its side or its head, and straightened
     when it is tilted. Returns the lines, the picture as it was read, and how far it was turned
     clockwise: 0, 90, 180 or 270 degrees, or a number in between for a tilted page (356.5 is a
-    page that leaned 3.5 degrees clockwise)."""
+    page that leaned 3.5 degrees clockwise).
+
+    Where the text stands on a coloured ground and a line was read unsurely, the picture is read
+    once more in that colour alone and the surer reading of each line is kept. A card's hologram
+    lies over its print in colours; in the colour of the card itself (blue for an identity card) the
+    hologram is as light as the card and the dark print stands clear of it. A real card's name read
+    "SATHISKUNAR AR" in full colour reads "SATHISKUMAR AL" in blue."""
+    lines, upright, turned = _read_upright(img, script)
+    if not script and any(ln["confidence"] < 0.97 and len(ln["text"]) >= 3 for ln in lines):
+        colour = ground_colour(upright, lines)
+        if colour is not None:
+            single = np.ascontiguousarray(upright[:, :, colour])
+            lines = surer(lines, read(np.stack([single] * 3, axis=2)))
+    return lines, upright, turned
+
+
+def _read_upright(img: np.ndarray, script: Optional[str] = None) -> tuple[list[dict], np.ndarray, float]:
     first = read(img, script)
     lean = tilt(first) if not sideways(first) else 0.0
     if lean:

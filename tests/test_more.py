@@ -191,6 +191,53 @@ def test_of_the_two_quarter_turns_the_one_whose_lines_stand_upright_is_taken(mon
     assert engine._read_quarters(picture, None, down_the_picture)[2] == 270
 
 
+def test_a_second_reading_in_the_grounds_own_colour_is_taken_where_it_is_surer(monkeypatch):
+    """A card's hologram lies over its print in colours. In the colour of the card itself it is as light as the
+    card, and the print under it reads clear: a real card's name read "... AR" in full colour and "... AL" in blue."""
+    import numpy as np
+
+    def line(text, confidence, x=40, y=40, w=None):
+        w = w or 14 * len(text)
+        return {"text": text, "confidence": confidence, "box": [[x, y], [x + w, y], [x + w, y + 30], [x, y + 30]]}
+
+    # which reading of a line is kept: the second may add to a line, never take from it
+    kept = lambda a, b: engine.surer([a], [b])[0]["text"]  # noqa: E731
+    assert kept(line("RAVIKUNAR AR", 0.92), line("RAVIKUMAR AL", 1.0)) == "RAVIKUMAR AL"      # alike, as long, clearly surer
+    assert kept(line("RAVIKUNAR", 0.99, w=170), line("RAVIKUMAR AL", 1.0, w=200)) == "RAVIKUMAR AL"  # longer by two and as sure
+    assert kept(line("JOHARI BINAGAP", 0.97), line("JOHARI BIN AGAP", 0.95)) == "JOHARI BIN AGAP"    # the same letters, a space regained
+    assert kept(line("B2 D E", 0.94), line("B2 DE", 1.0)) == "B2 D E"                                # a space lost: not taken, however sure
+    assert kept(line("D:TEKSI/TEKSI MEWAH/", 0.92), line("D:TEKSI/TEKSI MEWAH", 0.98)) == "D:TEKSI/TEKSI MEWAH/"  # a character lost
+    assert kept(line("WXY1234", 1.0), line(": WXY1234", 0.98, x=20, w=130)) == "WXY1234"             # longer, but neither surer nor by two
+    assert kept(line("TOTAL 135.54", 0.9), line("SOMETHING ELSE HERE", 1.0)) == "TOTAL 135.54"       # not the same line's words
+    assert kept(line("TAN MEI LING", 0.9), line("TAN MEI LING", 1.0, y=200)) == "TAN MEI LING"       # another place: no second reading of it
+    both = engine.surer([line("ONE", 0.9), line("TWO", 0.9, y=100)], [line("TWO!", 1.0, y=100), line("THREE", 1.0, y=200)])
+    assert [ln["text"] for ln in both] == ["ONE", "TWO!"]  # no line is added or removed
+    # the ground's colour is taken where the text stands: a blue card on a red table is blue; a white page has none
+    picture = np.zeros((300, 400, 3), np.uint8)
+    picture[:] = (40, 60, 200)                 # the table (blue, green, red)
+    picture[20:120, 20:380] = (230, 180, 150)  # the card
+    assert engine.ground_colour(picture, [line("RAVIKUMAR A/L", 0.9, 40, 40), line("MUTHUSAMY", 1.0, 40, 80)]) == 0
+    picture[:] = 245
+    assert engine.ground_colour(picture, [line("RAVIKUMAR A/L", 0.9)]) is None
+    # read_upright: an unsure line on a coloured ground brings a second reading, in that colour alone
+    picture[:] = (230, 180, 150)
+    shown = []
+
+    def read(img, script=None):
+        shown.append(bool((img[:, :, 0] == img[:, :, 1]).all() and (img[:, :, 1] == img[:, :, 2]).all()))
+        return [line("RAVIKUMAR AL", 1.0), line("MUTHUSAMY", 1.0, y=80)] if shown[-1] else [line("RAVIKUNAR AR", 0.92), line("MUTHUSAMY", 1.0, y=80)]
+
+    monkeypatch.setattr(engine, "read", read)
+    lines, _, turned = engine.read_upright(picture)
+    assert [ln["text"] for ln in lines] == ["RAVIKUMAR AL", "MUTHUSAMY"] and turned == 0 and shown == [False, True]
+    assert (picture[0, 0] == (230, 180, 150)).all()  # the picture itself is left as it was
+    # every line sure, or a white ground: the picture is read once
+    shown.clear()
+    monkeypatch.setattr(engine, "read", lambda img, script=None: shown.append(1) or [line("RAVIKUMAR A/L", 0.99), line("MUTHUSAMY", 1.0, y=80)])
+    engine.read_upright(picture)
+    assert shown == [1]
+
+
 def test_problems_are_named(client, monkeypatch):
     from app import llm
     from app.config import get_settings

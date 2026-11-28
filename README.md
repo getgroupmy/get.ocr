@@ -736,7 +736,18 @@ turn taken is the one whose lines stand upright, so the page is not left on its 
 in the wrong places (of 77 real photos lying on their side, 9 took the other turn after this
 rule, none was named differently, and no reader had to turn a page over afterwards, where two had
 to before). The words of a tilted page were read either way;
-what straightening saves is the rows. Measured on 13 pages (12 scanned forms and a Jawi page)
+what straightening saves is the rows.
+
+**Print under a hologram.** Where the text stands on a coloured ground and a line was read unsurely,
+the picture is read once more in that colour alone, and each line keeps its surer reading. A card's
+hologram lies over its print in colours; in the colour of the card itself (blue for an identity
+card) it is as light as the card and the dark print stands clear. A real card's name read "...
+KUNAR AR" in full colour and "... KUMAR AL" in blue. The second reading may add to a line, never
+take from it: it must hold at least as many characters, be like the first, and be clearly surer;
+where the two differ only in their spaces, the one with more is taken. On 154 real photos read a
+second time, 64 changed in some line (most often a space regained: a name read "... BINAGAP"
+became "... BIN AGAP"); none was named differently, no value read by position was lost, two were
+gained, and no check that passed failed. A white page is read once. Measured on 13 pages (12 scanned forms and a Jawi page)
 tilted by 2 to 15 degrees either way: without it 4% to 41% of a page's rows of text came out as
 the same rows as on the level page, with it 57% to 66%, and every page tilted by 4 degrees or more
 was made level to within a degree. A level page is left alone (0 of 13 touched). It does not undo
