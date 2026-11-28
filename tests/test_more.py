@@ -316,6 +316,16 @@ def test_a_stamps_ink_is_taken_out_of_a_picture_whatever_its_strength():
     assert engine.stamp_lines(img, own + [red_print, in_black, watermark]) == [watermark]
 
 
+def test_a_table_read_by_position_leaves_out_a_line_marked_as_a_stamps():
+    page = settlement_table()
+    before = extract.run([page], [page["text"]], "table")["fields"]
+    stamp = {"text": "PAID", "confidence": 0.99, "across": True, "box": [[40, 60], [100, 52], [102, 64], [42, 72]]}
+    marked = {**page, "lines": page["lines"] + [stamp]}
+    assert extract.run([marked], [marked["text"]], "table")["fields"] == before
+    unmarked = {**page, "lines": page["lines"] + [{k: v for k, v in stamp.items() if k != "across"}]}
+    assert extract.run([unmarked], [unmarked["text"]], "table")["fields"] != before  # read as a line of the page, it lands in a cell
+
+
 def test_problems_are_named(client, monkeypatch):
     from app import llm
     from app.config import get_settings

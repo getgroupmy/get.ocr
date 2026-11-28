@@ -775,7 +775,8 @@ A stamp's line is told by two things together: it stands off the direction the p
 have at its place (by three degrees or more), and it is written in another ink than the page's
 print, on the page's own ground. Either alone is the page's own: a serial number in red runs
 level, a second paper under the first lies at an angle in black. Such a line carries
-`"across": true`: it stays in the text, and the readers by position and the naming leave it out.
+`"across": true`: it stays in the text, and the readers by position (the forms, a table, a
+statement) and the naming leave it out.
 Where the stamp runs into the print, the reader gives print and stamp as one line; the picture is
 then read once more in the one mix of its colours in which the stamp's ink is as light as the
 ground, and that reading is taken wherever the stamp's ink touches print. Those lines carry
