@@ -78,6 +78,15 @@ def lean(line: dict) -> Optional[float]:
 
 
 AGREE = 2.0  # degrees: lines within this of one direction agree on it
+def _is_the_pages(found: np.ndarray, parallel: np.ndarray) -> bool:
+    """Whether the place found is the page's own: it explains clearly more lines than their middle slope does,
+    leaves no more of them far off, and lays none across that runs as the page's middle slope does (a leaning
+    card beside a few level lines: the level lines and the card's lower ones happen to point at one place, which
+    would make a stamp of the card's heading and its number)."""
+    return (found < AGREE).sum() >= (parallel < AGREE).sum() + 2 and (found >= ACROSS).sum() <= (parallel >= ACROSS).sum() \
+        and not ((parallel < AGREE) & (found >= ACROSS)).any()
+
+
 ACROSS, UPRIGHT = 10.0, 70.0  # degrees off the page's own lines: from the first a line is laid across the page, from the
 #                               second it is the page's own print set upright (up a margin, over a table's narrow column)
 
@@ -131,7 +140,7 @@ def off_trend(lines: list) -> dict:
     # them far off.
     slopes = (np.degrees(np.arctan2(way[:, 1], way[:, 0])) + 90.0) % 180.0 - 90.0
     parallel = np.abs((slopes - np.median(slopes) + 90.0) % 180.0 - 90.0)
-    if (found < AGREE).sum() < (parallel < AGREE).sum() + 2 or (found >= ACROSS).sum() > (parallel >= ACROSS).sum():
+    if not _is_the_pages(found, parallel):
         found = parallel
     return {id(ln): float(d) for ln, d in zip((ln for ln, t in zip(lines, told) if t), found)}
 

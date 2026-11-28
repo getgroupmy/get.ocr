@@ -929,12 +929,8 @@ def run(pages: list[dict], texts: list[str], wanted: str, custom: Optional[dict]
         kind = wanted
         if wanted in FORMS:  # the caller says what it is: the reader takes it on its looser test, either way up
             form = FORMS[wanted](pages) or FORMS[wanted](_upside_down(pages))
-    # a table and a statement are read by position too: a stamp's lines, where the reader of the picture marked
-    # them, are no row or cell of theirs
-    own = [{**p, "lines": [ln for ln in p.get("lines") or [] if not ln.get("across")]} for p in pages] \
-        if any(ln.get("across") for p in pages for ln in p.get("lines") or []) else pages
     if kind == "table":
-        table = tables.parse(own)
+        table = tables.parse(pages)
         if not table["rows"]:
             raise ApiError(422, "no_table", "no table was found: it needs a row of column headings with rows of "
                                             "values under it")
@@ -943,7 +939,7 @@ def run(pages: list[dict], texts: list[str], wanted: str, custom: Optional[dict]
              "checks": tables.checks(table), "attempts": 0, "bad_dates": [], "truncated": False, "list_key": "rows",
              "repaired": 0, "method": "table"}
     elif kind in STATEMENT_TYPES:
-        r = _statement(own, texts, kind)
+        r = _statement(pages, texts, kind)
     elif form is not None:
         # a form this service knows: each value is taken from its place on the page, no model is asked
         bad_dates: list[str] = []

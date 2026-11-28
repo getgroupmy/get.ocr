@@ -188,29 +188,35 @@ def _same_line(a: list, b: list) -> bool:
 _NUMBER = re.compile(r"\d[\d.,]*\d")
 
 
-def _thins_a_number(first: str, second: str) -> bool:
-    """Does the second reading turn a comma inside a number of the first into a full stop ("338,214.28" into
-    "338.214.28")? In one colour alone a small comma loses its tail and reads as a stop, and reads so more
-    surely: a reading may lose ink that way, it does not gain it."""
-    numbers = _NUMBER.findall(second)
-    return any("," in a and a != b and len(a) == len(b) and all(x == y or (x, y) == (",", ".") for x, y in zip(a, b))
-               for a in _NUMBER.findall(first) for b in numbers)
+def _with_its_commas(first: str, second: str) -> str:
+    """The second reading, with a comma of the first put back where the second reads a full stop between two
+    digits in its place ("338,214.28" read "338.214.28"). In one colour alone a small comma loses its tail and
+    reads as a stop, and reads so more surely: a reading may lose ink that way, it does not gain it."""
+    out = list(second)
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, first, second, autojunk=False).get_opcodes():
+        if op == "replace" and i2 - i1 == j2 - j1:
+            for k in range(i2 - i1):
+                j = j1 + k
+                if first[i1 + k] == "," and second[j] == "." and second[j - 1:j].isdigit() and second[j + 1:j + 2].isdigit():
+                    out[j] = ","
+    return "".join(out)
 
 
 def _splits_a_number(first: str, second: str) -> bool:
-    """Does the second reading, which differs from the first in its spaces only, put a space inside a number
+    """Does the second reading, which differs from the first in its spaces only, put a space inside an amount
     ("775,442.03" into "775, 442.03": in a typewriter's face the gap after a comma is as wide as a space) or
-    inside a long code of letters and digits (a chassis number)? A reader loses the spaces between words; a
-    number or a code has none to lose."""
+    inside a long code of letters and digits (a chassis number)? A reader loses the spaces between words and
+    between the groups of a long number; an amount or a code has none to lose."""
     at = 0  # the place in the first reading that each character of the second stands at
-    for n, ch in enumerate(second):
+    for ch in second:
+        while ch != " " and at < len(first) and first[at] == " ":
+            at += 1  # a space of the first reading that the second lost
         if at < len(first) and first[at] == ch:
             at += 1
             continue
         if ch != " ":
             return False  # not the same characters after all: nothing to say
-        left, right = first[:at].rstrip(".,/-"), first[at:].lstrip(".,/-")
-        if left[-1:].isdigit() and right[:1].isdigit():
+        if any(m.start() < at < m.end() and re.search(r"[.,]", m.group()) for m in _NUMBER.finditer(first)):
             return True
         word = (re.findall(r"\S+$", first[:at]) or [""])[0] + (re.findall(r"^\S+", first[at:]) or [""])[0]
         if len(word) >= 11 and len(re.findall(r"[A-Za-z]+|\d+", word)) >= 5 and re.fullmatch(r"[A-Za-z\d]+", word):
@@ -222,23 +228,23 @@ def surer(first: list[dict], second: list[dict]) -> list[dict]:
     """The first reading of a picture, with a line replaced by a second reading's where that is the
     same line read more surely. The second reading may add to a line, never take from it: it must
     hold at least as many characters, be like the first, and be clearly surer, or longer by two
-    characters and as sure; and it may not turn a comma inside a number into a full stop. Where
-    the two differ only in their spaces, the one with more of them is taken (a reader loses spaces,
-    it does not make them), unless the space would stand inside a number or a long code. No line is
-    added or removed."""
+    characters and as sure; and a comma of the first stays a comma where the second reads a full
+    stop in its place. Where the two differ only in their spaces, the one with more of them is taken
+    (a reader loses spaces, it does not make them), unless the space would stand inside an amount or
+    a long code. No line is added or removed."""
     out = []
     for a in first:
         same = [b for b in second if _same_line(a["box"], b["box"])]
         if len(same) == 1:
             b = same[0]
-            ta, tb, ca, cb = a["text"].strip(), b["text"].strip(), a["confidence"], b["confidence"]
+            ta, ca, cb = a["text"].strip(), a["confidence"], b["confidence"]
+            tb = _with_its_commas(ta, b["text"].strip())
             bare_a, bare_b = ta.replace(" ", ""), tb.replace(" ", "")
             if bare_a == bare_b:
                 better = len(tb) > len(ta) and cb >= 0.9 and not _splits_a_number(ta, tb)
             else:
                 better = len(bare_b) >= len(bare_a) and difflib.SequenceMatcher(None, ta.upper(), tb.upper()).ratio() >= 0.6 \
-                    and (cb >= ca + 0.03 or (len(bare_b) >= len(bare_a) + 2 and cb >= max(ca - 0.02, 0.9))) \
-                    and not _thins_a_number(ta, tb)
+                    and (cb >= ca + 0.03 or (len(bare_b) >= len(bare_a) + 2 and cb >= max(ca - 0.02, 0.9)))
             if better:
                 out.append({**a, "text": tb, "confidence": cb, "box": b["box"]})
                 continue
@@ -287,12 +293,23 @@ def _takes(ground: np.ndarray, ink: np.ndarray) -> Optional[np.ndarray]:
     return took / size if size > 25 else None
 
 
-def _share(dots: Optional[np.ndarray], ink: np.ndarray, ground: np.ndarray) -> float:
-    """The share of a box's dots that are in an ink: near it, and nearer to it than to the ground."""
+def _shares(dots: Optional[np.ndarray], ground: np.ndarray, inks_: list, past: tuple = (0.5, 0.7)) -> list:
+    """The share of a box's dots that are in each of some inks. A dot is in the ink whose line from the ground it
+    lies nearest to, where it is far enough along it (`past`, for each ink): the soft edge of a black letter on
+    white paper lies on the line from white to black, however near to a red ink's colour its grey comes. The
+    print's own ink is asked for further along than a stamp's: the grey of a card's ghost picture and of the
+    fine print of its ground lies half-way to black and is no print under a stamp."""
     if dots is None:
-        return 0.0
-    near = np.linalg.norm(dots - ink, axis=1)
-    return float(((near < 0.5 * np.linalg.norm(ink - ground)) & (near < np.linalg.norm(dots - ground, axis=1))).mean())
+        return [0.0] * len(inks_)
+    from_ground = dots - ground
+    along, off = [], []
+    for ink in inks_:
+        way = ink - ground
+        t = from_ground @ way / max(float(way @ way), 1e-6)
+        along.append(t)
+        off.append(np.linalg.norm(from_ground - t[:, None] * way, axis=1))
+    nearest = np.argmin(np.array(off), axis=0)
+    return [float(((nearest == n) & (along[n] > past[n])).mean()) for n in range(len(inks_))]
 
 
 def _mid_in(inner: list, outer: list) -> bool:
@@ -347,6 +364,10 @@ def stamp_lines(img: np.ndarray, lines: list[dict]) -> list[dict]:
     return out
 
 
+def _letters(text: str) -> str:
+    return re.sub(r"[\W_]", "", text)
+
+
 def under_a_stamp(img: np.ndarray, lines: list[dict]) -> list[dict]:
     """The lines of a picture with what a stamp or a watermark across it did to them put right as far as it can be.
 
@@ -355,10 +376,11 @@ def under_a_stamp(img: np.ndarray, lines: list[dict]) -> list[dict]:
     are marked `across` (a reader by position leaves them out; the text keeps them). Where it runs
     into the print, the reader gives print and stamp as one line ("LIM AH Kowstration"), which no rule
     on whole lines can take apart: the picture is read once more with the stamp's ink taken out, and
-    that reading is taken wherever the stamp's ink touches print. Such a line is marked `under_stamp`:
-    what stood under a faint stamp reads well, what stood under solid ink is gone where the ink
-    was, and the caller is told which lines those are. A stamp's line that holds print which could
-    not be read apart from it is marked `over_print` as well."""
+    that reading is taken where the stamp's ink touches print, at the stamp and nowhere else on the
+    page. Such a line is marked `under_stamp`: what stood under a faint stamp reads well, what stood
+    under solid ink is gone where the ink was, and the caller is told which lines those are. A
+    stamp's line that holds print which could not be read apart from it is marked `over_print` as
+    well. A stamp that stands clear of all print is marked and nothing is read again."""
     from . import headings
     laid = stamp_lines(img, lines)
     if not laid:
@@ -369,54 +391,86 @@ def under_a_stamp(img: np.ndarray, lines: list[dict]) -> list[dict]:
     offs = headings.off_trend(lines)
     own = [inks(img, ln) for ln in sorted((ln for ln in lines if offs.get(id(ln), 90.0) < headings.AGREE), key=lambda ln: -len(ln["text"]))[:12]]
     print_ = np.median([f[1] for f in own if f is not None], axis=0)
+    # where the stamp stands: about its own lines, by the height of one of them
+    xs, ys = [p[0] for ln in laid for p in ln["box"]], [p[1] for ln in laid for p in ln["box"]]
+    tall = max(min(float(np.linalg.norm(np.subtract(ln["box"][3], ln["box"][0]))), float(np.linalg.norm(np.subtract(ln["box"][1], ln["box"][0])))) for ln in laid)
+    place = (min(xs) - tall, min(ys) - tall, max(xs) + tall, max(ys) + tall)
 
-    def touched(ln: dict) -> float:
-        return _share(_inside(img, ln), stamp, ground)
+    def at_the_stamp(ln: dict) -> bool:
+        return max(p[0] for p in ln["box"]) >= place[0] and min(p[0] for p in ln["box"]) <= place[2] \
+            and max(p[1] for p in ln["box"]) >= place[1] and min(p[1] for p in ln["box"]) <= place[3]
+
+    def in_inks(ln: dict) -> list:  # the shares of its box in the stamp's ink and in the print's
+        return _shares(_inside(img, ln), ground, [stamp, print_])
 
     def printed(ln: dict) -> bool:  # it holds print of its own, not only a piece of the stamp
-        return _share(_inside(img, ln), print_, ground) >= 0.04
+        return in_inks(ln)[1] >= 0.04
 
     # a short piece of the stamp, read on its own beside its other lines: too short to tell a slope by, in the
     # stamp's ink and with no print of its own
-    xs, ys = [p[0] for ln in laid for p in ln["box"]], [p[1] for ln in laid for p in ln["box"]]
-    tall = max(min(float(np.linalg.norm(np.subtract(ln["box"][3], ln["box"][0]))), float(np.linalg.norm(np.subtract(ln["box"][1], ln["box"][0])))) for ln in laid)
-    near = [[min(xs) - tall, min(ys) - tall], [max(xs) + tall, min(ys) - tall], [max(xs) + tall, max(ys) + tall], [min(xs) - tall, max(ys) + tall]]
     for ln in lines:
-        if id(ln) not in marked and id(ln) not in offs and _mid_in(ln["box"], near) and touched(ln) >= 0.1 and not printed(ln):
-            marked.add(id(ln))
-    view = without_ink(img, ground, stamp, print_)
+        if id(ln) not in marked and id(ln) not in offs and at_the_stamp(ln):
+            of_stamp, of_print = in_inks(ln)
+            if of_stamp >= 0.1 and of_print < 0.04:
+                marked.add(id(ln))
+    # the lines the stamp's ink touches, at the stamp: only these, and the stamp's own lines that hold print as
+    # well, can be put right by reading again. A stamp that stands clear of all print needs no second reading.
+    run_into = [ln for ln in lines if id(ln) not in marked and at_the_stamp(ln) and in_inks(ln)[0] >= STAMP_TOUCH]
+    merged = [ln for ln in lines if id(ln) in marked and printed(ln)]
+    view = without_ink(img, ground, stamp, print_) if run_into or merged else None
     if view is None:
-        return [{**ln, "across": True} if id(ln) in marked else ln for ln in lines]
+        return [{**ln, "across": True, **({"over_print": True} if any(ln is m for m in merged) else {})} if id(ln) in marked else ln
+                for ln in lines]
     again = read(np.stack([view] * 3, axis=2))
-    run_into = [ln for ln in lines if id(ln) not in marked and touched(ln) >= STAMP_TOUCH]  # the stamp's ink touches them
     stand = {id(ln) for ln in run_into} | marked
     sound = [ln for ln in lines if id(ln) not in stand]  # these stand as they were read
     level = headings.off_trend(sound + again)
-    # the print read with the stamp's ink taken out: sure, level with the page, holding print of its own, and not a
-    # line that stands as it was read. Each belongs to the line it was read again as, else to the stamp's line it
-    # lies under, else it is print the first reading did not find under the stamp at all.
+    # The print read with the stamp's ink taken out: sure, level with the page, at the stamp, holding print of its
+    # own, and not a line that stands as it was read. Each piece belongs to the touched line it is the same line
+    # as, else to the touched or the stamp's line that holds its middle, else it is print the first reading did
+    # not find under the stamp at all.
     under: dict = {}
     for c in again:
-        if c["confidence"] < 0.9 or level.get(id(c), 0.0) >= STAMP_SLOPE or not printed(c) or any(_in_place(ln, c) for ln in sound):
+        if c["confidence"] < 0.9 or level.get(id(c), 0.0) >= STAMP_SLOPE or not at_the_stamp(c) or not printed(c) \
+                or any(_in_place(ln, c) for ln in sound):
             continue
-        home = next((ln for ln in run_into if _in_place(ln, c)), None) or next((ln for ln in lines if id(ln) in marked and _mid_in(c["box"], ln["box"])), None)
-        if home is not None or touched(c) >= STAMP_TOUCH:
+        home = next((ln for ln in run_into if _same_line(ln["box"], c["box"]) or _same_line(c["box"], ln["box"])), None) \
+            or next((ln for ln in lines if id(ln) in stand and _mid_in(c["box"], ln["box"])), None)
+        if home is not None or in_inks(c)[0] >= STAMP_TOUCH:
             under.setdefault(id(home), []).append(c)
     out = []
     for ln in lines:
-        found = under.get(id(ln)) or []
-        if id(ln) in marked:
-            # the stamp's own line, or print and stamp read as one: the print under it, if any was read; else the
-            # line as the stamp's, with a word on whether it holds print that could not be read apart from it
-            out += [{**c, "under_stamp": True} for c in found] or [{**ln, "across": True, **({"over_print": True} if printed(ln) else {})}]
-        elif id(ln) not in stand:
+        if id(ln) not in stand:
             out.append(ln)
-        elif not found or (len(found) == 1 and found[0]["confidence"] < ln["confidence"]) \
-                or "".join(c["text"] for c in found).replace(" ", "") == ln["text"].replace(" ", ""):
-            out.append({**ln, "under_stamp": True})  # nothing surer was read in its place: it stands, and is told of
-        else:
-            out += [{**c, "under_stamp": True} for c in found]
-    out += [{**c, "under_stamp": True} for c in under.get(id(None), [])]
+            continue
+        pieces = under.get(id(ln)) or []
+        whole = "".join(_letters(c["text"]) for c in pieces)
+        if id(ln) in marked:
+            # the stamp's own line, or print and stamp read as one. The print read under it stands in its place; the
+            # same letters and digits as the first reading had mean the first reading was right (a hyphen read as
+            # a bracket under solid ink is no gain); nothing read under it leaves the line as the stamp's
+            if pieces and whole != _letters(ln["text"]):
+                out += [{**c, "under_stamp": True} for c in pieces]
+            elif pieces:
+                out.append({**ln, "under_stamp": True})
+            else:
+                out.append({**ln, "across": True, **({"over_print": True} if printed(ln) else {})})
+            continue
+        # a line of the page the stamp's ink touches: the second reading is taken where it is clearly the better
+        # one, which is where it is surer by a margin, or holds the first reading's letters without what the
+        # stamp added to them ("JALAN WATAN 11E"), or the first reading was unsure and ran several lines into one
+        first = _letters(ln["text"])
+        better = False
+        if pieces and whole != first and len(whole) >= 0.6 * len(first):  # (a scrap of the line is not the line)
+            if len(pieces) == 1:
+                sure = pieces[0]["confidence"]
+                better = difflib.SequenceMatcher(None, first.upper(), whole.upper()).ratio() >= 0.6 and (
+                    sure >= ln["confidence"] + 0.03 or (len(whole) < len(first) and whole.upper() in first.upper() and sure >= ln["confidence"] - 0.02))
+            else:
+                better = ln["confidence"] < 0.9
+        out += [{**c, "under_stamp": True} for c in pieces] if better else [{**ln, "under_stamp": True}]
+    standing = {_letters(ln["text"]) for ln in out}
+    out += [{**c, "under_stamp": True} for c in under.get(id(None), []) if _letters(c["text"]) not in standing]
     return [ln for row in _rows(out) for ln in row]
 
 

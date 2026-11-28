@@ -102,7 +102,8 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
                 printed = _iso(m.group(1), str(MONTHS[m.group(2)]), years[0])
         serials = [t for _, t in texts if re.fullmatch(r"\d{8,10}", t)]
         if serials:
-            f["serial_number"] = max(set(serials), key=lambda s: (serials.count(s), len(s)))
+            # the one read most often, then the longest, then the first as the disc is read (not whichever a set gives first)
+            f["serial_number"] = max(dict.fromkeys(serials), key=lambda s: (serials.count(s), len(s)))
         if "expiry_date" not in f and not printed:
             # the licence on a screen: "Tarikh Mula" and "Tarikh Luput" each with its date beside it; the
             # licence's own pair stands last, under the vehicle's number

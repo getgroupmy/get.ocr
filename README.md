@@ -757,9 +757,10 @@ hologram lies over its print in colours; in the colour of the card itself (blue 
 card) it is as light as the card and the dark print stands clear. A real card's name read "...
 KUNAR AR" in full colour and "... KUMAR AL" in blue. The second reading may add to a line, never
 take from it: it must hold at least as many characters, be like the first, and be clearly surer;
-where the two differ only in their spaces, the one with more is taken. A comma inside a number
-is never turned into a full stop (in one colour a small comma loses its tail: "338,214.28" read
-"338.214.28", and more surely), and no space is put inside a number or a long code. On 154 real photos read a
+where the two differ only in their spaces, the one with more is taken. A comma of the first
+reading stays a comma where the second reads a full stop in its place (in one colour a small comma
+loses its tail: "338,214.28" read "338.214.28", and more surely), and no space is put inside an
+amount or a long code. On 154 real photos read a
 second time, 64 changed in some line (most often a space regained: a name read "... BINAGAP"
 became "... BIN AGAP"); none was named differently, no value read by position was lost, two were
 gained, and no check that passed failed. A white page is read once. A page on a coloured ground
@@ -775,25 +776,34 @@ A stamp's line is told by two things together: it stands off the direction the p
 have at its place (by three degrees or more), and it is written in another ink than the page's
 print, on the page's own ground. Either alone is the page's own: a serial number in red runs
 level, a second paper under the first lies at an angle in black. Such a line carries
-`"across": true`: it stays in the text, and the readers by position (the forms, a table, a
-statement) and the naming leave it out.
+`"across": true`: it stays in the text, and the readers of the forms by position and the naming
+leave it out (a table and a statement keep every line: an entry written by hand in a coloured pen
+slopes as a stamp does).
 Where the stamp runs into the print, the reader gives print and stamp as one line; the picture is
 then read once more in the one mix of its colours in which the stamp's ink is as light as the
-ground, and that reading is taken wherever the stamp's ink touches print. Those lines carry
-`"under_stamp": true`. Print under a faint stamp reads well; under solid ink it is gone where the
-ink was, so such a value may be wrong or missing, which is what the card's `clear_of_stamp`
-check tells. Without a colour to go by (a black stamp, a grey copy), a few lines that stand ten
-degrees or more off a page of level ones are left out, as before.
+ground, and that reading is taken where the stamp's ink touches print: at the stamp only, and for
+a line of the page only where it is clearly the better reading (surer by a margin, or the first
+reading's letters without what the stamp added to them). Those lines carry `"under_stamp": true`.
+A stamp that stands clear of all print is marked and nothing is read again. Print under a faint
+stamp reads well; under solid ink it is gone where the ink was, so such a value may be wrong or
+missing, which is what the card's `clear_of_stamp` check tells. Without a colour to go by (a
+black stamp, a grey copy), a few lines that stand ten degrees or more off a page of level ones
+are left out, as before. Writing by hand in a red or bright pen that slopes three degrees or more
+is told as a stamp is: a signature is left out by the readers of the forms, and so would a value
+written so be.
 
 Each line is held against the direction of the page's own lines where it stands, not against one
 slope: a page photographed from one side has lines that run towards one another, fourteen degrees
 between the first line of a card and its last, and all of them are its own.
 
 On 82 drawn cards under a faint watermark laid in many places, every value was right on 14 before
-and on 47 now, and a wrong value came with every check passed on 32 before and on 2 now; under a
-solid watermark (80 cards) on 24 and 36, and 45 and 12. Seven real cards read as before, the one
-that carries a real watermark with its two lines marked. Of 587 real pages one has lines marked
-(print on a pack lying beside the paper). Not covered: a stamp none of whose lines is read on its
+and on 39 now, and a wrong value came with every check passed on 32 before and on 2 now; under a
+solid watermark (80 cards) on 26 and 37, and 43 and 12. Seven real cards read as before, the one
+that carries a real watermark with its two lines marked and its check passed. Of 587 real pages
+one has lines marked (print on a pack lying beside the paper). A first version of this step took
+the second reading for every line it thought the ink touched; a second review showed it change a
+9 into a 6 in an invoice's table under a "paid" stamp that touched nothing, which is why it now
+works at the stamp only. Not covered: a stamp none of whose lines is read on its
 own, each running into print along its whole length, is not seen as one; and the other readers by
 position leave a stamp's lines out but do not yet say where one lay. An app that stamps its own
 pictures does best to send the picture here before it is stamped, or to put the stamp clear of

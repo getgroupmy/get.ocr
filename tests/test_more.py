@@ -214,8 +214,13 @@ def test_a_second_reading_in_the_grounds_own_colour_is_taken_where_it_is_surer(m
     assert kept(line("338,214.28", 0.958), line("338.214.28", 0.994)) == "338,214.28"
     assert kept(line("Jumlah 9,319.39", 0.94), line("Jumlah 9.319.39", 0.99)) == "Jumlah 9,319.39"
     assert kept(line("338.214.28", 0.9), line("338,214.28", 0.99)) == "338,214.28" and kept(line("84.38", 0.9), line("84.33", 1.0)) == "84.33"
-    # a space is regained between words, between a number and a word, not inside a number or a long code
-    assert kept(line("775,442.03", 1.0), line("775, 442.03", 0.96)) == "775,442.03"
+    assert kept(line("338,2I4.28", 0.9), line("338.214.28", 0.99)) == "338,214.28"  # the comma stays whatever else is put right
+    assert kept(line("1,250 dan 1.250", 0.9), line("1,250 dan 1.250 sahaja", 0.99, w=320)) == "1,250 dan 1.250 sahaja"
+    # a space is regained between words, between a number and a word, between the groups of a long number and between
+    # two dates; not inside an amount or a long code
+    assert kept(line("775,442.03", 1.0), line("775, 442.03", 0.96)) == "775,442.03" and kept(line("X 775,442.03", 1.0), line("X775, 442.03", 0.96)) == "X 775,442.03"
+    assert kept(line("425613007208", 1.0), line("4256 1300 7208", 0.97)) == "4256 1300 7208"
+    assert kept(line("15/03/2022-12/03/2025", 1.0), line("15/03/2022 - 12/03/2025", 0.98)) == "15/03/2022 - 12/03/2025"
     assert kept(line("PMLLAJVF7RV1K50S1", 1.0), line("PMLLAJVF 7RV1K50S1", 0.97)) == "PMLLAJVF7RV1K50S1"
     assert kept(line("43000KAJANG", 1.0), line("43000 KAJANG", 0.99)) == "43000 KAJANG" and kept(line("NO 12JALAN 3", 1.0), line("NO 12 JALAN 3", 0.96)) == "NO 12 JALAN 3"
     assert kept(line("B2D", 1.0), line("B2 D", 0.99)) == "B2 D" and kept(line("Cawangan:0701", 0.99), line("Cawangan: 0701", 0.97)) == "Cawangan: 0701"
@@ -316,14 +321,55 @@ def test_a_stamps_ink_is_taken_out_of_a_picture_whatever_its_strength():
     assert engine.stamp_lines(img, own + [red_print, in_black, watermark]) == [watermark]
 
 
-def test_a_table_read_by_position_leaves_out_a_line_marked_as_a_stamps():
-    page = settlement_table()
-    before = extract.run([page], [page["text"]], "table")["fields"]
-    stamp = {"text": "PAID", "confidence": 0.99, "across": True, "box": [[40, 60], [100, 52], [102, 64], [42, 72]]}
-    marked = {**page, "lines": page["lines"] + [stamp]}
-    assert extract.run([marked], [marked["text"]], "table")["fields"] == before
-    unmarked = {**page, "lines": page["lines"] + [{k: v for k, v in stamp.items() if k != "across"}]}
-    assert extract.run([unmarked], [unmarked["text"]], "table")["fields"] != before  # read as a line of the page, it lands in a cell
+def test_a_second_reading_under_a_stamp_is_taken_only_at_the_stamp_and_only_where_it_is_clearly_better(monkeypatch):
+    """A "paid" stamp in an empty corner of an invoice made every line of the page count as touched by its ink, and
+    a lone 9 was replaced by the 6 the second reading made of it; on a form filled in with a red pen a name read
+    right was replaced by two pieces of it. Found by a review of the first version of this step."""
+    import cv2
+    import math
+    import numpy as np
+    img = np.full((900, 1200, 3), 250, np.uint8)  # white paper: the soft edge of a black letter is grey here
+    black, red = (24, 20, 20), (50, 50, 230)
+
+    def line(text, x, y, ink=black, degrees=0.0, w=360, h=40, also=None, confidence=0.99):
+        a = math.radians(degrees)
+        box = [[x, y], [x + w * math.cos(a), y - w * math.sin(a)], [x + w * math.cos(a) + h * math.sin(a), y - w * math.sin(a) + h * math.cos(a)],
+               [x + h * math.sin(a), y + h * math.cos(a)]]
+        strokes = np.zeros(img.shape[:2], np.uint8)
+        cv2.fillPoly(strokes, [np.round(np.array(box)).astype(np.int32)], 1)
+        edge = strokes.copy()
+        strokes[:, 1::4] = strokes[:, 2::4] = strokes[:, 3::4] = 0  # a quarter of the box in ink
+        edge[:, 0::4] = edge[:, 2::4] = edge[:, 3::4] = 0           # and beside each stroke its soft edge, half-way to the paper
+        img[edge > 0] = tuple((int(c) + 250) // 2 for c in ink)
+        img[strokes > 0] = ink
+        if also:  # a stroke of another ink run into the line
+            img[int(y) + 4:int(y) + h - 4, int(x) + w - 60:int(x) + w - 20][:, ::2] = also
+        return {"text": text, "confidence": confidence, "box": [[round(px, 1), round(py, 1)] for px, py in box]}
+
+    rows = [line("ROW %d OF AN INVOICE 9" % n, 60, 60 + 70 * n) for n in range(7)]
+    stamp = [line("TELAH DIBAYAR", 700, 700, red, degrees=13), line("12 MEI 2026", 720, 770, red, degrees=13)]
+    reads = []
+    monkeypatch.setattr(engine, "read", lambda picture, script=None: reads.append(1) or [])
+    # the stamp stands clear of all print: its lines are marked, no line of the page is, and nothing is read again
+    out = engine.under_a_stamp(img, rows + stamp)
+    assert [ln.get("across") for ln in out] == [None] * 7 + [True, True] and not any(ln.get("under_stamp") for ln in out) and reads == []
+    # the stamp runs into two lines beside it: those are read again, and no other line of the page is touched
+    hit = line("JALAN WATAN 11E", 640, 600, also=red, confidence=0.95)
+    nine = line("9", 980, 640, w=60, also=red, confidence=0.9995)
+    lines = rows + [hit, nine] + stamp
+
+    def second(*pieces):
+        monkeypatch.setattr(engine, "read", lambda picture, script=None: [dict(src, text=text, confidence=conf) for src, text, conf in pieces])
+        got = engine.under_a_stamp(img, lines)
+        return {ln["text"]: sorted(k for k in ("across", "under_stamp") if ln.get(k)) for ln in got}
+
+    got = second((hit, "JALAN WATAN 11", 0.94), (nine, "6", 0.9999), (rows[0], "ROW 0 OF AN INVOICE 6", 1.0))
+    assert got["JALAN WATAN 11"] == ["under_stamp"] and "JALAN WATAN 11E" not in got  # the first reading's letters without what the stamp added
+    assert got["9"] == ["under_stamp"] and "6" not in got                              # not surer by a margin: the first reading stands
+    assert got["ROW 0 OF AN INVOICE 9"] == [] and "ROW 0 OF AN INVOICE 6" not in got  # away from the stamp nothing is taken
+    assert second((hit, "JALAN WATAN 11E", 1.0))["JALAN WATAN 11E"] == ["under_stamp"]                       # the same letters: it stands
+    assert second((hit, "JALAN WATAM 11E", 0.99))["JALAN WATAM 11E"] == ["under_stamp"]                      # surer by a margin: taken
+    assert "JALAN WATAN 11E" in second((hit, "JALAN", 0.99), (dict(hit, box=[[p[0] + 200, p[1]] for p in hit["box"]]), "ATAN 11", 0.99))  # two pieces of a sure line: it stands
 
 
 def test_problems_are_named(client, monkeypatch):

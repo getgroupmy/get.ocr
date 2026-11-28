@@ -1231,6 +1231,16 @@ def test_a_stamp_laid_across_a_card_is_not_read_as_its_name():
         marked = one_side + [slanted("Registration", 70, 330, -15, 60)]  # and a watermark across it is still told from it
         assert headings.level(marked) == one_side
         assert mykad.parse([{"page": 1, "width": 1400, "height": 900, "lines": marked}])["fields"]["name"] == "LIM AH KOW"
+    # a leaning card beside a few level lines (an app's screen around it): the level lines and the card's lower ones
+    # happen to point at one place, which is not the card's and makes no stamp of its heading and its number
+    def turned(lines, degrees, about=(640, 400)):
+        c, s = math.cos(math.radians(degrees)), math.sin(math.radians(degrees))
+        return [{**ln, "box": [[about[0] + (x - about[0]) * c - (y - about[1]) * s, about[1] + (x - about[0]) * s + (y - about[1]) * c] for x, y in ln["box"]]} for ln in lines]
+
+    beside = turned(card(["LIM AH KOW"], ["LOT 12 KAMPUNG BARU", "15000 KOTA BHARU", "KELANTAN"]), 12) + [_at("screen line %02d of an app" % n, 1400, 40 + 50 * n) for n in range(6)]
+    assert headings.level(beside) == beside
+    f = extract.FORMS["mykad"]([{"page": 1, "width": 1800, "height": 900, "lines": beside}])["fields"]
+    assert (f["id_number"], f["name"], f["address"]) == ("850412-10-5759", "LIM AH KOW", "LOT 12 KAMPUNG BARU, 15000 KOTA BHARU, KELANTAN")
     # a page that curls has no such place: its lines are then held against their middle slope, as before
     curled = [slanted("LINE %d OF A CURLED PAGE" % n, 40, 60 * n, [0, 0.4, 1, 4, 7, 4, 1, 0.4, 0, -0.4, 0, 0.3][n], 30) for n in range(12)]
     assert headings.level(curled) == curled and headings.level(curled + [slanted("COPY COPY", 300, 300, 30)]) == curled
