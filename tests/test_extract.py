@@ -877,7 +877,8 @@ def test_the_identity_card_is_read_by_position_and_checked_against_its_number():
     assert f["address"] == "NO 8 JALAN SS 2/4, TAMAN SEA, 47300 PETALING JAYA, SELANGOR"
     assert (f["postcode"], f["city"], f["state"]) == ("47300", "PETALING JAYA", "SELANGOR")
     assert (f["date_of_birth"], f["place_of_birth"]) == ("1990-04-12", "Selangor")
-    assert [c["passed"] for c in out["checks"]] == [True, True] and out["extra"] == {}
+    assert {c["name"]: c["passed"] for c in out["checks"]} == {"number_holds_a_date": True, "gender_matches_number": True,
+                                                               "postcode_matches_state": True} and out["extra"] == {}
     # a stroke lost in the name is put back, and what was read is kept beside it
     lost = [ln if ln["text"] != "TAN MEI LING" else _at("RAVI AL MUTHU", 34, 531) for ln in MYKAD]
     out = mykad.parse([{"page": 1, "width": 1280, "lines": lost}])
@@ -995,12 +996,14 @@ SHAPES = [  # the name's lines, the address's lines, the name they give
 
 
 def test_names_and_addresses_of_many_shapes_on_both_designs():
+    import re
     from app import mykad
     under_photo = [_span("WARGANEGARA", 67, 330, 857), _span("LELAKI", 65, 216, 900)]
     for name, address, whole in SHAPES:
         for lines in (card(name, address), new_card(name, address, under_photo, number="850412-10-5759")):
             f = mykad.parse([{"page": 1, "width": 1562, "lines": lines}])["fields"]
-            assert (f["name"], f["address"].split(", ")) == (whole, address), (name, address, f)
+            printed = [re.sub(r"^(\d{5})(?=[A-Z])", r"\1 ", line) for line in address]  # a postcode run into its town gets its space
+            assert (f["name"], f["address"].split(", ")) == (whole, printed), (name, address, f)
             assert (f["gender"], f["citizenship"]) == ("male", "WARGANEGARA")
     # photographed at an angle: the card's left edge slants, each line starting further left than the one above
     for name, address, whole in SHAPES[:6]:
@@ -1024,6 +1027,40 @@ def test_names_and_addresses_of_many_shapes_on_both_designs():
     # the words at the lower right run together, and a letter for a native of Sabah or Sarawak beside them
     f = mykad.parse([{"page": 1, "width": 1280, "lines": card(["LIM AH KOW"], ONE, right=("WARGANEGARA", "ISLAMLELAKI", "K"))}])["fields"]
     assert (f["citizenship"], f["religion"], f["gender"]) == ("WARGANEGARA", "ISLAM", "male")
+
+
+def test_a_card_whose_heading_the_hologram_spoils_is_still_read():
+    from app import mykad
+
+    def page(lines):
+        return {"page": 1, "width": 1280, "height": 800, "lines": lines, "text": "\n".join(ln["text"] for ln in lines)}
+
+    sarawak = ["NO 11 LOT 16 LORONG 1", "JALAN SIBU BARAT 2", "TAMAN TUNKU", "98000MIRI", "SARAWAK"]
+    whole = card(["LIM AH KOW"], sarawak, right=("WARGANEGARA", "LELAKI", "K"))
+    # a letter of the heading lost, and nothing else of it read
+    spoiled = [ln for ln in whole if ln["text"] not in ("KAD PENGENALAN", "MyKad")] + [_at("MALAYSTN", 130, 20), _at("IENTITYCARD", 130, 60)]
+    assert mykad.is_card(spoiled) and extract.identify([page(spoiled)], [page(spoiled)["text"]]) == "mykad"
+    f = mykad.parse([page(spoiled)])["fields"]
+    assert (f["name"], f["postcode"], f["city"], f["state"]) == ("LIM AH KOW", "98000", "MIRI", "SARAWAK")
+    assert f["address"] == "NO 11 LOT 16 LORONG 1, JALAN SIBU BARAT 2, TAMAN TUNKU, 98000 MIRI, SARAWAK"  # the postcode with its space
+    # no heading read at all: not named a card by this service itself, but read for a caller who says it is one
+    bare = [ln for ln in whole if ln["text"] not in ("KAD PENGENALAN", "MyKad")]
+    assert not mykad.is_card(bare) and extract.identify([page(bare)], [page(bare)["text"]]) is None
+    out = extract.run([page(bare)], [page(bare)["text"]], "mykad")
+    assert (out["read_by"], out["model_calls"], out["fields"]["name"], out["fields"]["state"]) == ("labels", 0, "LIM AH KOW", "SARAWAK")
+    on_its_head = page([{**ln, "box": [[1280 - x, 800 - y] for x, y in ln["box"]]} for ln in bare])
+    assert extract.run([on_its_head], [on_its_head["text"]], "mykad")["fields"]["name"] == "LIM AH KOW"
+    # a paper that is no card, though it holds a number of twelve digits alone on a line, is not read as one
+    slip = page([_at("TRANSFER SLIP", 40, 20), _at("850412105759", 40, 80), _at("AMOUNT RM 50.00", 40, 140)])
+    assert mykad.parse([slip]) is None
+    # the postcode is held against the state: a digit misread shows, and a town on a border does not
+    by = lambda lines: {c["name"]: c for c in mykad.parse([page(lines)])["checks"]}  # noqa: E731
+    assert by(whole)["postcode_matches_state"]["passed"] is True
+    wrong = card(["LIM AH KOW"], sarawak[:3] + ["88000 MIRI", "SARAWAK"])
+    assert by(wrong)["postcode_matches_state"]["passed"] is False and "Sabah" in by(wrong)["postcode_matches_state"]["detail"]
+    assert by(card(["LIM AH KOW"], ["NO 5 JALAN 3", "68000 AMPANG", "W. PERSEKUTUAN(KL)"]))["postcode_matches_state"]["passed"] is True
+    assert by(card(["LIM AH KOW"], ["NO 5 JALAN 3", "34950 BANDAR BAHARU", "KEDAH"]))["postcode_matches_state"]["passed"] is True
+    assert "postcode_matches_state" not in by(card(["LIM AH KOW"], ["NO 5 JALAN 3", "43000 KAJANG"]))  # no state printed: nothing to hold it against
 
 
 def test_the_new_generation_card_is_read_with_its_photo_at_the_left():

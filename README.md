@@ -555,8 +555,10 @@ by where each value stands and what it looks like, with no model asked. Both are
   `expired` says whether that date has passed.
 - `mykad`: `id_number` (written 000000-00-0000), `name`, `address` with `postcode`, `city` and
   `state`, `citizenship`, `gender`, `religion` when printed, and `date_of_birth` and
-  `place_of_birth` worked out from the number. The checks are `number_holds_a_date` and
-  `gender_matches_number` (the last digit is odd for a man, even for a woman). A stroke lost in
+  `place_of_birth` worked out from the number. The checks are `number_holds_a_date`,
+  `gender_matches_number` (the last digit is odd for a man, even for a woman) and
+  `postcode_matches_state` (a postcode that is not used in the state the card prints is a digit
+  misread). A heading with a letter lost to the card's hologram is still known. A stroke lost in
   "A/L" or "A/P" is put back, and `name_as_read` then gives the name as it was read. A name that
   runs on to a second line ("RAVI A/L" over "MUTHUSAMY") is kept whole and out of the address,
   and the card may fill any part of the picture (on a table, or inside a phone's screen). Both
