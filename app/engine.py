@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import difflib
 import logging
+import re
 import threading
 from typing import Optional
 
@@ -184,12 +185,47 @@ def _same_line(a: list, b: list) -> bool:
     return w > 0 and h > 0 and w * h >= 0.6 * size and (bx1 - bx0) * (by1 - by0) <= 1.8 * size
 
 
+_NUMBER = re.compile(r"\d[\d.,]*\d")
+
+
+def _thins_a_number(first: str, second: str) -> bool:
+    """Does the second reading turn a comma inside a number of the first into a full stop ("338,214.28" into
+    "338.214.28")? In one colour alone a small comma loses its tail and reads as a stop, and reads so more
+    surely: a reading may lose ink that way, it does not gain it."""
+    numbers = _NUMBER.findall(second)
+    return any("," in a and a != b and len(a) == len(b) and all(x == y or (x, y) == (",", ".") for x, y in zip(a, b))
+               for a in _NUMBER.findall(first) for b in numbers)
+
+
+def _splits_a_number(first: str, second: str) -> bool:
+    """Does the second reading, which differs from the first in its spaces only, put a space inside a number
+    ("775,442.03" into "775, 442.03": in a typewriter's face the gap after a comma is as wide as a space) or
+    inside a long code of letters and digits (a chassis number)? A reader loses the spaces between words; a
+    number or a code has none to lose."""
+    at = 0  # the place in the first reading that each character of the second stands at
+    for n, ch in enumerate(second):
+        if at < len(first) and first[at] == ch:
+            at += 1
+            continue
+        if ch != " ":
+            return False  # not the same characters after all: nothing to say
+        left, right = first[:at].rstrip(".,/-"), first[at:].lstrip(".,/-")
+        if left[-1:].isdigit() and right[:1].isdigit():
+            return True
+        word = (re.findall(r"\S+$", first[:at]) or [""])[0] + (re.findall(r"^\S+", first[at:]) or [""])[0]
+        if len(word) >= 11 and len(re.findall(r"[A-Za-z]+|\d+", word)) >= 5 and re.fullmatch(r"[A-Za-z\d]+", word):
+            return True
+    return False
+
+
 def surer(first: list[dict], second: list[dict]) -> list[dict]:
     """The first reading of a picture, with a line replaced by a second reading's where that is the
     same line read more surely. The second reading may add to a line, never take from it: it must
     hold at least as many characters, be like the first, and be clearly surer, or longer by two
-    characters and as sure. Where the two differ only in their spaces, the one with more of them is
-    taken (a reader loses spaces, it does not make them). No line is added or removed."""
+    characters and as sure; and it may not turn a comma inside a number into a full stop. Where
+    the two differ only in their spaces, the one with more of them is taken (a reader loses spaces,
+    it does not make them), unless the space would stand inside a number or a long code. No line is
+    added or removed."""
     out = []
     for a in first:
         same = [b for b in second if _same_line(a["box"], b["box"])]
@@ -198,10 +234,11 @@ def surer(first: list[dict], second: list[dict]) -> list[dict]:
             ta, tb, ca, cb = a["text"].strip(), b["text"].strip(), a["confidence"], b["confidence"]
             bare_a, bare_b = ta.replace(" ", ""), tb.replace(" ", "")
             if bare_a == bare_b:
-                better = len(tb) > len(ta) and cb >= 0.9
+                better = len(tb) > len(ta) and cb >= 0.9 and not _splits_a_number(ta, tb)
             else:
                 better = len(bare_b) >= len(bare_a) and difflib.SequenceMatcher(None, ta.upper(), tb.upper()).ratio() >= 0.6 \
-                    and (cb >= ca + 0.03 or (len(bare_b) >= len(bare_a) + 2 and cb >= max(ca - 0.02, 0.9)))
+                    and (cb >= ca + 0.03 or (len(bare_b) >= len(bare_a) + 2 and cb >= max(ca - 0.02, 0.9))) \
+                    and not _thins_a_number(ta, tb)
             if better:
                 out.append({**a, "text": tb, "confidence": cb, "box": b["box"]})
                 continue

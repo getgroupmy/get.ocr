@@ -138,7 +138,8 @@ off), which adds about a second for a page that is one large picture. With `task
 table is left as the model wrote it, and what else stands on the page is listed as `other_lines`.
 
 A PDF read from its stored text gives `lines` with the place of each piece in points, like a
-picture's lines in pixels; a line added from a picture on the page carries `"added": true`. Two
+picture's lines in pixels; a line added from a picture on the page carries `"added": true`, a
+stamp's line `"across": true`, and a line read under a stamp's ink `"under_stamp": true`. Two
 pieces far apart across the page that are not on the same baseline (an address at the left, a
 signatory's title at the right) are separate lines of the text.
 
@@ -560,8 +561,16 @@ by where each value stands and what it looks like, with no model asked. Both are
   `postcode_matches_state` (a postcode that is not used in the state the card prints is a digit
   misread). A heading with a letter lost to the card's hologram is still known. The date of
   birth takes the century in which the holder is twelve at least, and the place of birth is given
-  only where the number's code names one. An app's watermark or a stamp laid across the card at
-  another angle is left out: the readers by position and the naming take a page's own print only. A stroke lost in
+  only where the number's code names one. An app's watermark or a stamp laid across the card is
+  left out: the readers by position and the naming take a page's own print only (see "A stamp or
+  a watermark across a page" below). Where there is one, the check `clear_of_stamp` says whether
+  it stands clear of the number, the name and the address, or lies across them: what was read
+  under it may then be wrong, and what could not be read is left out. What stands under the card
+  in the picture (a phone's "Shot on ...", the card's back copied under its front) is not read
+  into it: the address ends with its state. A house number alone on its line ("12", "8A") is the
+  address's first line. A page that only lists what a card says (a registration slip with "Nama"
+  and "Jantina" beside their values, an app's profile page) is not named or read as the card, nor
+  is the child's card, MyKid. A stroke lost in
   "A/L" or "A/P" is put back, and `name_as_read` then gives the name as it was read. A name that
   runs on to a second line ("RAVI A/L" over "MUTHUSAMY") is kept whole and out of the address,
   and the card may fill any part of the picture (on a table, or inside a phone's screen). Both
@@ -736,7 +745,11 @@ turn taken is the one whose lines stand upright, so the page is not left on its 
 in the wrong places (of 77 real photos lying on their side, 9 took the other turn after this
 rule, none was named differently, and no reader had to turn a page over afterwards, where two had
 to before). The words of a tilted page were read either way;
-what straightening saves is the rows.
+what straightening saves is the rows. Measured on 13 pages (12 scanned forms and a Jawi page)
+tilted by 2 to 15 degrees either way: without it 4% to 41% of a page's rows of text came out as
+the same rows as on the level page, with it 57% to 66%, and every page tilted by 4 degrees or more
+was made level to within a degree. A level page is left alone (0 of 13 touched). It does not undo
+perspective: a page photographed from the side, wider at one end than the other, stays so.
 
 **Print under a hologram.** Where the text stands on a coloured ground and a line was read unsurely,
 the picture is read once more in that colour alone, and each line keeps its surer reading. A card's
@@ -744,14 +757,46 @@ hologram lies over its print in colours; in the colour of the card itself (blue 
 card) it is as light as the card and the dark print stands clear. A real card's name read "...
 KUNAR AR" in full colour and "... KUMAR AL" in blue. The second reading may add to a line, never
 take from it: it must hold at least as many characters, be like the first, and be clearly surer;
-where the two differ only in their spaces, the one with more is taken. On 154 real photos read a
+where the two differ only in their spaces, the one with more is taken. A comma inside a number
+is never turned into a full stop (in one colour a small comma loses its tail: "338,214.28" read
+"338.214.28", and more surely), and no space is put inside a number or a long code. On 154 real photos read a
 second time, 64 changed in some line (most often a space regained: a name read "... BINAGAP"
 became "... BIN AGAP"); none was named differently, no value read by position was lost, two were
-gained, and no check that passed failed. A white page is read once. Measured on 13 pages (12 scanned forms and a Jawi page)
-tilted by 2 to 15 degrees either way: without it 4% to 41% of a page's rows of text came out as
-the same rows as on the level page, with it 57% to 66%, and every page tilted by 4 degrees or more
-was made level to within a degree. A level page is left alone (0 of 13 touched). It does not undo
-perspective: a page photographed from the side, wider at one end than the other, stays so.
+gained, and no check that passed failed. A white page is read once. A page on a coloured ground
+with an unsure line takes about twice as long. It is a second opinion, not a proof: on pages drawn
+in small print (letters 14 to 20 dots high) on tinted paper it put right three or four characters
+for each one it made wrong, and now and then set a space inside a word where a hologram dims a
+letter.
+
+**A stamp or a watermark across a page.** An app stamps its name across the photo of a card it
+keeps, a clerk stamps a certificate, "for this use only" is written across a copy. Read as lines,
+they are taken for values where they happen to stand (an app's "Registration" for a card's name).
+A stamp's line is told by two things together: it stands off the direction the page's own lines
+have at its place (by three degrees or more), and it is written in another ink than the page's
+print, on the page's own ground. Either alone is the page's own: a serial number in red runs
+level, a second paper under the first lies at an angle in black. Such a line carries
+`"across": true`: it stays in the text, and the readers by position and the naming leave it out.
+Where the stamp runs into the print, the reader gives print and stamp as one line; the picture is
+then read once more in the one mix of its colours in which the stamp's ink is as light as the
+ground, and that reading is taken wherever the stamp's ink touches print. Those lines carry
+`"under_stamp": true`. Print under a faint stamp reads well; under solid ink it is gone where the
+ink was, so such a value may be wrong or missing, which is what the card's `clear_of_stamp`
+check tells. Without a colour to go by (a black stamp, a grey copy), a few lines that stand ten
+degrees or more off a page of level ones are left out, as before.
+
+Each line is held against the direction of the page's own lines where it stands, not against one
+slope: a page photographed from one side has lines that run towards one another, fourteen degrees
+between the first line of a card and its last, and all of them are its own.
+
+On 82 drawn cards under a faint watermark laid in many places, every value was right on 14 before
+and on 47 now, and a wrong value came with every check passed on 32 before and on 2 now; under a
+solid watermark (80 cards) on 24 and 36, and 45 and 12. Seven real cards read as before, the one
+that carries a real watermark with its two lines marked. Of 587 real pages one has lines marked
+(print on a pack lying beside the paper). Not covered: a stamp none of whose lines is read on its
+own, each running into print along its whole length, is not seen as one; and the other readers by
+position leave a stamp's lines out but do not yet say where one lay. An app that stamps its own
+pictures does best to send the picture here before it is stamped, or to put the stamp clear of
+the print.
 
 **How well each value is backed.** `evidence` gives each top-level value a level: `high` (printed
 in the text, on a line the reader was sure of, and the checks pass), `medium` (printed, but the

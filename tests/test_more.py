@@ -210,6 +210,15 @@ def test_a_second_reading_in_the_grounds_own_colour_is_taken_where_it_is_surer(m
     assert kept(line("WXY1234", 1.0), line(": WXY1234", 0.98, x=20, w=130)) == "WXY1234"             # longer, but neither surer nor by two
     assert kept(line("TOTAL 135.54", 0.9), line("SOMETHING ELSE HERE", 1.0)) == "TOTAL 135.54"       # not the same line's words
     assert kept(line("TAN MEI LING", 0.9), line("TAN MEI LING", 1.0, y=200)) == "TAN MEI LING"       # another place: no second reading of it
+    # in one colour alone a small comma loses its tail and reads as a stop, and reads so more surely: not taken; ink regained is
+    assert kept(line("338,214.28", 0.958), line("338.214.28", 0.994)) == "338,214.28"
+    assert kept(line("Jumlah 9,319.39", 0.94), line("Jumlah 9.319.39", 0.99)) == "Jumlah 9,319.39"
+    assert kept(line("338.214.28", 0.9), line("338,214.28", 0.99)) == "338,214.28" and kept(line("84.38", 0.9), line("84.33", 1.0)) == "84.33"
+    # a space is regained between words, between a number and a word, not inside a number or a long code
+    assert kept(line("775,442.03", 1.0), line("775, 442.03", 0.96)) == "775,442.03"
+    assert kept(line("PMLLAJVF7RV1K50S1", 1.0), line("PMLLAJVF 7RV1K50S1", 0.97)) == "PMLLAJVF7RV1K50S1"
+    assert kept(line("43000KAJANG", 1.0), line("43000 KAJANG", 0.99)) == "43000 KAJANG" and kept(line("NO 12JALAN 3", 1.0), line("NO 12 JALAN 3", 0.96)) == "NO 12 JALAN 3"
+    assert kept(line("B2D", 1.0), line("B2 D", 0.99)) == "B2 D" and kept(line("Cawangan:0701", 0.99), line("Cawangan: 0701", 0.97)) == "Cawangan: 0701"
     both = engine.surer([line("ONE", 0.9), line("TWO", 0.9, y=100)], [line("TWO!", 1.0, y=100), line("THREE", 1.0, y=200)])
     assert [ln["text"] for ln in both] == ["ONE", "TWO!"]  # no line is added or removed
     # the ground's colour is taken where the text stands: a blue card on a red table is blue; a white page has none
