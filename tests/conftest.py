@@ -9,6 +9,7 @@ os.environ.update({
     "OCR_DATA_DIR": _tmp,
     "OCR_SYNC_MAX_PAGES": "2",
     "OCR_ADMIN_TRIES": "1000",  # the tests send many wrong tokens from one address
+    "OCR_RATE_PER_MINUTE": "0",  # and more calls with one key than an app may make in a minute (its test sets a limit)
     "OCR_MAX_PAGES": "3",
     "OCR_LLM_URL": "http://127.0.0.1:9",  # nothing listens here: extraction is off unless a test fakes the model
 })

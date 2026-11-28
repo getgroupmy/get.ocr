@@ -143,6 +143,52 @@ def _box(line: dict) -> tuple:
     return min(xs), min(ys), max(xs), max(ys)
 
 
+# a paper about a motor policy that is not the policy itself
+_NOT_THE_POLICY = re.compile(r"claim\s*form|borang\s*tuntutan|notification\s*of\s*claim|renewal\s*notice|notis\s*pembaharuan|"
+                             r"proposal\s*form|borang\s*cadangan|quotation|sebut\s*harga", re.I)
+_PAPER = re.compile(r"schedule|jadual|cover\s*note|nota\s*perlindungan|certificate\s*of\s*(?:insurance|takaful)|"
+                    r"sijil\s*(?:insurans|takaful)|confirmation\s*of\s*purchase|polis[iy]\b|policy", re.I)
+# what makes it a MOTOR policy: two different ones of these
+_MOTOR = (r"\bmotor\b|kenderaan|\bvehicle", r"private\s*car|kereta|\bteksi\b|\btaxi\b|hire\s*car|motorcycle|motosikal",
+          r"chassis|c[h]?asis", r"engine\s*(?:/\s*motor\s*)?n|n[o0]\.?\s*enjin|nombor\s*enjin",
+          r"\bncd\b|no\s*claim\s*discount|tanpa\s*tuntutan",
+          r"reg(?:istration|n)\.?\s*n|n[o0]\.?\s*pendaftaran|vehicle\s*no|index\s*mark", r"cubic\s*capacity|\bc\.?c\b|seating")
+_ENDORSEMENT_WORDS = {"the", "motor", "endorsement", "endorsemen", "pengendorsan", "schedule", "jadual", "application", "slip",
+                      "policy", "polisi", "insurance", "insurans", "takaful", "no", "number"}
+
+
+def is_endorsement(lines: list[dict]) -> bool:
+    """Whether a page is an endorsement to a policy: an insurer's paper whose heading says so
+    ("MOTOR ENDORSEMENT SCHEDULE", "THE ENDORSEMENT", "JADUAL PENGENDORSAN MOTOR"). A schedule
+    that lists which endorsements apply is not one."""
+    if not lines or not _KNOWN.search(" ".join(ln["text"] for ln in lines)):
+        return False
+    foot = max(_box(ln)[3] for ln in lines)
+    for ln in lines:
+        text = ln["text"].strip()
+        words = re.findall(r"[a-z]+", text.lower())
+        # a heading stands near the top and is more than the one word: "THE ENDORSEMENT", "ENDORSEMENT 2".
+        # The word alone further down is the label of a column that lists which endorsements apply.
+        if 1 <= len(words) <= 5 and any(w in ("endorsement", "endorsemen", "pengendorsan") for w in words) \
+                and all(w in _ENDORSEMENT_WORDS for w in words) and text[:1].isupper() \
+                and (len(words) >= 2 or any(ch.isdigit() for ch in text)) and _box(ln)[1] < 0.35 * foot:
+            return True
+    return False
+
+
+def is_motor(lines: list[dict]) -> bool:
+    """Whether a page is a motor insurance or takaful schedule, certificate or cover note, for
+    naming it: an insurer's paper of that sort that is about a vehicle. A houseowner's schedule, a
+    claim form, a renewal notice, a quotation and an endorsement are other papers."""
+    whole = " ".join(ln["text"] for ln in lines)
+    # a short page has to say what it is (a cover note, a certificate): "policy" alone stands on many a screen
+    if len(lines) < 5 or not _KNOWN.search(whole) or not (_PAPER if len(lines) >= 12 else _CERTIFICATE).search(whole):
+        return False
+    if is_endorsement(lines) or any(_NOT_THE_POLICY.search(ln["text"]) and len(ln["text"].split()) <= 6 for ln in lines):
+        return False
+    return sum(1 for mark in _MOTOR if re.search(mark, whole, re.I)) >= 2
+
+
 def is_schedule(lines: list[dict]) -> bool:
     whole = " ".join(ln["text"] for ln in lines)
     if len(lines) < 12 or not _KNOWN.search(whole):
@@ -155,7 +201,7 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
     """The schedule's fields and checks, or None when no page is one."""
     for page in pages:
         lines = page.get("lines") or []
-        if not is_schedule(lines):
+        if not is_schedule(lines) and not is_motor(lines):
             continue
         f = _page(lines, page.get("width") or max(_box(ln)[2] for ln in lines))
         if sum(1 for k in ("policy_number", "cover_note_number", "plate_number", "total_payable", "period_end") if f.get(k)) < 2:
@@ -261,8 +307,8 @@ def _page(lines: list[dict], width: float) -> dict:
     # the period: two dates with "to" between them
     joined = ["  ".join(" ".join(ln["text"].split()) for ln in row) for row in rows]
     for n, text in enumerate(joined):
-        if not re.search(r"period\s*of\s*(?:insurance|takaful|cover)|tempoh\s*(?:insurans?|takaful|perlindungan)|\bfrom\b|\bdari\b|"
-                         r"effective\s*date|expiry\s*date|inception|commencement|\bmula\b", text, re.I):
+        if not re.search(r"\bperiod\b|\btempoh\b|\bfrom\b|\bdari\b|effective\s*date|expiry\s*date|inception|commencement|"
+                         r"\bmula\b", text, re.I):
             continue
         # the two dates may stand on separate lines, with the other language between them, and the
         # line that names the period may come after the first of them

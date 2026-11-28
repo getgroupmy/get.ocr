@@ -92,7 +92,7 @@
     <nav role="tablist">
       <button role="tab" data-tab="clients" aria-selected="true">API clients</button>
       <button role="tab" data-tab="try">Try it</button>
-      <button role="tab" data-tab="jobs">Jobs</button>
+      <button role="tab" data-tab="jobs">Documents</button>
       <button role="tab" data-tab="people">People</button>
       <button role="tab" data-tab="integrate">Integrate</button>
       <button role="tab" data-tab="changelog">Changelog</button>
@@ -228,6 +228,16 @@
           <tbody id="jobs"></tbody>
         </table></div>
         <p id="jobs-empty" class="muted" hidden>No jobs yet. Jobs appear when an app calls <code>POST /v1/jobs</code>.</p>
+      </div>
+      <div class="card">
+        <h2>Documents read</h2>
+        <p class="muted small">Every document an app had read, named by its kind. A kind is given only when the document itself shows it (the form it is, or its heading); anything else is "Not recognised". Nothing of a document's content is kept here.</p>
+        <p id="docs-kinds" class="small"></p>
+        <div class="scroll"><table>
+          <thead><tr><th>When</th><th>Client</th><th>Document</th><th>Pages</th><th>How</th><th>Your reference</th></tr></thead>
+          <tbody id="docs"></tbody>
+        </table></div>
+        <p id="docs-empty" class="muted" hidden>None yet. A line appears for each file an app sends to <code>/v1/ocr</code>, <code>/v1/extract</code> or <code>/v1/jobs</code>.</p>
       </div>
     </section>
 
@@ -516,6 +526,17 @@ async function loadJobs() {
     tb.append(tr);
   }
   $("#jobs-empty").hidden = r.jobs.length > 0;
+  const d = await api("/documents");
+  const db = $("#docs"); db.replaceChildren();
+  for (const x of d.documents) {
+    const tr = el("tr");
+    const kind = el("td"); kind.append(el("span", x.document_label, "tag " + (x.document_type ? "ok" : "warn")));
+    tr.append(el("td", when(x.at)), el("td", x.client || ""), kind, el("td", String(x.pages)),
+      el("td", x.how === "job" ? "job" : "direct"), el("td", x.external_ref || ""));
+    db.append(tr);
+  }
+  $("#docs-kinds").textContent = d.by_type.map((k) => k.document_label + ": " + k.count).join(" · ");
+  $("#docs-empty").hidden = d.documents.length > 0;
 }
 
 $("#t-type").addEventListener("change", () => { $("#t-fields-box").hidden = $("#t-type").value !== "custom"; });
@@ -539,7 +560,10 @@ $("#try-form").addEventListener("submit", async (ev) => {
   try {
     const r = await api("/try", { method: "POST", body: fd });
     $("#try-out").hidden = false;
-    $("#try-meta").textContent = r.pages.length + " of " + r.page_count + " page(s) in " + (r.duration_ms / 1000).toFixed(2) + " s";
+    const namedAs = (d) => d.document_label || "not recognised";  // a file read as several documents names each one, not the file
+    $("#try-meta").textContent = (r.documents ? "Identified as: " + r.documents.map(namedAs).join(", ") + " · "
+      : task && !r.document_label ? "" : "Identified as: " + namedAs(r) + " · ")  // a table, stamp or chart reading is not named
+      + r.pages.length + " of " + r.page_count + " page(s) in " + (r.duration_ms / 1000).toFixed(2) + " s";
     $("#try-text").textContent = r.text || "(no text found)";
     const added = (r.pages || []).flatMap((p) => p.added_lines || []).map((a) => a.text);
     if (added.length) $("#try-meta").textContent += " · " + added.length + " line(s) the reader left out were added by the standard reader: " + added.join(" | ");

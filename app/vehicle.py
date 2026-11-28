@@ -11,7 +11,7 @@ import difflib
 import re
 from typing import Optional
 
-from . import engine
+from . import engine, headings
 
 # the certificate of today, and the registration card it replaced (Perakuan Pendaftaran Kenderaan)
 TITLE = re.compile(r"sijil\s*pemilikan\s*kenderaan|perakuan\s*pendaftaran\s*kenderaan", re.I)
@@ -58,6 +58,29 @@ FIELDS = ("plate_number", "owner_id_number", "owner_name", "owner_address", "cha
           "owner_status")
 
 
+TITLES = ("sijilpemilikankenderaan", "perakuanpendaftarankenderaan")
+# what the form prints under its heading: three of these make it the form, not a paper that names it
+_FORM = (r"na[mn][ae]\s*\w+\s*berdaftar|na[mn][ae]\s*pem\w{3,6}\b", r"c[h]?as+is", r"n[oö0]\.?\s*enjin|/\s*(?:n[oö0]\.?\s*)?enjin",
+         r"buatan", r"nama\s*model", r"keupayaan", r"bahan\s*bakar", r"kelas\s*kegunaan", r"jenis\s*badan",
+         r"tarikh\s*pendaftaran", r"status\s*(?:asal|pemunya)", r"n[oö0]\.?\s*pendaftaran")
+_INSURER = re.compile(r"insur|takaful|premium|polis[iy]\b|schedule|jadual|cover\s*note", re.I)
+
+
+def is_certificate(lines: list[dict]) -> bool:
+    """Whether a page is the ownership certificate or the registration card before it, for naming
+    it: the heading stands as a line of its own and three of the form's labels stand under it. An
+    SSM certificate ("Perakuan Pendaftaran"), a bank's release letter and a workshop's invoice name
+    the vehicle's papers or carry a label or two of them; they are not the form."""
+    heads, below = headings.under(lines, TITLES)
+    if not heads:
+        return False
+    whole = " ".join(ln["text"] for ln in lines)
+    if len({m.lower() for m in _INSURER.findall(whole)}) >= 2:  # a schedule prints the card's name as a label
+        return False
+    text = "\n".join(ln["text"] for ln in below)
+    return sum(1 for label in _FORM if re.search(label, text, re.I)) >= 3
+
+
 def _is_heading(text: str) -> bool:
     """The document's own heading, also with a letter or two misread or its end cut off by the photo."""
     text = text.strip()
@@ -85,7 +108,7 @@ def parse(pages: list[dict]) -> Optional[dict]:
     for page in pages:
         lines = page.get("lines") or []
         whole = " ".join(ln["text"] for ln in lines)
-        if not any(_is_heading(ln["text"]) for ln in lines) or _OTHER.search(whole):
+        if not is_certificate(lines) and (not any(_is_heading(ln["text"]) for ln in lines) or _OTHER.search(whole)):
             continue
         found = _page(lines, page.get("width") or 0)
         if found[0].get("plate_number") or sum(1 for v in found[0].values() if v) >= 4:

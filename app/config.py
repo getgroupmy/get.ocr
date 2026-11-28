@@ -109,6 +109,8 @@ class Settings(BaseSettings):
     alert_disk_gb: float = 2.0  # alert when less than this is free where the data is kept
     max_queue: int = 200  # jobs waiting; beyond this new jobs get 429
     retention_days: int = 7  # job results are deleted this long after completion (0 = keep)
+    # The record of documents read (their kind, never their content) is kept this many days; 0 keeps it.
+    record_days: int = 0
     webhook_timeout_seconds: float = 10.0
     cors_origins: str = ""  # comma separated; empty = no CORS
 

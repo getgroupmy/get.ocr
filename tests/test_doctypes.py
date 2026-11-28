@@ -91,9 +91,25 @@ def test_a_catalogue_document_through_the_api(client, api_key, need_engine, fake
                     data={"type": "motor_insurance"}, headers=api_key)
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["document_type"] == "motor_insurance" and body["checks_passed"] is True and body["model_calls"] == 1
-    assert body["fields"]["plate_number"] == "VAB 1234" and body["fields"]["total_payable"] == 982.0
-    assert body["not_found_in_text"] == ["insurer_name"] and "cover note" in prompts[0][1]
+    # a cover note that says it is one is read by its labels, short as it is: nothing is asked of the model
+    assert body["document_type"] == "motor_insurance" and body["checks_passed"] is True
+    assert (body["read_by"], body["model_calls"], prompts) == ("labels", 0, [])
+    assert body["fields"]["plate_number"] == "VAB1234" and body["fields"]["total_payable"] == 982.0
+    assert (body["fields"]["policy_number"], body["fields"]["period_end"]) == ("MX-778812", "2026-12-31")
+
+
+def test_a_catalogue_document_with_no_reader_of_its_own_goes_to_the_model(client, api_key, need_engine, fake_model):  # noqa: F811
+    answers, prompts = fake_model
+    lines = ["JABATAN PENGANGKUTAN JALAN", "NOTIS SAMAN", "No. Saman: AA12345678", "No. Kenderaan: VAB 1234",
+             "Kesalahan: Lesen Kenderaan Motor tamat tempoh", "Kadar Kompaun RM 150.00"]
+    answers.append({**empty("traffic_summons"), "notice_number": "AA12345678", "plate_number": "VAB 1234", "issuer_name": "Made Up Office"})
+    r = client.post("/v1/extract", files={"file": ("s.png", synth.image_bytes(lines), "image/png")},
+                    data={"type": "traffic_summons"}, headers=api_key)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["document_type"] == "traffic_summons" and body["model_calls"] == 1 and body["read_by"] == "model"
+    assert body["fields"]["plate_number"] == "VAB 1234" and body["not_found_in_text"] == ["issuer_name"]
+    assert "traffic summons" in prompts[0][1] and "identified_type" not in body  # the reading shows no other name
 
 
 def test_types_are_listed(client, api_key):

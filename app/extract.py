@@ -752,26 +752,169 @@ def _upside_down(pages: list[dict]) -> list[dict]:
     return out
 
 
+# --- naming a document from the reading itself --------------------------------------------------
+# A name is printed in every answer and kept in the record, so it is given only on what a page
+# itself shows: the form it is (its heading standing as a heading, over what that form prints), or
+# the title it carries as its heading. A word found somewhere on a page names nothing: the looser
+# guess by words (guess_type) only chooses how to read a file sent for extraction.
+_SALES = (("credit_note", r"credit\s*note|nota\s*kredit"), ("debit_note", r"debit\s*note|nota\s*debit"),
+          ("delivery_order", r"delivery\s*order|pesanan\s*penghantaran"), ("purchase_order", r"purchase\s*order|pesanan\s*belian"),
+          ("quotation", r"quotation|sebut\s*harga"), ("invoice", r"invoice|invois"), ("receipt", r"receipt|resit"),
+          ("payslip", r"pay\s*slip|slip\s*gaji|salary\s*slip|penyata\s*gaji"), ("order", r"order\s*list|senarai\s*pesanan"))
+# a sales paper's own number, as a label with its value: "Invoice No: INV-17", "No. Resit : 0042"
+_OWN_NUMBER = re.compile(r"^(?:tax\s+)?(?P<en>invoice|receipt|quotation|credit\s*note|debit\s*note|delivery\s*order|purchase\s*order)"
+                         r"\s*(?:no|number|num|#)\b\.?|^no\.?\s*(?P<ms>invois|resit|sebut\s*harga)\b", re.I)
+_OWN_KIND = {"invoice": "invoice", "invois": "invoice", "receipt": "receipt", "resit": "receipt", "quotation": "quotation",
+             "sebutharga": "quotation", "creditnote": "credit_note", "debitnote": "debit_note", "deliveryorder": "delivery_order",
+             "purchaseorder": "purchase_order"}
+_SALE_TITLE = re.compile("|".join("(?P<%s>\\b(?:%s)\\b)" % t for t in _SALES), re.I)
+# the words a heading may hold beside its title: "TAX INVOICE", "OFFICIAL RECEIPT", "RESIT BAYARAN", "INVOIS CUKAI"
+_TITLE_WORDS = {"tax", "sales", "sale", "cash", "official", "proforma", "pro", "forma", "commercial", "e", "original", "copy",
+                "duplicate", "customer", "cukai", "rasmi", "jualan", "tunai", "asal", "salinan", "bayaran", "payment",
+                "service", "the", "a", "monthly", "bulanan", "for", "bagi", "bulan", "month",
+                "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november",
+                "december", "januari", "februari", "mac", "mei", "jun", "julai", "ogos", "oktober", "disember",
+                "jan", "feb", "mar", "apr", "jul", "aug", "ogo", "sep", "sept", "oct", "okt", "nov", "dec", "dis"}
+# what a bank's statement of an account prints, and what makes a statement another paper (a loan's, a card's, a supplier's)
+_NOT_AN_ACCOUNT = re.compile(r"sewa\s*beli|hire\s*purchase|\bloan\b|pinjaman|pembiayaan|financing|kad\s*kredit|credit\s*card|"
+                             r"supplier|pembekal|debtor|creditor", re.I)
+_STATEMENT_TITLE = re.compile(r"\bbank\s*statement\b|\bpenyata\s*(?:bank|akaun)\b|\bstatement\s*of\s*account\b|"
+                              r"\baccount\s*statement\b|\be-?statement\b", re.I)
+_STATEMENT_WORDS = _TITLE_WORDS | {"bank", "statement", "penyata", "akaun", "account", "of", "current", "savings", "simpanan",
+                                   "semasa", "estatement", "islamic", "i"}
+_A_BANK = re.compile(r"\bbank\b|maybank|cimb|\brhb\b|ambank|\bbsn\b|hsbc|ocbc|\buob\b|affin|agrobank|muamalat|hong\s*leong|"
+                     r"\bhlb\b|standard\s*chartered|alliance|\bpidm\b", re.I)  # PIDM: the deposit insurer every account names
+
+
+def _heading_kind(text: str) -> Optional[str]:
+    """The kind a page's heading names: a sales paper, a payslip or a bank statement. A heading is
+    a short piece of a line that holds the title and nothing but the words a title goes with. The
+    same word as a label ("Invoice No: 17", on a utility bill too) or in a sentence ("we
+    acknowledge receipt of your letter") names nothing, and the first heading on the page is the
+    page's own: an invoice quotes its delivery order further down."""
+    top = text.splitlines()[:25]
+    for piece in re.split(r"\n|\s{2,}", "\n".join(top)):  # between line breaks and the gaps between columns
+        piece = piece.strip(" \t*#=-_|.:")  # "** Order List **"
+        words = re.findall(r"[a-z]+", piece.lower())
+        if not words or len(piece.split()) > 5 or not piece[:1].isupper():
+            continue
+        m = _SALE_TITLE.search(piece)  # "INVOIS CUKAI / TAX INVOICE" holds its title twice: the first names it
+        if m and all(w in _TITLE_WORDS for w in re.findall(r"[a-z]+", _SALE_TITLE.sub(" ", piece).lower())):
+            return m.lastgroup
+        m = _STATEMENT_TITLE.search(piece)
+        if m and all(w in _STATEMENT_WORDS for w in words) and _A_BANK.search("\n".join(top[:15])):
+            return "bank_statement"
+    # A bank's statement often has no heading at all: it is then the paper of a bank (named at the top) that
+    # prints two of what such a statement prints (its period, an opening and a closing balance, the kind of
+    # account), and is not a loan's, a card's or a supplier's statement.
+    start = "\n".join(top[:15])
+    printed = len({m.lower() for m in _BANK_WORDS.findall("\n".join(text.splitlines()[:60]))})
+    if not _NOT_AN_ACCOUNT.search(start) and (printed >= 3 or (printed >= 2 and _A_BANK.search(start))):
+        return "bank_statement"
+    # No heading: a sales paper is then known by its own number, the first such label near the top that
+    # carries a value ("Invoice No: INV-17"). The same words over a column of a statement carry none.
+    for line in top[:12]:
+        pieces = [p.strip() for p in re.split(r"\s{2,}", line) if p.strip()]
+        for n, piece in enumerate(pieces):
+            m = _OWN_NUMBER.match(piece)
+            if not m:
+                continue
+            after = piece[m.end():] + " " + (pieces[n + 1] if n + 1 < len(pieces) else "")
+            if re.match(r"\s*[:#]?\s*\S*\d", after):
+                return _OWN_KIND[re.sub(r"[^a-z]", "", (m.group("en") or m.group("ms")).lower())]
+    return None
+
+
+# the readers that go by position, each with its own strict test of whether a page is its form
+def _is(kind: str, test):  # noqa: ANN001, ANN202
+    return lambda lines: kind if test(lines) else None
+
+
+# in this order; the licence test says which of the two cards it is
+NAMERS = (_is("vehicle_registration", vehicle.is_certificate), _is("road_tax", roadtax.is_disc), licence.card_kind,
+          _is("mykad", mykad.is_card), _is("driver_permit", permits.is_permit), _is("vehicle_inspection", permits.is_inspection),
+          _is("insurance_endorsement", insurance.is_endorsement), _is("motor_insurance", insurance.is_motor))
+
+
+def _form_of(lines: list) -> Optional[str]:
+    for which in NAMERS:
+        try:
+            kind = which(lines)
+        except Exception:  # noqa: BLE001 - naming a document never fails a reading
+            continue
+        if kind:
+            return kind
+    return None
+
+
+def name_form(pages: list[dict]) -> tuple:
+    """(kind, turned): the form the document is, by its first pages in their order, and whether
+    the page that showed it had to be turned half a circle (a page photographed upside down is
+    read line by line all the same; only the places are turned). (None, False) when it is none."""
+    for page in pages[:3]:  # a document says what it is on its first pages; the first page that does names it
+        if not page.get("lines"):
+            continue
+        kind = _form_of(page["lines"])
+        if kind:
+            return kind, False
+        kind = _form_of(_upside_down([page])[0]["lines"])
+        if kind:
+            return kind, True
+    return None, False
+
+
+def identify(pages: list[dict], texts: list[str]) -> Optional[str]:
+    """What kind of document this is, by itself and without the model: the form it is, else the
+    kind its heading names, else None (a paper this service has no sure name for, a picture that
+    is no document, or one with no text). The first of the first three pages that says what it is
+    names the document."""
+    for n, page in enumerate(pages[:3]):
+        kind, _ = name_form([page])
+        kind = kind or _heading_kind(texts[n] if n < len(texts) and texts[n] else page.get("text") or "")
+        if kind:
+            return kind
+    return None
+
+
+def label(kind: Optional[str]) -> Optional[str]:
+    """The name of a kind as people say it: "Driving licence" for driving_licence."""
+    if kind is None:
+        return None
+    return next((c["label"] for c in catalogue() if c["type"] == kind), kind.replace("_", " ").capitalize())
+
+
 FORMS = {"vehicle_registration": vehicle.parse, "road_tax": roadtax.parse, "vocational_licence": _licence("vocational_licence"),
          "driving_licence": _licence("driving_licence"), "mykad": mykad.parse, "driver_permit": permits.evp, "vehicle_inspection": permits.inspection,
          "motor_insurance": insurance.parse}
 
 
-def run(pages: list[dict], texts: list[str], wanted: str, custom: Optional[dict] = None) -> dict:
+def run(pages: list[dict], texts: list[str], wanted: str, custom: Optional[dict] = None,
+        look: Optional[list] = None) -> dict:
     """`pages` as service.recognise returns them (with lines); `texts` the
-    column-keeping text of each page. Returns the extraction part of the answer."""
+    column-keeping text of each page. `look`: the same pages with the lines to tell a form by,
+    where `pages` carry none (a vision model gives text without places). Returns the extraction
+    part of the answer."""
     if not any(t.strip() for t in texts):
         raise ApiError(422, "no_text", "no text was found in the document, so there is nothing to extract")
     form = None
-    for turned in (pages, _upside_down(pages)):
-        for known, parse in FORMS.items():  # forms read by position say themselves whether a page is theirs
-            if wanted in ("auto", known):
-                form = parse(turned)
-                if form is not None:
-                    break
-        if form is not None:
-            break  # a page photographed upside down is read line by line all the same: only the places are turned
-    kind = known if form is not None else wanted if wanted != "auto" else _guess_pack(texts)
+    if wanted == "auto":
+        # a form is taken for what it is only on its own strict test; its reader then takes the values,
+        # and where the reader cannot follow the labels (glare, a shifted column, text without places)
+        # the model does
+        looked = look or pages
+        kind, turned = name_form(looked)
+        if kind in FORMS:
+            form = FORMS[kind](_upside_down(pages) if turned else pages)
+        elif kind is None:
+            kind = _guess_pack(texts)
+            # the words point at a form whose own test said the pages are not it; where no test could
+            # look (no lines with their places at all), the words stand
+            if kind in FORMS and any(p.get("lines") for p in looked):
+                kind = "invoice"
+    else:
+        kind = wanted
+        if wanted in FORMS:  # the caller says what it is: the reader takes it on its looser test, either way up
+            form = FORMS[wanted](pages) or FORMS[wanted](_upside_down(pages))
     if kind == "table":
         table = tables.parse(pages)
         if not table["rows"]:

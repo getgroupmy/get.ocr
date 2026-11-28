@@ -11,7 +11,7 @@ import re
 from datetime import date
 from typing import Optional
 
-from . import mykad
+from . import headings, mykad
 
 # the first letter of a heading is often cut off by the edge of the photo
 DRIVING = re.compile(r"esen\s*meman|iving\s*lice", re.I)
@@ -126,6 +126,42 @@ def _vocational(lines: list[dict]) -> dict:
     return f
 
 
+VOCATIONAL_TITLES = ("lesenvokasionalmalaysia", "malaysianvocationallicence")
+DRIVING_TITLES = ("lesenmemandu", "drivinglicence", "lesenmemandumalaysia", "drivinglicencemalaysia")
+# the card's own labels are printed in both languages with a stroke between: a form that asks about a licence has none
+_CARD_LABEL = re.compile(r"warganegara\s*/\s*n|pengenalan\s*/\s*[il1]|kelas\s*/\s*c|tempoh\s*/\s*v|alamat\s*/\s*a|tarikh\s*lahir\s*/\s*d", re.I)
+_CLASS_CODES = re.compile(r"(?:(?:B2|B1|E1|E2|A1|DA|[A-IM])\s?){1,8}")
+
+
+def card_kind(lines: list[dict]) -> Optional[str]:
+    """Which licence a page is, for naming it: "vocational_licence", "driving_licence" or None.
+    The card's heading has to stand as a line of its own, above what a card prints: the holder's
+    twelve-digit number, the validity as two dates, the classes, the card's two-language labels.
+    A rental agreement, a police report, an application form or a letter that mentions a driving
+    licence and holds an identity number is not the card."""
+    if len(lines) > 60:
+        return None
+    for kind, titles in (("vocational_licence", VOCATIONAL_TITLES), ("driving_licence", DRIVING_TITLES)):
+        heads, below = headings.under(lines, titles)
+        if not heads:
+            continue
+        texts = [" ".join(ln["text"].split()) for ln in below]
+        both = len({"ms" if re.search(r"esen|vokasional", headings.key(h["text"])) else "en" for h in heads}) >= 2  # both languages
+        number = any(re.search(r"(?<!\d)\d{12}\W*$", re.sub(r"(?<=\d)[\s\-](?=\d)", "", t)) for t in texts)
+        dates = any(len(re.findall(_DATE_LOOSE, t)) >= 2 for t in texts)
+        if kind == "vocational_licence":
+            classes = any(_TYPE.match(t) or _CLASS.match(t) for t in texts)
+            if both or number or dates or classes:
+                return kind
+            continue
+        labels = sum(1 for t in texts if _CARD_LABEL.search(t))
+        codes = any(_CLASS_CODES.fullmatch(t) and len(t) <= 16 for t in texts)
+        # two things a card prints, one of them something a form about a licence does not print
+        if sum((both, number, dates, labels >= 1, codes)) >= 2 and (both or dates or labels >= 1):
+            return kind
+    return None
+
+
 def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
     """The licence's kind ("driving_licence" or "vocational_licence"), fields and checks; None
     when the pages are neither."""
@@ -138,7 +174,7 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
         width = page.get("width") or max(_box(ln)[2] for ln in lines)
         # a card photographed in a wallet has another card above it: only what stands under this card's title is its own
         title = VOCATIONAL if kind == "vocational_licence" else DRIVING
-        top = min(_box(ln)[1] for ln in lines if title.search(ln["text"]))
+        top = min((_box(ln)[1] for ln in lines if title.search(ln["text"])), default=0)  # the title may be split over two lines
         lines = [ln for ln in lines if _box(ln)[1] >= top - 5]
         if kind == "vocational_licence":
             f = _vocational(lines)

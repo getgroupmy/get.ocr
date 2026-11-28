@@ -56,6 +56,26 @@ def born(number: str, today: Optional[date] = None) -> Optional[str]:
     return None
 
 
+_ALONE = re.compile(r"\W*\d{6}[\s\-]*\d{2}[\s\-]*\d{4}\W*")
+
+
+def is_card(lines: list[dict]) -> bool:
+    """Whether a page is the front of a MyKad, for naming it: the card's heading, its number
+    standing alone on a line, and what only the card prints beside them, the citizenship or the
+    gender, or the heading in its second form. A slip that says "ID Type: MyKad" over a twelve-
+    digit number (which may be an account number) is not the card."""
+    if not lines or len(lines) > 30:
+        return False
+    texts = [" ".join(ln["text"].split()) for ln in lines]
+    if _OTHER.search(" ".join(texts)):
+        return False
+    heads = {re.sub(r"[^a-z]", "", t.lower()) for t in texts if _HEADING.fullmatch(t)}
+    if not heads or not any(_ALONE.fullmatch(t) for t in texts):
+        return False
+    marks = any(t.upper() in _GENDERS or _CITIZEN.fullmatch(t) for t in texts)
+    return marks or len(heads) >= 2
+
+
 def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
     """The card's fields and checks, or None when the pages are not a MyKad."""
     for page in pages:
