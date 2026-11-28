@@ -1063,6 +1063,93 @@ def test_a_card_whose_heading_the_hologram_spoils_is_still_read():
     assert "postcode_matches_state" not in by(card(["LIM AH KOW"], ["NO 5 JALAN 3", "43000 KAJANG"]))  # no state printed: nothing to hold it against
 
 
+def test_what_stands_under_a_card_is_not_read_into_it_and_a_page_that_is_no_card_is_not_read_as_one():
+    from app import mykad
+
+    def page(lines, width=1562, height=1100):
+        return {"page": 1, "width": width, "height": height, "lines": lines, "text": "\n".join(ln["text"] for ln in lines)}
+
+    def read(lines):
+        return mykad.parse([page(lines)])["fields"]
+
+    under_photo = [_span("WARGANEGARA", 67, 330, 857), _span("LELAKI", 65, 216, 900)]
+    # a phone's mark, the card's back copied under its front, a note under a photocopy: a name of two lines with no
+    # joining word between them stays whole, on both designs, whatever stands under the card
+    for name in (["NUR AISYAH BINTI MOHD", "ZAINAL ABIDIN"], ["WONG SIEW LING", "MARY ANNE"]):
+        for address in (ONE, TWO):
+            for alone, under in ((card(name, address), [_at("SHOT ON PHONE 12", 42, 900), _at("AI QUAD CAMERA", 42, 940)]),
+                                 (card(name, address), [_at("850412-10-5759-01-01", 42, 1000), _at("KETUA PENGARAH PENDAFTARAN NEGARA", 42, 1100)]),
+                                 (new_card(name, address, under_photo, number="850412-10-5759"), [_span("Shot on a phone", 484, 844, 1100)])):
+                f = read(alone + under)
+                assert f == read(alone) and (f["name"], f["address"]) == (" ".join(name), ", ".join(address)), (name, address, f)
+    # a territory printed on the postcode's own line has no state under it: a line further down is not the state
+    territory = new_card(["LIM AH KOW"], ["NO. 20", "PERSIARAN PERDANA", "62551 W.P PUTRAJAYA"], under_photo, number="850412-16-5759")
+    f = read(territory + [_span("SHOT ON PHONE 12", 484, 900, 1060)])
+    assert (f["address"], f["state"]) == ("NO. 20, PERSIARAN PERDANA, 62551 W.P PUTRAJAYA", "W.P PUTRAJAYA")
+    # a line under the card that starts with five digits is not the card's postcode
+    f = read(card(["LIM AH KOW"], ONE) + [_at("50450 KUALA LUMPUR", 43, 1000), _at("MALAYSIA", 43, 1030)])
+    assert (f["address"], f["postcode"], f["state"]) == (", ".join(ONE), "43000", "SELANGOR")
+    # a house number of five digits has the address's other lines under it
+    f = read(card(["LIM AH KOW"], ["10234 JALAN 5", "TAMAN MELATI", "43000 KAJANG", "SELANGOR"]))
+    assert (f["postcode"], f["city"], f["state"]) == ("43000", "KAJANG", "SELANGOR")
+    # a house number alone on the address's first line, and a name's last line of two letters, are the card's own
+    for first in ("12", "5", "8A"):
+        for lines in (card(["LIM AH KOW"], [first, "JALAN TELAWI 3", "59100 KUALA LUMPUR", "W. PERSEKUTUAN(KL)"]),
+                      new_card(["LIM AH KOW"], [first, "JALAN TELAWI 3", "59100 KUALA LUMPUR", "W.P KUALA LUMPUR"], under_photo, number="850412-10-5759")):
+            assert read(lines)["address"].startswith(first + ", JALAN TELAWI 3, 59100 KUALA LUMPUR")
+    for lines in (card(["ALEXANDER CHRISTOPHER BENJAMIN", "NG"], ONE), new_card(["ALEXANDER CHRISTOPHER BENJAMIN", "NG"], TWO, under_photo, number="850412-10-5759")):
+        assert read(lines)["name"] == "ALEXANDER CHRISTOPHER BENJAMIN NG"
+    # the place "ANAK BUKIT" over the postcode is the address's one line of its own; a father's name carried on is the name's
+    f = read(card(["LIM AH KOW"], ["ANAK BUKIT", "06550 ALOR SETAR", "KEDAH"]))
+    assert (f["name"], f["address"]) == ("LIM AH KOW", "ANAK BUKIT, 06550 ALOR SETAR, KEDAH")
+    assert read(card(["JUGAH", "ANAK BARIENG"], ONE))["name"] == "JUGAH ANAK BARIENG"
+    # the name's own line not read: no name is given, not the address's first line for one
+    lost = [ln for ln in card(["LIM AH KOW"], ["NO 29", "JALAN WATAN 11", "68000 AMPANG", "SELANGOR"]) if ln["text"] != "LIM AH KOW"]
+    f = read(lost)
+    assert "name" not in f and f["address"] == "NO 29, JALAN WATAN 11, 68000 AMPANG, SELANGOR"
+    # the card prints capitals: a line of small letters where the name's column starts is not its print, a letter read small is
+    f = read(card(["LIM AH KOW"], ONE) + [_at("Registration", 42, 480)])
+    assert (f["name"], f["address"]) == ("LIM AH KOW", ", ".join(ONE))
+    out = mykad.parse([page(card(["LIM AH KoW"], ONE))])
+    assert out["fields"]["name"] == "LIM AH KOW" and out["extra"] == {"name_as_read": "LIM AH KoW"}
+    # an island of Pahang whose post goes through a town of Johor
+    checks = {c["name"]: c["passed"] for c in mykad.parse([page(card(["LIM AH KOW"], ["KAMPUNG TEKEK", "PULAU TIOMAN", "86800 MERSING", "PAHANG"]))])["checks"]}
+    assert checks["postcode_matches_state"] is True
+
+    # --- pages that are not the card
+    def not_a_card(lines, named=None):
+        pg = page(lines)
+        assert extract.identify([pg], [pg["text"]]) == named and not mykad.is_card(lines)
+        assert mykad.parse([pg]) is None and mykad.parse(extract._upside_down([pg])) is None
+
+    # "Pengenalan" alone is a chapter's title or half of a column's heading, not the card's: a staff list is no card
+    for text in ("PENGENALAN", "Pengenalan", "1. PENGENALAN", "PENGENALAN:", "KAD PENGENAL", "MKAD", "Kad Pengenalan (IC)", "New Identity Card",
+                 "No. Kad Pengenalan", "MyKid"):
+        assert not mykad._is_heading(text), text
+    for text in ("KAD PENGENALAN", "IENTITYCARD", "IDENTITY CARD", "KADPENGENALAN", "KAD PENGENALAM", "MyKad", "MALAYSIA IDENTITY CARD"):
+        assert mykad._is_heading(text), text
+    not_a_card([_at("SENARAI PEKERJA SYARIKAT MAJU JAYA", 60, 40, 34), _at("No. Kad", 520, 133), _at("Nama", 60, 150), _at("Jantina", 900, 150),
+                _at("Jawatan", 1150, 150), _at("Pengenalan", 520, 167), _at("LIM AH KOW", 60, 240), _at("850412-10-5759", 520, 240),
+                _at("LELAKI", 900, 240), _at("PEMANDU", 1150, 240)])
+    # a slip and an app's page that list what a card says, each value beside or under its label
+    slip = [("Nama", "LIM AH KOW"), ("Jenis ID", "MyKad"), ("No. ID", "850412-10-5759"), ("Jantina", "LELAKI"), ("Warganegara", "MALAYSIA"),
+            ("No. Telefon", "012-345 6789"), ("Pelan", "PRABAYAR 35")]
+    not_a_card([_at("PENDAFTARAN PRABAYAR", 60, 40, 34)] + [ln for n, (label, value) in enumerate(slip)
+                                                          for ln in (_at(label, 60, 120 + 44 * n), _at(value, 420, 120 + 44 * n))])
+    profile = ["Profil saya", "Nama penuh", "LIM AH KOW", "MyKad", "850412-10-5759", "Jantina", "Lelaki", "Tarikh lahir", "12/04/1985", "Alamat",
+               "NO 5 JALAN 3, 43000 KAJANG", "E-mel", "lim@example.com"]
+    not_a_card([_at(t, 60, 40 + 60 * n) for n, t in enumerate(profile)])
+    # a clinic's card with a person's details under one another and no label, for a caller who says it is a MyKad
+    not_a_card([_at(t, 60, 40 + 50 * n) for n, t in enumerate(["KLINIK SIHAT", "KAD PENDAFTARAN PESAKIT", "LIM AH KOW", "850412-10-5759", "LELAKI",
+                                                               "012-345 6789", "NO 5 JALAN 3", "43000 KAJANG"])])
+    # the child's card has the same build and is another card: its holder is under twelve, which the reader does not reckon with
+    kid = [ln if ln["text"] != "MyKad" else _at("MyKid", 760, 40) for ln in card(["NUR AISYAH BINTI AHMAD"], ONE, number="180305-10-5758")]
+    not_a_card(kid)
+    # a permanent resident's card is of the card's own family: read, with what it prints for the citizenship
+    f = read(card(["SITI BINTI SUPARMAN"], ONE, right=("PEMASTAUTIN TETAP", "PEREMPUAN"), number="850412-10-5758"))
+    assert (f["name"], f["citizenship"], f["gender"]) == ("SITI BINTI SUPARMAN", "PEMASTAUTIN TETAP", "female")
+
+
 def test_a_stamp_laid_across_a_card_is_not_read_as_its_name():
     """An app stamps "GET RIDE / Registration" in red across the photo of a card it keeps. Read as a line where
     the name's column starts, "Registration" became the name and the name the first line of the address."""

@@ -35,10 +35,30 @@ TITLES = ("kadpengenalan", "identitycard", "malaysiaidentitycard", "mykad")
 
 
 def _is_heading(text: str) -> bool:
-    """A line that is the card's heading: whole, or with a letter lost to the hologram that lies over it
-    ("IENTITYCARD")."""
-    return bool(_HEADING.fullmatch(text.strip())) or headings.is_title(text, TITLES)
-_OTHER = re.compile(r"insur|takaful|polis[iy]|schedule|jadual|premium|lesen|licen[cs]e|sijil|permit", re.I)
+    """A line that is the card's heading: whole, or with one letter lost or misread under the hologram that
+    lies over it ("IENTITYCARD"). A part of it is no heading: "Pengenalan" alone is a chapter's title
+    ("1. PENGENALAN", an introduction) or the second line of a column headed "No. Kad / Pengenalan"."""
+    text = text.strip()
+    if _HEADING.fullmatch(text):
+        return True
+    letters = headings.key(text)
+    return not headings.is_label(text) and sum(ch.isdigit() for ch in text) <= 1 and any(
+        abs(len(letters) - len(title)) <= 1 and difflib.SequenceMatcher(None, letters, title).ratio() >= 0.9
+        for title in TITLES if len(title) >= 10)
+
+
+# another paper that names an identity card, and the child's card, which has the same build and is not this card
+_OTHER = re.compile(r"insur|takaful|polis[iy]|schedule|jadual|premium|lesen|licen[cs]e|sijil|permit|\bmykid\b", re.I)
+# a label of a form about a person, alone on its line. The card prints no label at all: a page that holds two is a
+# form, a slip or an app's page that lists what a card says ("Nama", "Jantina", "No. Telefon")
+_LABEL_LINE = re.compile(r"\W*(?:nama(?:\s+penuh)?|(?:full\s+)?name|alamat|address|jantina|gender|sex|tarikh(?:\s+lahir)?|"
+                         r"date\s+of\s+birth|no\.?\s*(?:telefon|tel|id|k\.?/?p\.?|ic)|telefon|phone|e-?mel|e-?mail|jenis\s+id|"
+                         r"id\s+type|umur|age|bangsa|race|agama|religion|nationality|kewarganegaraan|jawatan|pekerjaan|"
+                         r"occupation)\W*", re.I)
+
+
+def _is_a_form(texts: list) -> bool:
+    return sum(1 for t in texts if _LABEL_LINE.fullmatch(t)) >= 2
 MAX_LINES = 40  # a card holds a dozen lines; a page that names an identity card number holds many more
 _NUMBER = re.compile(r"(?<!\d)(\d{6})[\s\-]*(\d{2})[\s\-]*(\d{4})(?!\d)")
 _GENDERS = {"LELAKI": "male", "PEREMPUAN": "female"}
@@ -134,7 +154,7 @@ def is_card(lines: list[dict]) -> bool:
     if not lines or len(lines) > 30:
         return False
     texts = [" ".join(ln["text"].split()) for ln in lines]
-    if _OTHER.search(" ".join(texts)):
+    if _OTHER.search(" ".join(texts)) or _is_a_form(texts):
         return False
     heads = {re.sub(r"[^a-z]", "", t.lower()) for t in texts if _is_heading(t)}
     if not heads or not any(_ALONE.fullmatch(t) for t in texts):
@@ -164,9 +184,10 @@ for _range, _states in (
     for _two in _range.split():
         POSTCODES[_two] = tuple(_states.split(", "))
 # A town on a state's border that uses the postcode of the town across it: Pulau Sebang in Melaka (Tampin's), Gemas
-# Baharu in Johor (Gemas's), Hulu Bernam in Selangor (Tanjong Malim's). Held against a public list of 2,933
-# postcodes, the table above allows every one of them in its own state.
-ALSO_USED_IN = {"73000": ("Melaka",), "73400": ("Johor",), "35900": ("Selangor",)}
+# Baharu in Johor (Gemas's), Hulu Bernam in Selangor (Tanjong Malim's); and Pulau Tioman, an island of Pahang whose
+# post goes through Mersing in Johor. Held against a public list of 2,933 postcodes, the table above allows every
+# one of them in its own state.
+ALSO_USED_IN = {"73000": ("Melaka",), "73400": ("Johor",), "35900": ("Selangor",), "86800": ("Pahang",)}
 _STATE_WORDS = (("JOHOR", "Johor"), ("KEDAH", "Kedah"), ("KELANTAN", "Kelantan"), ("MELAKA", "Melaka"), ("SEMBILAN", "Negeri Sembilan"),
                 ("PAHANG", "Pahang"), ("PINANG", "Pulau Pinang"), ("PERAK", "Perak"), ("PERLIS", "Perlis"), ("SELANGOR", "Selangor"),
                 ("TERENGGANU", "Terengganu"), ("TRENGGANU", "Terengganu"), ("SABAH", "Sabah"), ("SARAWAK", "Sarawak"),
@@ -220,15 +241,45 @@ def _is_background(text: str) -> bool:
                                      for at in range(16))
 
 
-def _name_lines(column: list[dict], texts: list[str]) -> tuple:
-    """(how many of the column's first lines are the name, the place of the postcode's line or None).
+def _pitch(column: list[dict], n: int) -> float:
+    """How far the address's lines stand apart at line n: its distance from the line above, held to twice its own
+    height (the line above may be the name, with the space that parts the two blocks between them)."""
+    return min(_top(column[n]) - _top(column[n - 1]), 2.0 * max(_height(column[n]), 1.0)) if n else 2.0 * max(_height(column[n]), 1.0)
+
+
+def _address_end(column: list[dict], texts: list[str]) -> tuple:
+    """(the place of the postcode's line or None, where the card's lines end).
+
+    The postcode's line starts with five digits and has under it the state at most, and then the card
+    ends: no line, or one that stands clearly further down than the address's lines do from one another
+    (a phone's "Shot on ...", the card's back copied under its front, a note under a photocopy). A house
+    number of five digits has the address's other lines under it; a line under the card that starts with
+    five digits comes after the card has ended."""
+    found = [n for n in range(len(texts)) if _POSTCODE.match(texts[n])]
+    for post in found:
+        pitch, follow = _pitch(column, post), 0
+        while post + follow + 1 < len(column) and \
+                _top(column[post + follow + 1]) - _top(column[post + follow]) <= 1.6 * pitch:
+            follow += 1
+        if follow <= 1:
+            return post, post + 1 + follow
+    if found:
+        return found[-1], min(found[-1] + 2, len(texts))
+    return None, len(texts)
+
+
+def _name_lines(column: list[dict], texts: list[str], post: Optional[int]) -> int:
+    """How many of the column's first lines are the name; none when the name's line was not read.
 
     The first line is the name. A following line is the name still when the line above ends on a
     joining word (A/L, BIN, BINTI, ANAK, @) or it starts with one; when it stands more than three
     lines above the postcode, since an address has three lines of its own at most; when it is a
     single word with the address starting under it; or when a clear space parts it from what
-    follows. A line that holds a number, or begins as an address does, is the address."""
-    post = next((n for n in range(len(texts) - 1, 0, -1) if _POSTCODE.match(texts[n])), None)
+    follows. A line that holds a number, or begins as an address does, is the address. `column` and
+    `texts` end where the card does."""
+    if _POSTCODE.match(texts[0]) or re.match(r"\W*(?:NO\.?\s*)?\d", texts[0], re.I) \
+            or (_ADDRESS_BEGINS.match(texts[0]) and re.search(r"\d", texts[0])):
+        return 0  # the address's first line stands where the name should: the name's own line was not read
     until = len(texts) if post is None else post  # the lines that may be the name or the address's own lines
     gaps = [_top(b) - _top(a) for a, b in zip(column, column[1:])]
     apart = None  # after which line a clearly wider space parts the name from the address
@@ -242,17 +293,25 @@ def _name_lines(column: list[dict], texts: list[str]) -> tuple:
         above, line = texts[cut - 1], texts[cut]
         if re.search(r"\d", line):
             break
-        if _NAME_GOES_ON.search(above) or _NAME_CARRIED_ON.match(line):
-            cut += 1
+        last_own = post is not None and cut >= until - 1  # the last line the address could own
+        if _NAME_GOES_ON.search(above) or (_NAME_CARRIED_ON.match(line) and not (last_own and re.match(r"\W*ANAK\b", line, re.I))):
+            cut += 1  # ("ANAK BUKIT" over the postcode is the place of that name, not a father's name carried on)
             continue
         if _ADDRESS_BEGINS.match(line) or (apart is not None and apart < cut) or cut >= until - 1:
             break  # an address's line, or past the space that parts the two, or the last line the address could own
         if (post is not None and cut < post - 3) or (apart is not None and cut <= apart) \
-                or (" " not in line.strip() and len(line.strip()) >= 3 and re.search(r"\d", texts[cut + 1])):
+                or (" " not in line.strip() and len(line.strip()) >= 2 and re.search(r"\d", texts[cut + 1])):
             cut += 1
             continue
         break
-    return cut, post
+    return cut
+
+
+def _printed(text: str) -> bool:
+    """Whether a line can be the card's own print, which is capitals throughout: a letter or two read small is
+    the reader's slip ("LAND PUBLIc"), a line of small letters is something laid over the card or beside it."""
+    small = sum(ch.islower() for ch in text)
+    return small <= 2 and 4 * small <= sum(ch.isalpha() for ch in text)
 
 
 def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
@@ -260,7 +319,7 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
     for page in pages:
         lines = page.get("lines") or []
         whole = " ".join(ln["text"] for ln in lines)
-        if len(lines) > MAX_LINES or _OTHER.search(whole):
+        if len(lines) > MAX_LINES or _OTHER.search(whole) or _is_a_form([" ".join(ln["text"].split()) for ln in lines]):
             continue
         heads = [ln for ln in lines if _is_heading(ln["text"])]
         if not heads and not _reads_as_a_card(lines):
@@ -298,7 +357,9 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
                 lettered = re.match(r"[HK]\s+(?=\d{5}(?!\d))", text)  # the letter of Sabah or Sarawak run into the postcode's line
                 if lettered:
                     text = text[lettered.end():]
-                if len(text) > 2:
+                # a single character is a speck or the letter of Sabah or Sarawak, unless it is a digit: a house
+                # number may stand alone on the address's first line ("5", "12", "8A"), a short name on the name's last ("NG")
+                if (len(text) > 2 or re.search(r"\d", text) or re.fullmatch(r"[A-Z]{2}", text)) and _printed(text):
                     column.append({**ln, "text": text} if lettered else ln)
                     edge, level = _left(ln), _top(ln)
                 continue
@@ -338,14 +399,20 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
                 f["religion"] = text
         if not heads and not column:
             continue  # no heading to tell which way up the card is, and nothing under the number this way up
+        if column and (" ".join(column[0]["text"].upper().split()) in _GENDERS or _CITIZEN.fullmatch(column[0]["text"].strip())):
+            continue  # the gender or the citizenship stands where the name should: a list of a person's details, not the card
         read = None
         if column:
             texts = [" ".join(ln["text"].split()) for ln in column]
-            cut, post = _name_lines(column, texts)
-            read = " ".join(texts[:cut])
-            f["name"] = _tidy_name(read, muslim=f.get("religion") == "ISLAM")
             # the address ends with its state, the line under the postcode: what stands lower is not the card's
-            last = len(texts) if post is None else min(post + 2, len(texts))
+            post, last = _address_end(column, texts)
+            if not heads and post is None:
+                continue  # no heading, and no address that ends as a card's does: a caller's word alone does not make it one
+            column, texts = column[:last], texts[:last]
+            cut = _name_lines(column, texts, post)
+            if cut:
+                read = " ".join(texts[:cut])
+                f["name"] = _tidy_name(read.upper(), muslim=f.get("religion") == "ISLAM")
             address = [re.sub(r"^NO(\.?)(?=\d)", r"NO\1 ", _plain(t)) for t in texts[cut:last]][:6]
             if post is not None and cut <= post < cut + len(address):  # "98000MIRI": the postcode and its town run together
                 address[post - cut] = re.sub(r"^(\W*\d{5})(?=[A-Za-z])", r"\1 ", address[post - cut])

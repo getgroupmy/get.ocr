@@ -20,6 +20,11 @@ def key(text: str) -> str:
     return re.sub(r"[^a-z]", "", text.lower())
 
 
+def is_label(text: str) -> bool:
+    """A label of a form, not a heading: it starts or ends with "No.", or carries its value after a colon."""
+    return bool(_LABEL.search(text))
+
+
 def _alike(a: str, b: str) -> float:
     if not a or not b or 2.0 * min(len(a), len(b)) / (len(a) + len(b)) < 0.8:  # their lengths alone rule it out
         return 0.0
