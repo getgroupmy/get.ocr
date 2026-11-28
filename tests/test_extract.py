@@ -1212,6 +1212,14 @@ def test_a_stamp_laid_across_a_card_is_not_read_as_its_name():
     # a line the reader of the picture itself marked as laid across the page is left out whatever its angle and however many
     told = [dict(slanted("GET RIDE", 150 + 300 * n, 400, -4), across=True) for n in range(6)]
     assert headings.level(plain + told) == plain
+    # where a stamp lay, the reader says so: clear of the card's values, or across them (what the reader of the picture
+    # read with the stamp's ink taken out is marked, and so is a stamp's line that holds print it could not read apart)
+    check = lambda lines: {c["name"]: c["passed"] for c in extract.FORMS["mykad"]([{"page": 1, "width": 1280, "height": 800, "lines": lines}])["checks"]}.get("clear_of_stamp")  # noqa: E731
+    clear = [dict(slanted("GETRIDE", 150, 400, -4), across=True), dict(slanted("Registration", 70, 495, -4), across=True)]
+    assert check(plain) is None and check(plain + clear) is True
+    assert check([dict(ln, under_stamp=True) if ln["text"] == "LIM AH KOW" else ln for ln in plain] + clear) is False
+    assert check(plain + [dict(slanted("JALAN WATANstration", 43, 660, -4, 30), across=True, over_print=True)]) is False
+    assert check([ln for ln in plain if ln["text"] != "LIM AH KOW"] + clear) is False  # a stamp on the card and no name read
     # the card's background print, read as a line with a letter wrong, is no line of the card
     assert all(mykad._is_background(t) for t in ("AKERAJAANMALAY", "NMALA", "AKERAJAAI", "KERAJAANMALAYSIAKERAJAAN"))
     assert not any(mykad._is_background(t) for t in ("MALAYSIAN AIRLINES", "LIM AH KOW", "JALAN RAJA", "KERA", "TAMAN MALAYSIA RAYA"))

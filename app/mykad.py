@@ -307,6 +307,19 @@ def _name_lines(column: list[dict], texts: list[str], post: Optional[int]) -> in
     return cut
 
 
+def _crosses(a: list, b: list) -> bool:
+    """Do two boxes of four corners each overlap? Two such shapes are apart when the whole of one lies beyond
+    some side of the other."""
+    for box, other in ((a, b), (b, a)):
+        for n in range(4):
+            (x0, y0), (x1, y1) = box[n], box[(n + 1) % 4]
+            mine = [(y1 - y0) * (x - x0) - (x1 - x0) * (y - y0) for x, y in box]
+            theirs = [(y1 - y0) * (x - x0) - (x1 - x0) * (y - y0) for x, y in other]
+            if max(mine) < min(theirs) or max(theirs) < min(mine):
+                return False
+    return True
+
+
 def _printed(text: str) -> bool:
     """Whether a line can be the card's own print, which is capitals throughout: a letter or two read small is
     the reader's slip ("LAND PUBLIc"), a line of small letters is something laid over the card or beside it."""
@@ -451,5 +464,20 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
         if printed and of_postcode:
             checks.append({"name": "postcode_matches_state", "passed": printed in of_postcode,
                            "detail": f"postcode {f['postcode']} is used in {' and '.join(of_postcode)}, the card prints {f['state']}"})
+        # a stamp or a watermark on the card (the reader of the picture marks its lines, and the lines it read
+        # with the stamp's ink taken out): where it lies across the number, the name or the address, what was read
+        # under it may be wrong, and what could not be read is missing
+        stamp = list(page.get("across") or []) + [ln for ln in lines if ln.get("across")]
+        if stamp or any(ln.get("under_stamp") for ln in lines):
+            block = []
+            if column:
+                xs, ys = [p[0] for ln in column for p in ln["box"]], [p[1] for ln in column for p in ln["box"]]
+                block = [[[min(xs), min(ys)], [max(xs), min(ys)], [max(xs), max(ys)], [min(xs), max(ys)]]]
+            over = any(ln.get("under_stamp") for ln in [holder] + column) or (bool(stamp) and "name" not in f) \
+                or any(_crosses(st["box"], area) for st in stamp if st.get("over_print") for area in [holder["box"]] + block)
+            checks.append({"name": "clear_of_stamp", "passed": not over,
+                           "detail": "a stamp or watermark lies across the card's number, name or address: what was read "
+                                     "under it may be wrong, and what could not be read is left out" if over
+                           else "a stamp or watermark lies on the card, clear of its number, name and address"})
         return {"fields": f, "checks": checks, "extra": extra, "page": page.get("page", 1)}
     return None

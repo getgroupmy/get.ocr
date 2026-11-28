@@ -209,6 +209,180 @@ def surer(first: list[dict], second: list[dict]) -> list[dict]:
     return out
 
 
+# A stamp or a watermark laid across a page: told by its slope and its ink together. Either alone is print of
+# the page itself: a red serial number runs level, a second paper under the first lies at an angle in black.
+STAMP_SLOPE = 3.0  # degrees off the page's own lines, from which a line in another ink is laid across the page
+STAMP_INK = 20.0  # degrees between what two inks take from the ground: black print and a red stamp are 30 to 40 apart
+STAMP_TOUCH = 0.03  # the share of a line's box in the stamp's ink, from which the stamp runs into the line
+
+
+def _inside(img: np.ndarray, line: dict) -> Optional[np.ndarray]:
+    """The picture's dots inside a line's box, as rows of three colours; None for a box too small to tell by."""
+    box = np.array(line["box"], dtype=np.float32)
+    x0, y0 = np.maximum(np.floor(box.min(axis=0)).astype(int), 0)
+    x1, y1 = np.minimum(np.ceil(box.max(axis=0)).astype(int), [img.shape[1], img.shape[0]])
+    if x1 - x0 < 4 or y1 - y0 < 4:
+        return None
+    import cv2
+    mask = np.zeros((y1 - y0, x1 - x0), np.uint8)
+    cv2.fillPoly(mask, [np.round(box - [x0, y0]).astype(np.int32)], 1)
+    dots = img[y0:y1, x0:x1].reshape(-1, 3)[mask.reshape(-1) > 0].astype(np.float32)
+    return dots if len(dots) >= 30 else None
+
+
+def inks(img: np.ndarray, line: dict) -> Optional[tuple]:
+    """(the ground under a line, the ink it is written in), each a colour: the middle of the lighter half of
+    its box, and the middle of the fifth of its box furthest from that."""
+    dots = _inside(img, line)
+    if dots is None:
+        return None
+    ground = np.median(dots[dots.sum(axis=1) >= np.median(dots.sum(axis=1))], axis=0)
+    far = np.linalg.norm(dots - ground, axis=1)
+    return ground, np.median(dots[far >= np.percentile(far, 80)], axis=0)
+
+
+def _takes(ground: np.ndarray, ink: np.ndarray) -> Optional[np.ndarray]:
+    """What an ink takes from the ground it stands on, as a direction among the three colours: any dark print
+    takes about evenly from all three, a red ink leaves the red and takes the others. None for an ink hardly
+    other than its ground."""
+    took = ground - ink
+    size = float(np.linalg.norm(took))
+    return took / size if size > 25 else None
+
+
+def _share(dots: Optional[np.ndarray], ink: np.ndarray, ground: np.ndarray) -> float:
+    """The share of a box's dots that are in an ink: near it, and nearer to it than to the ground."""
+    if dots is None:
+        return 0.0
+    near = np.linalg.norm(dots - ink, axis=1)
+    return float(((near < 0.5 * np.linalg.norm(ink - ground)) & (near < np.linalg.norm(dots - ground, axis=1))).mean())
+
+
+def _mid_in(inner: list, outer: list) -> bool:
+    """Does the middle of box `inner` lie inside box `outer`?"""
+    import cv2
+    x, y = np.array(inner, dtype=np.float32).mean(axis=0)
+    return cv2.pointPolygonTest(np.array(outer, dtype=np.float32), (float(x), float(y)), False) >= 0
+
+
+def _in_place(a: dict, b: dict) -> bool:
+    """Two lines of two readings that stand in one place: the same line, or one inside the other."""
+    return _same_line(a["box"], b["box"]) or _same_line(b["box"], a["box"]) or _mid_in(a["box"], b["box"]) or _mid_in(b["box"], a["box"])
+
+
+def without_ink(img: np.ndarray, ground: np.ndarray, stamp: np.ndarray, print_: np.ndarray) -> Optional[np.ndarray]:
+    """The picture seen in the one mix of its three colours in which the stamp's ink is as light as the ground
+    under it, whatever its strength, while the print stays dark. None where there is no such mix: the stamp's
+    ink lies between the ground and the print (a grey stamp on a black and white copy)."""
+    across, down = stamp - ground, ground - print_
+    mix = down - (down @ across) / max(float(across @ across), 1e-6) * across
+    if mix @ down <= 0.2 * np.linalg.norm(mix) * np.linalg.norm(down):
+        return None
+    seen = (img.astype(np.float32) @ mix - print_ @ mix) / (ground @ mix - print_ @ mix)
+    return np.clip(20 + 215 * seen, 0, 255).astype(np.uint8)
+
+
+def stamp_lines(img: np.ndarray, lines: list[dict]) -> list[dict]:
+    """The lines laid across a page in another ink than its print: off the direction the page's own lines have
+    at their place by STAMP_SLOPE degrees or more, and written in an ink that takes from the ground another
+    way than the page's print does."""
+    from . import headings
+    offs = headings.off_trend(lines)
+    laid = [ln for ln in lines if STAMP_SLOPE <= offs.get(id(ln), 0.0) < headings.UPRIGHT]
+    if not laid:
+        return []
+    own = sorted((ln for ln in lines if offs.get(id(ln), 90.0) < headings.AGREE), key=lambda ln: -len(ln["text"]))[:12]
+    own = [found for found in (inks(img, ln) for ln in own) if found is not None and _takes(*found) is not None]
+    if len(own) < 3:
+        return []
+    paper = np.median(np.array([ground for ground, _ in own]), axis=0)
+    usual = np.median(np.array([_takes(*found) for found in own]), axis=0)
+    usual /= max(float(np.linalg.norm(usual)), 1e-6)
+    out = []
+    for ln in laid:
+        found = inks(img, ln)
+        took = _takes(*found) if found is not None else None
+        # an ink on the page's own ground: not print on another thing in the picture (a pack beside the paper, the
+        # maker's mark etched in a windscreen), which stands on a ground of its own or is lighter than it
+        if took is not None and np.linalg.norm(found[0] - paper) <= 70 and float((found[0] - found[1]).sum()) > 0 \
+                and np.degrees(np.arccos(np.clip(float(took @ usual), -1.0, 1.0))) >= STAMP_INK:
+            out.append(ln)
+    return out
+
+
+def under_a_stamp(img: np.ndarray, lines: list[dict]) -> list[dict]:
+    """The lines of a picture with what a stamp or a watermark across it did to them put right as far as it can be.
+
+    A stamp is laid over a page after it was printed: an app's "GET RIDE / Registration" in red across
+    the photo of a card it keeps, a rubber stamp, "for this use only" written across a copy. Its lines
+    are marked `across` (a reader by position leaves them out; the text keeps them). Where it runs
+    into the print, the reader gives print and stamp as one line ("LIM AH Kowstration"), which no rule
+    on whole lines can take apart: the picture is read once more with the stamp's ink taken out, and
+    that reading is taken wherever the stamp's ink touches print. Such a line is marked `under_stamp`:
+    what stood under a faint stamp reads well, what stood under solid ink is gone where the ink
+    was, and the caller is told which lines those are. A stamp's line that holds print which could
+    not be read apart from it is marked `over_print` as well."""
+    from . import headings
+    laid = stamp_lines(img, lines)
+    if not laid:
+        return lines
+    marked = {id(ln) for ln in laid}
+    found = [inks(img, ln) for ln in laid]
+    ground, stamp = np.median([f[0] for f in found], axis=0), np.median([f[1] for f in found], axis=0)
+    offs = headings.off_trend(lines)
+    own = [inks(img, ln) for ln in sorted((ln for ln in lines if offs.get(id(ln), 90.0) < headings.AGREE), key=lambda ln: -len(ln["text"]))[:12]]
+    print_ = np.median([f[1] for f in own if f is not None], axis=0)
+
+    def touched(ln: dict) -> float:
+        return _share(_inside(img, ln), stamp, ground)
+
+    def printed(ln: dict) -> bool:  # it holds print of its own, not only a piece of the stamp
+        return _share(_inside(img, ln), print_, ground) >= 0.04
+
+    # a short piece of the stamp, read on its own beside its other lines: too short to tell a slope by, in the
+    # stamp's ink and with no print of its own
+    xs, ys = [p[0] for ln in laid for p in ln["box"]], [p[1] for ln in laid for p in ln["box"]]
+    tall = max(min(float(np.linalg.norm(np.subtract(ln["box"][3], ln["box"][0]))), float(np.linalg.norm(np.subtract(ln["box"][1], ln["box"][0])))) for ln in laid)
+    near = [[min(xs) - tall, min(ys) - tall], [max(xs) + tall, min(ys) - tall], [max(xs) + tall, max(ys) + tall], [min(xs) - tall, max(ys) + tall]]
+    for ln in lines:
+        if id(ln) not in marked and id(ln) not in offs and _mid_in(ln["box"], near) and touched(ln) >= 0.1 and not printed(ln):
+            marked.add(id(ln))
+    view = without_ink(img, ground, stamp, print_)
+    if view is None:
+        return [{**ln, "across": True} if id(ln) in marked else ln for ln in lines]
+    again = read(np.stack([view] * 3, axis=2))
+    run_into = [ln for ln in lines if id(ln) not in marked and touched(ln) >= STAMP_TOUCH]  # the stamp's ink touches them
+    stand = {id(ln) for ln in run_into} | marked
+    sound = [ln for ln in lines if id(ln) not in stand]  # these stand as they were read
+    level = headings.off_trend(sound + again)
+    # the print read with the stamp's ink taken out: sure, level with the page, holding print of its own, and not a
+    # line that stands as it was read. Each belongs to the line it was read again as, else to the stamp's line it
+    # lies under, else it is print the first reading did not find under the stamp at all.
+    under: dict = {}
+    for c in again:
+        if c["confidence"] < 0.9 or level.get(id(c), 0.0) >= STAMP_SLOPE or not printed(c) or any(_in_place(ln, c) for ln in sound):
+            continue
+        home = next((ln for ln in run_into if _in_place(ln, c)), None) or next((ln for ln in lines if id(ln) in marked and _mid_in(c["box"], ln["box"])), None)
+        if home is not None or touched(c) >= STAMP_TOUCH:
+            under.setdefault(id(home), []).append(c)
+    out = []
+    for ln in lines:
+        found = under.get(id(ln)) or []
+        if id(ln) in marked:
+            # the stamp's own line, or print and stamp read as one: the print under it, if any was read; else the
+            # line as the stamp's, with a word on whether it holds print that could not be read apart from it
+            out += [{**c, "under_stamp": True} for c in found] or [{**ln, "across": True, **({"over_print": True} if printed(ln) else {})}]
+        elif id(ln) not in stand:
+            out.append(ln)
+        elif not found or (len(found) == 1 and found[0]["confidence"] < ln["confidence"]) \
+                or "".join(c["text"] for c in found).replace(" ", "") == ln["text"].replace(" ", ""):
+            out.append({**ln, "under_stamp": True})  # nothing surer was read in its place: it stands, and is told of
+        else:
+            out += [{**c, "under_stamp": True} for c in found]
+    out += [{**c, "under_stamp": True} for c in under.get(id(None), [])]
+    return [ln for row in _rows(out) for ln in row]
+
+
 def read_upright(img: np.ndarray, script: Optional[str] = None) -> tuple[list[dict], np.ndarray, float]:
     """Read a picture, turned upright first when it lies on its side or its head, and straightened
     when it is tilted. Returns the lines, the picture as it was read, and how far it was turned
@@ -226,6 +400,8 @@ def read_upright(img: np.ndarray, script: Optional[str] = None) -> tuple[list[di
         if colour is not None:
             single = np.ascontiguousarray(upright[:, :, colour])
             lines = surer(lines, read(np.stack([single] * 3, axis=2)))
+    if not script:
+        lines = under_a_stamp(upright, lines)
     return lines, upright, turned
 
 

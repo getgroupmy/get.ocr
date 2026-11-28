@@ -26,6 +26,55 @@ def page_image(lines: list[str]) -> Image.Image:
     return im
 
 
+def identity_card(name=("LIM AH KOW",), address=("NO 29", "JALAN WATAN 11", "TAMAN SRI WATAN", "68000 AMPANG", "SELANGOR"),
+                  number="850412-10-5759", right=("WARGANEGARA", "LELAKI")) -> Image.Image:
+    """A made-up identity card of the older design: a light-blue card, its heading, the number at the far left, the
+    name under where the chip is, the address at the foot, the citizenship and the gender at the lower right."""
+    im = Image.new("RGB", (1280, 806), (176, 214, 238))
+    d = ImageDraw.Draw(im)
+    for xy, text, size in (((300, 28), "KAD PENGENALAN", 34), ((300, 70), "MALAYSIA", 50), ((300, 128), "IDENTITY CARD", 30), ((1010, 60), "MyKad", 50)):
+        d.text(xy, text, fill=(30, 40, 110), font=_font(size))
+    d.text((40, 170), number, fill=(20, 20, 24), font=_font(56))
+    d.rounded_rectangle((60, 280, 220, 400), 14, fill=(214, 186, 96))  # the chip
+    d.rectangle((880, 190, 1220, 620), fill=(150, 160, 170))  # the photo
+    for n, line in enumerate(name):
+        d.text((42, 500 + 46 * n), line, fill=(20, 20, 24), font=_font(40))
+    for n, line in enumerate(address):
+        d.text((43, 766 - 36 * (len(address) - n)), line, fill=(20, 20, 24), font=_font(30))
+    for n, word in enumerate(right):
+        d.text((1230, 766 - 36 * (len(right) - n)), word, fill=(20, 20, 24), font=_font(30), anchor="ra")
+    return im
+
+
+def on_a_table(card: Image.Image, degrees: float = 0.0) -> Image.Image:
+    """The card as a phone photographs it lying on a table, turned by `degrees` (anticlockwise)."""
+    table = Image.new("RGB", (1500, 1000), (118, 96, 74))
+    turned = card.convert("RGBA").rotate(degrees, expand=True, resample=Image.BICUBIC)
+    table.paste(turned, ((1500 - turned.width) // 2, (1000 - turned.height) // 2), turned)
+    return table
+
+
+def stamped(picture: Image.Image, words=("GET RIDE", "Registration"), at=(260, 520), degrees: float = 18.0,
+            ink=(230, 50, 50), solid: int = 255, size: int = 64) -> Image.Image:
+    """The picture with words laid across it at an angle, as an app stamps its name over a photo it keeps: the
+    middle of the words at `at`, in an ink `solid` parts in 255 strong."""
+    layer = Image.new("RGBA", (900, 90 * len(words) + 20), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    for n, word in enumerate(words):
+        d.text((10, 10 + 84 * n), word, fill=ink + (solid,), font=_font(size))
+    box = layer.getbbox()
+    turned = layer.crop(box).rotate(degrees, expand=True, resample=Image.BICUBIC)
+    out = picture.convert("RGBA")
+    out.alpha_composite(turned, (max(at[0] - turned.width // 2, 0), max(at[1] - turned.height // 2, 0)))
+    return out.convert("RGB")
+
+
+def png(picture: Image.Image) -> bytes:
+    buf = io.BytesIO()
+    picture.save(buf, "PNG")
+    return buf.getvalue()
+
+
 def image_bytes(lines: list[str], fmt: str = "PNG") -> bytes:
     buf = io.BytesIO()
     page_image(lines).save(buf, fmt)

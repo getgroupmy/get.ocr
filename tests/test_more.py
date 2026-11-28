@@ -238,6 +238,75 @@ def test_a_second_reading_in_the_grounds_own_colour_is_taken_where_it_is_surer(m
     assert shown == [1]
 
 
+def test_a_stamp_is_told_by_its_slope_and_its_ink_and_the_print_under_it_is_read_with_the_ink_taken_out(need_engine):
+    """An app stamps its name in red across the photo of a card it keeps. Told from the card's print by its slope
+    alone, it was the card's name again as soon as the card lay a few degrees the stamp's way."""
+    import numpy as np
+    from PIL import Image, ImageDraw
+    address = "NO 29, JALAN WATAN 11, TAMAN SRI WATAN, 68000 AMPANG, SELANGOR"
+    card = synth.identity_card()
+
+    def read(picture):
+        data = synth.png(picture)
+        out = service.extract_fields(data, {"extract": "mykad"}, 3)
+        lines = service.recognise(data, {"detail": "lines"}, 3)["pages"][0]["lines"]
+        return out["fields"], {c["name"]: c["passed"] for c in out["checks"]}, out["checks_passed"], lines
+
+    # the card leans eight degrees the way the stamp rises: ten degrees lie between them, and less as the reader measures it
+    f, checks, passed, lines = read(synth.stamped(synth.on_a_table(card, 8), at=(420, 560)))
+    assert (f["name"], f["address"]) == ("LIM AH KOW", address)
+    assert sorted(ln["text"] for ln in lines if ln.get("across")) == ["GET RIDE", "Registration"]  # marked, and kept in the text
+    assert checks["clear_of_stamp"] is True and passed is True  # it stands clear of the number, the name and the address
+    # a faint stamp across the name: print and stamp come as one line, and with the stamp's ink taken out the name is read
+    f, checks, passed, lines = read(synth.stamped(card, at=(260, 540), solid=115))
+    assert (f["name"], f["address"]) == ("LIM AH KOW", address)
+    assert any(ln.get("under_stamp") and ln["text"] == "LIM AH KOW" for ln in lines)
+    assert checks["clear_of_stamp"] is False and passed is False  # and the caller is told a stamp lay across it
+    # a card with no stamp has no such check, and a line of red print that runs level with the page is the page's own
+    f, checks, passed, lines = read(card)
+    assert (f["name"], "clear_of_stamp" in checks, passed) == ("LIM AH KOW", False, True)
+    page = Image.new("RGB", (1100, 700), "white")
+    d = ImageDraw.Draw(page)
+    for n, text in enumerate(["SIJIL PEMILIKAN KENDERAAN", "No. Pendaftaran : WXY1234", "Nama Pemilik : AHMAD BIN ALI", "No. Enjin : 4G15AB12345",
+                              "No. Casis : PL1BT3SNRGB123456", "Tarikh : 01/07/2023"]):
+        d.text((50, 50 + 80 * n), text, fill="black", font=synth._font(38))
+    d.text((640, 600), "No. Siri : AB1234567", fill=(215, 30, 30), font=synth._font(38))
+    lines, _, _ = engine.read_upright(np.ascontiguousarray(np.asarray(page)[:, :, ::-1]))
+    assert any("AB1234567" in ln["text"] for ln in lines) and not any(ln.get("across") or ln.get("under_stamp") for ln in lines)
+
+
+def test_a_stamps_ink_is_taken_out_of_a_picture_whatever_its_strength():
+    import numpy as np
+    ground, stamp, print_ = np.array([238.0, 214.0, 176.0]), np.array([50.0, 50.0, 230.0]), np.array([24.0, 20.0, 20.0])  # blue, green, red
+    faint, crossed = 0.55 * ground + 0.45 * stamp, 0.55 * print_ + 0.45 * stamp
+    picture = np.array([[ground, stamp, faint, print_, crossed]], dtype=np.uint8)
+    seen = engine.without_ink(picture, ground, stamp, print_)[0].astype(int)
+    assert abs(seen[0] - 235) <= 2 and abs(seen[1] - seen[0]) <= 3 and abs(seen[2] - seen[0]) <= 3  # the ink is as light as the ground
+    assert seen[3] <= 22 and seen[3] < seen[4] < seen[0] - 60  # print stays dark, and print under a faint stamp stays darker than the ground
+    # a grey stamp on a black and white copy lies between the ground and the print: there is no such mix
+    assert engine.without_ink(picture, np.array([240.0] * 3), np.array([150.0] * 3), np.array([30.0] * 3)) is None
+    # which lines are a stamp's: off the page's own lines and in another ink, on the page's own ground
+    img = np.full((700, 1000, 3), (238, 214, 176), np.uint8)
+
+    def line(text, y, ink, degrees=0.0, x=60, w=420, h=40):
+        import cv2
+        import math
+        a = math.radians(degrees)
+        box = [[x, y], [x + w * math.cos(a), y - w * math.sin(a)], [x + w * math.cos(a) + h * math.sin(a), y - w * math.sin(a) + h * math.cos(a)],
+               [x + h * math.sin(a), y + h * math.cos(a)]]
+        strokes = np.zeros(img.shape[:2], np.uint8)
+        cv2.fillPoly(strokes, [np.round(np.array(box)).astype(np.int32)], 1)
+        strokes[:, 1::3] = strokes[:, 2::3] = 0  # a third of the box in ink, the rest ground, as a line of letters is
+        img[strokes > 0] = ink
+        return {"text": text, "confidence": 0.99, "box": [[round(px, 1), round(py, 1)] for px, py in box]}
+
+    own = [line("LINE %d OF THE CARD'S OWN PRINT" % n, 60 + 70 * n, (24, 20, 20)) for n in range(6)]
+    red_print = line("No. Siri : AB1234567", 520, (50, 50, 230))
+    in_black = line("A SECOND PAPER UNDER THE FIRST", 640, (24, 20, 20), degrees=8, x=480)
+    watermark = line("Registration", 470, (50, 50, 230), degrees=8, x=520)
+    assert engine.stamp_lines(img, own + [red_print, in_black, watermark]) == [watermark]
+
+
 def test_problems_are_named(client, monkeypatch):
     from app import llm
     from app.config import get_settings

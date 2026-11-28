@@ -886,8 +886,12 @@ def label(kind: Optional[str]) -> Optional[str]:
 
 def _own_print(read):  # noqa: ANN001, ANN202
     """A reader by position, given each page's own print only: a stamp or a watermark laid across the page at
-    another angle would be taken for a value where it happens to stand (an app's "Registration" for a name)."""
-    return lambda pages, *more, **named: read([{**p, "lines": headings.level(p.get("lines") or [])} for p in pages], *more, **named)
+    another angle would be taken for a value where it happens to stand (an app's "Registration" for a name).
+    The stamp's own lines are passed beside them (`across`), for a reader that says where a stamp lay."""
+    def own(page: dict) -> dict:
+        lines = page.get("lines") or []
+        return {**page, "lines": headings.level(lines), "across": [ln for ln in lines if ln.get("across")]}
+    return lambda pages, *more, **named: read([own(p) for p in pages], *more, **named)
 
 
 FORMS = {kind: _own_print(read) for kind, read in {
