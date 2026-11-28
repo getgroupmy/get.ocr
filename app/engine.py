@@ -84,12 +84,13 @@ def sideways(lines: list[dict]) -> bool:
     return tall >= 1 and tall > 2 * wide
 
 
-def upside_down(img: np.ndarray, lines: list[dict]) -> bool:
-    """Do most lines stand on their head? Asked of the reader's own line classifier, on the longest lines."""
+def on_their_head(img: np.ndarray, lines: list[dict]) -> Optional[float]:
+    """The share of the longest lines that stand on their head, asked of the reader's own line
+    classifier; None when it cannot be asked (too few lines, or the classifier is not there)."""
     eng = _engine()
     longest = sorted((ln for ln in lines if len(ln["text"]) >= 4), key=lambda ln: -len(ln["text"]))[:12]
     if eng is None or len(longest) < 2:
-        return False
+        return None
     crops = []
     for ln in longest:
         xs, ys = [int(p[0]) for p in ln["box"]], [int(p[1]) for p in ln["box"]]
@@ -101,10 +102,16 @@ def upside_down(img: np.ndarray, lines: list[dict]) -> bool:
             labels = [label for label, _ in eng._load_cls_model()(crops).cls_res]
     except Exception:  # noqa: BLE001 - an internal of the library: without it, pages are read as they come
         log.debug("line orientation could not be checked", exc_info=True)
-        return False
+        return None
+    return sum(label == "180" for label in labels) / len(labels) if labels else None
+
+
+def upside_down(img: np.ndarray, lines: list[dict]) -> bool:
+    """Do most lines stand on their head?"""
+    share = on_their_head(img, lines)
     # On 50 real scanned forms the classifier called up to 4 lines in 10 upside down on an upright
     # page, and at least 7 in 10 on a turned one: so ask for a clear majority.
-    return sum(label == "180" for label in labels) >= 0.7 * len(labels)
+    return share is not None and share >= 0.7
 
 
 def _weight(lines: list[dict]) -> float:
@@ -198,13 +205,22 @@ def _read_quarters(img: np.ndarray, script: Optional[str] = None, lines: Optiona
         if sum(1 for ln in got if ln.get("script")) > jawi and _weight(got) > 1.3 * _weight(lines):
             return got, turned, 180
         return lines, img, 0
-    best = (0.0, lines, img, 0)  # kept only if neither turn reads as an upright page
+    tried = []
     for quarter, angle in ((1, 270), (3, 90)):  # np.rot90 turns anticlockwise
         turned = np.ascontiguousarray(np.rot90(img, quarter))
         got = read(turned, script)
         score = sum(ln["confidence"] * len(ln["text"]) for ln in got) if not sideways(got) else 0
-        if score > best[0]:
-            best = (score, got, turned, angle)
+        tried.append((score, got, turned, angle))
+    # Each line is read the right way round whichever quarter the picture is turned by, so both turns read
+    # about as well: one of them leaves the page on its head, its lines in the wrong places. The turn whose
+    # lines the classifier calls upright is the page's, where the two differ clearly and both were read.
+    (a, b) = tried
+    if min(a[0], b[0]) > 0.8 * max(a[0], b[0]) > 0:
+        shares = [on_their_head(t[2], t[1]) for t in tried]
+        if None not in shares and abs(shares[0] - shares[1]) >= 0.3:
+            upright = a if shares[0] < shares[1] else b
+            return upright[1], upright[2], upright[3]
+    best = max([(0.0, lines, img, 0)] + tried, key=lambda t: t[0])  # the picture as it came, if neither turn reads as a page
     return best[1], best[2], best[3]
 
 

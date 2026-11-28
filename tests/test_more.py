@@ -163,6 +163,34 @@ def test_an_upside_down_page_is_turned(need_engine):
     assert engine.read_upright(upright)[2] == 0
 
 
+def test_of_the_two_quarter_turns_the_one_whose_lines_stand_upright_is_taken(monkeypatch):
+    """Each line is read the right way round whichever quarter a picture on its side is turned by, so both
+    turns read as well as each other; one of them leaves the page on its head. A real card photographed on
+    its side came out that way, and its name and address could not be placed."""
+    import numpy as np
+
+    def box(text, x, y, w, h):
+        return {"text": text, "confidence": 0.99, "box": [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]}
+
+    down_the_picture = [box("KAD PENGENALAN", 40, 30, 24, 200), box("850412-10-5759", 80, 30, 24, 200)]
+    level = [box("KAD PENGENALAN", 30, 40, 200, 24), box("850412-10-5759", 30, 80, 200, 24)]
+    picture = np.zeros((400, 300, 3), np.uint8)
+    picture[0, 0] = 255  # a mark in one corner, to tell the two turns apart: turned anticlockwise it is at the bottom left
+    monkeypatch.setattr(engine, "read", lambda img, script=None: level)
+    for head_first, wanted in ((270, 90), (90, 270)):
+        def share(img, lines, head_first=head_first):
+            anticlockwise = img[-1, 0, 0] == 255  # the turn the engine calls 270
+            return 0.9 if anticlockwise == (head_first == 270) else 0.1
+        monkeypatch.setattr(engine, "on_their_head", share)
+        lines, upright, turned = engine._read_quarters(picture, None, down_the_picture)
+        assert turned == wanted and lines == level and upright.shape[:2] == (300, 400)
+    # where the classifier does not tell the two apart, the better read turn is taken, as before
+    monkeypatch.setattr(engine, "on_their_head", lambda img, lines: 0.5)
+    assert engine._read_quarters(picture, None, down_the_picture)[2] == 270
+    monkeypatch.setattr(engine, "on_their_head", lambda img, lines: None)
+    assert engine._read_quarters(picture, None, down_the_picture)[2] == 270
+
+
 def test_problems_are_named(client, monkeypatch):
     from app import llm
     from app.config import get_settings

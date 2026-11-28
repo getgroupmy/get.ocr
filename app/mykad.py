@@ -182,11 +182,11 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
         if not any(_HEADING.fullmatch(ln["text"].strip()) for ln in lines) or len(lines) > MAX_LINES or _OTHER.search(whole):
             continue
         # the card's number: under the heading, alone on its line (a twelve-digit run in a file's name or a
-        # clock above the card is not it)
+        # clock above the card is not it). A number that stands only above the heading is a card on its head:
+        # nothing is read from it this way up, and the caller reads the page turned over.
         under = min(_top(ln) for ln in lines if _HEADING.fullmatch(ln["text"].strip()))
-        numbered = [ln for ln in sorted(lines, key=_top) if _NUMBER.search(ln["text"])]
-        holder = next((ln for ln in numbered if _top(ln) >= under and _ALONE.fullmatch(ln["text"].strip())), None) \
-            or next((ln for ln in numbered if _top(ln) >= under), None) or (numbered[0] if numbered else None)
+        numbered = [ln for ln in sorted(lines, key=_top) if _NUMBER.search(ln["text"]) and _top(ln) >= under]
+        holder = next((ln for ln in numbered if _ALONE.fullmatch(ln["text"].strip())), None) or (numbered[0] if numbered else None)
         if holder is None:
             continue
         digits = "".join(_NUMBER.search(holder["text"]).groups())

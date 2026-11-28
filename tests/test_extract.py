@@ -1007,6 +1007,16 @@ def test_names_and_addresses_of_many_shapes_on_both_designs():
         slanted = [{**ln, "box": [[x - 0.13 * y, y] for x, y in ln["box"]]} for ln in card(name, address, x=200)]
         f = mykad.parse([{"page": 1, "width": 1562, "lines": slanted}])["fields"]
         assert (f["name"], f["address"].split(", "), f["gender"]) == (whole, address, "male"), (name, address, f)
+    # a card left on its head (each line is read the right way round, only the places are turned): nothing is
+    # read from it that way up, and the page turned over gives the whole card, asked for by name or not
+    upright = card(["RAVI A/L", "MUTHUSAMY"], THREE)
+    on_its_head = {"page": 1, "width": 1280, "height": 800, "text": "\n".join(ln["text"] for ln in upright),
+                   "lines": [{**ln, "box": [[1280 - x, 800 - y] for x, y in ln["box"]]} for ln in upright]}
+    assert mykad.parse([on_its_head]) is None
+    for wanted in ("mykad", "auto"):
+        out = extract.run([on_its_head], [on_its_head["text"]], wanted)
+        assert (out["document_type"], out["read_by"], out["model_calls"]) == ("mykad", "labels", 0)
+        assert (out["fields"]["name"], out["fields"]["address"]) == ("RAVI A/L MUTHUSAMY", ", ".join(THREE))
     # a second card lower in the picture, its lines starting where the first one's do, is not read into the first
     two = card(["LIM AH KOW"], ONE) + card(["TAN MEI LING"], TWO, y=900, number="900412-10-5678")
     f = mykad.parse([{"page": 1, "width": 1280, "lines": two}])["fields"]
