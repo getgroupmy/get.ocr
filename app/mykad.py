@@ -337,11 +337,20 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
         # places are measured from the number: the name and the address start under its first digit, and
         # the citizenship, religion and gender stand well to the right of it
         start, span = _left(holder), max(_right(holder) - _left(holder), 1.0)
-        # the card's own lines slope as its number does: one laid across the card at another angle is a stamp or a
-        # watermark (an app's "Registration" across the photo it keeps), not the card's print
-        slope = headings.lean(holder)
+        # the card's own lines run as its number does: one laid across the card at another angle is a stamp or a
+        # watermark (an app's "Registration" across the photo it keeps), not the card's print. Each line is held
+        # against the direction the page's lines have at its place, which changes down a card photographed from one
+        # side; where too few lines tell that, or the card lies at another angle than most of the picture, against
+        # the number's own slope.
+        offs = headings.off_trend(lines)
+        if offs.get(id(holder), 90.0) < 2 * headings.AGREE:
+            across = {id(ln) for ln in headings.laid_across(lines, offs)}
+        else:
+            slope = headings.lean(holder)
+            across = {id(ln) for ln in lines if slope is not None and headings.lean(ln) is not None
+                      and headings.ACROSS <= abs(headings.lean(ln) - slope) < headings.UPRIGHT}
         below = [ln for ln in sorted(lines, key=_top) if _top(ln) > _top(holder) and not _is_background(ln["text"])
-                 and not (slope is not None and headings.lean(ln) is not None and abs(headings.lean(ln) - slope) >= 10.0)]
+                 and id(ln) not in across and not ln.get("across")]
         column = []  # the name and the address: the lines under the number, starting where it starts
         beside = []  # the citizenship, religion and gender: right of the address on the older card, left of it on the new
         # where the column's lines start, followed down the card: photographed at an angle its left edge slants,

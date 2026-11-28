@@ -1182,6 +1182,36 @@ def test_a_stamp_laid_across_a_card_is_not_read_as_its_name():
     # two slopes in numbers are two things in one picture (a disc lying level in a tilted holder), not a stamp: nothing is left out
     both = [slanted("LINE %d OF THE HOLDER" % n, 40, 60 * n, 22, 30) for n in range(6)] + [_at("LINE %d OF THE DISC" % n, 300, 500 + 40 * n) for n in range(5)]
     assert headings.level(both) == both
+    # photographed from one side, a page's lines run towards one another: fourteen degrees lie between the card's
+    # first line and its last, and each is the card's own. Its lines all point at one place, and are held against
+    # the direction towards it from where they stand, not against one slope.
+    def towards(text, x, y, place, h=30):
+        degrees = math.degrees(math.atan2(place[1] - y, place[0] - x))
+        return slanted(text, x, y, degrees - 180 if degrees > 90 else degrees + 180 if degrees <= -90 else degrees, h)
+
+    rows = ["KAD PENGENALAN", "850412-10-5759", "LIM AH KOW", "NO 29", "JALAN WATAN 11", "TAMAN SRI WATAN", "68000 AMPANG", "SELANGOR"]
+    for place in ((3400, 460), (-2600, 380)):
+        one_side = [towards(t, 60, 60 + 100 * n, place) for n, t in enumerate(rows)] + [towards("WARGANEGARA", 800, 700, place), towards("LELAKI", 900, 760, place)]
+        slopes = [headings.lean(ln) for ln in one_side if headings.lean(ln) is not None]
+        assert max(slopes) - min(slopes) > 13 and headings.level(one_side) == one_side
+        assert max(headings.off_trend(one_side).values()) < 0.5
+        f = mykad.parse([{"page": 1, "width": 1400, "height": 900, "lines": one_side}])["fields"]
+        assert (f["name"], f["address"], f["gender"]) == ("LIM AH KOW", "NO 29, JALAN WATAN 11, TAMAN SRI WATAN, 68000 AMPANG, SELANGOR", "male")
+        marked = one_side + [slanted("Registration", 70, 330, -15, 60)]  # and a watermark across it is still told from it
+        assert headings.level(marked) == one_side
+        assert mykad.parse([{"page": 1, "width": 1400, "height": 900, "lines": marked}])["fields"]["name"] == "LIM AH KOW"
+    # a page that curls has no such place: its lines are then held against their middle slope, as before
+    curled = [slanted("LINE %d OF A CURLED PAGE" % n, 40, 60 * n, [0, 0.4, 1, 4, 7, 4, 1, 0.4, 0, -0.4, 0, 0.3][n], 30) for n in range(12)]
+    assert headings.level(curled) == curled and headings.level(curled + [slanted("COPY COPY", 300, 300, 30)]) == curled
+    # print set upright (a number up a margin, as a certificate has) is the page's own; a stamp at a steep angle is not
+    margin = slanted("No. Siri : AB1234567", 1240, 700, -90, 30)
+    assert abs(headings.lean(margin)) == 90.0 and headings.level(plain + [margin]) == plain + [margin]
+    steep = slanted("SAH DILULUSKAN", 700, 200, 60)
+    steep["box"] = steep["box"][3:] + steep["box"][:3]  # as a reader gives a line that runs steeply: its short edge first
+    assert round(headings.lean(steep)) == 60 and headings.level(plain + [steep]) == plain
+    # a line the reader of the picture itself marked as laid across the page is left out whatever its angle and however many
+    told = [dict(slanted("GET RIDE", 150 + 300 * n, 400, -4), across=True) for n in range(6)]
+    assert headings.level(plain + told) == plain
     # the card's background print, read as a line with a letter wrong, is no line of the card
     assert all(mykad._is_background(t) for t in ("AKERAJAANMALAY", "NMALA", "AKERAJAAI", "KERAJAANMALAYSIAKERAJAAN"))
     assert not any(mykad._is_background(t) for t in ("MALAYSIAN AIRLINES", "LIM AH KOW", "JALAN RAJA", "KERA", "TAMAN MALAYSIA RAYA"))
