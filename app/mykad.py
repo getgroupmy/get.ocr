@@ -1,9 +1,13 @@
 """The front of a Malaysian identity card (MyKad), read by where its values stand.
 
-The card has no labels: the number at the top left, the name below the chip, the address under
-the name, citizenship and gender at the lower right. The date and place of birth are worked out
-from the number itself, and the number's last digit (odd for a man, even for a woman) is checked
-against the printed gender.
+The card has no labels. Two designs are in use. On the one issued until 2026 the number stands at
+the top left, the name below the chip, the address under the name, and the citizenship, religion
+and gender at the lower right. On the new-generation card (from September 2026) the photo is at
+the left, the number, the name and the address stand right of it under one another, and the
+citizenship, religion and gender are under the photo, beside the address. On both, the name and
+the address start under the number's first digit: that is what the reader goes by. The date and
+place of birth are worked out from the number itself, and the number's last digit (odd for a man,
+even for a woman) is checked against the printed gender.
 
 Places are measured from the card's own number, not from the picture: a card photographed on a
 table, or shown inside a phone's screen, fills only part of it. The name may run on to a second
@@ -16,6 +20,7 @@ or that it belongs to the person presenting it: that is identity verification, w
 does not do."""
 from __future__ import annotations
 
+import difflib
 import re
 from datetime import date
 from typing import Optional
@@ -66,6 +71,23 @@ _ADDRESS_BEGINS = re.compile(
     r"LEBUH|LEBUHRAYA|LINTANG|SOLOK|LENGKOK|TANJUNG|TG|TELUK|KUALA|ULU|HULU|PEKAN|MUKIM|SIMPANG|PARIT|PADANG|PANTAI|PULAU|"
     r"SEKSYEN|KEM|KUARTERS|KUATERS|PEJABAT|PETI|WISMA|MENARA|PLAZA|MEDAN|KOMPLEKS|PERUMAHAN|RANCANGAN|RPT|PPR|PPRT|D/A)\b", re.I)
 _POSTCODE = re.compile(r"\W*(\d{5})(?!\d)\s*(.*)")
+# what stands beside the address: the citizenship, a letter for a native of Sabah (H) or Sarawak (K), the religion, the gender
+_BESIDE = re.compile(r"\s*(?:(BUKAN\s*WARGA\s*NEGARA|WARGA\s*NEGARA|PEMASTAUTIN\s*TETAP|ISLAM|LELAKI|PEREMPUAN)(?P<glued>(?=[A-Z]))?"
+                     r"|([HK])(?![A-Z]))", re.I)
+_TERRITORY = re.compile(r"W\.?\s?P\b|WILAYAH\s*PERSEKUTUAN", re.I)
+
+
+def _beside(text: str, glued: bool = False) -> tuple:
+    """(the words of that block a line starts with, what follows them). On the new card they stand so
+    close to the address that a reader gives both as one line: "ISLAM62551 W.P PUTRAJAYA". `glued`:
+    a word may run straight into letters ("ISLAMSELANGOR"), for a line that starts outside the column."""
+    words, at = [], 0
+    while True:
+        m = _BESIDE.match(text, at)
+        if not m or (m.group("glued") is not None and not glued):
+            return words, text[at:].strip()
+        words.append(" ".join((m.group(1) or m.group(3)).upper().split()))
+        at = m.end()
 
 
 def born(number: str, today: Optional[date] = None) -> Optional[str]:
@@ -100,6 +122,15 @@ def is_card(lines: list[dict]) -> bool:
         return False
     marks = any(t.upper() in _GENDERS or _CITIZEN.fullmatch(t) for t in texts)
     return marks or len(heads) >= 2
+
+
+def _misread(text: str) -> Optional[str]:
+    """A word of the block beside the address read with one letter wrong or lost: "ISAM", "LELAK1"."""
+    text = " ".join(text.upper().split())
+    for word in ("WARGANEGARA", "BUKAN WARGANEGARA", "PEMASTAUTIN TETAP", "PEREMPUAN", "LELAKI", "ISLAM"):
+        if abs(len(text) - len(word)) <= 1 and difflib.SequenceMatcher(None, text, word).ratio() >= 0.8:
+            return word
+    return None
 
 
 def _is_background(text: str) -> bool:
@@ -163,22 +194,49 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
         # places are measured from the number: the name and the address start under its first digit, and
         # the citizenship, religion and gender stand well to the right of it
         start, span = _left(holder), max(_right(holder) - _left(holder), 1.0)
-        below = [ln for ln in sorted(lines, key=_top)
-                 if _top(ln) > _top(holder) and not TITLE.search(ln["text"]) and not _is_background(ln["text"])]
-        right = [" ".join(ln["text"].split()).upper() for ln in below if _left(ln) > start + 1.2 * span]
-        # the name and the address: the lines under the number, at the left
-        column = [ln for ln in below if abs(_left(ln) - start) <= 0.3 * span and len(ln["text"].strip()) > 2]
+        below = [ln for ln in sorted(lines, key=_top) if _top(ln) > _top(holder) and not _is_background(ln["text"])]
+        column = []  # the name and the address: the lines under the number, starting where it starts
+        beside = []  # the citizenship, religion and gender: right of the address on the older card, left of it on the new
+        edge = start  # where the column's lines start: followed down the card, which may lean a little in the photo
+        for ln in below:
+            text = " ".join(ln["text"].split())
+            if TITLE.search(text):
+                if column:
+                    break  # another card's heading, lower in the picture: what stands under it is not this card's
+                continue
+            if abs(_left(ln) - edge) <= 0.12 * span:  # it starts where the column does: the name's or the address's
+                if len(text) > 2:
+                    column.append(ln)
+                    edge = _left(ln)
+                continue
+            words, rest = _beside(text, glued=True)
+            if words and not rest:
+                beside += words
+            elif words and _left(ln) < edge:
+                # it starts left of the column with those words and runs on into it: the reader gave them and a
+                # line of the address as one. What follows them starts about where the column does.
+                reaches = _left(ln) + (_right(ln) - _left(ln)) * (1 - len(rest) / max(len(text), 1))
+                if abs(reaches - edge) <= 0.3 * span:
+                    beside += words
+                    if len(rest) > 2:
+                        column.append({**ln, "text": rest})
+            elif _misread(text):
+                beside.append(_misread(text))
         heights = sorted(_height(ln) for ln in lines if ln is not holder)
         if heights and _height(holder) < 0.7 * heights[len(heights) // 2]:
             # the number was taken from the small print under the photo, the large one could not be read: there
             # is then nothing to place the name and the address by, and they are left out rather than misplaced.
             # The citizenship, religion and gender are looked for anywhere on the card.
-            column, right = [], [" ".join(ln["text"].split()).upper() for ln in lines]
-        for text in right:
+            column, beside = [], []
+            for ln in lines:
+                words, rest = _beside(" ".join(ln["text"].split()))
+                if words and not rest:
+                    beside += words
+        for text in beside:
             if text in _GENDERS:
                 f["gender"] = _GENDERS[text]
             elif _CITIZEN.fullmatch(text):
-                f["citizenship"] = text
+                f["citizenship"] = text.replace("WARGA NEGARA", "WARGANEGARA")
             elif _RELIGION.fullmatch(text):
                 f["religion"] = text
         read = None
@@ -189,7 +247,7 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
             f["name"] = re.sub(r"(?<=\w) (A)[ .]?([LP]) (?=\w)", r" \1/\2 ", read)  # A/L, A/P: the stroke is often lost
             # the address ends with its state, the line under the postcode: what stands lower is not the card's
             last = len(texts) if post is None else min(post + 2, len(texts))
-            address = [re.sub(r"^NO(?=\d)", "NO ", t) for t in texts[cut:last]][:6]
+            address = [re.sub(r"^NO(\.?)(?=\d)", r"NO\1 ", t) for t in texts[cut:last]][:6]
             if address:
                 f["address"] = ", ".join(address)
             if post is not None and post >= cut:
@@ -197,6 +255,8 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
                 f["postcode"], f["city"] = m.group(1), m.group(2).strip(" ,") or None
                 if post + 1 < last:
                     f["state"] = texts[post + 1]
+                elif f["city"] and _TERRITORY.match(f["city"]):
+                    f["state"] = f["city"]  # a federal territory is its own town: "62551 W.P PUTRAJAYA" and no line under it
         extra = {"name_as_read": read} if read and read != f.get("name") else {}
         birth = born(digits, today)
         f["date_of_birth"] = birth

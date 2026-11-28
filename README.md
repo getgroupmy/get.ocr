@@ -559,7 +559,10 @@ by where each value stands and what it looks like, with no model asked. Both are
   `gender_matches_number` (the last digit is odd for a man, even for a woman). A stroke lost in
   "A/L" or "A/P" is put back, and `name_as_read` then gives the name as it was read. A name that
   runs on to a second line ("RAVI A/L" over "MUTHUSAMY") is kept whole and out of the address,
-  and the card may fill any part of the picture (on a table, or inside a phone's screen).
+  and the card may fill any part of the picture (on a table, or inside a phone's screen). Both
+  designs are read: the card issued until 2026, and the new-generation card issued from
+  September 2026, which has the photo at the left and the citizenship, religion and gender under
+  it. Only the front is read.
 
 - `driving_licence` (Lesen Memandu) and `vocational_licence` (Lesen Vokasional: PSV, GDL): the
   holder's name, `id_number`, `nationality`, `classes`, the validity as `issue_date` and
@@ -846,7 +849,10 @@ you how far to trust it:
 | `truncated` | `true` when the text was longer than the model can take and the end was left out |
 
 `GET /health` shows `"extraction": true` when the model server answers and the model is installed.
-Without it `/v1/extract` answers 503 `extraction_unavailable`; plain reading keeps working.
+Without it `/v1/extract` answers 503 `extraction_unavailable` for what the model reads; plain
+reading keeps working, and so do a table and the forms read by position (an identity card, a
+licence, a road tax disc, a vehicle certificate, a permit, an inspection report, a motor insurance
+schedule), which ask no model.
 
 ### Queue a long PDF
 
