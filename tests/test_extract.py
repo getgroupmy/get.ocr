@@ -1116,6 +1116,29 @@ def test_what_stands_under_a_card_is_not_read_into_it_and_a_page_that_is_no_card
     checks = {c["name"]: c["passed"] for c in mykad.parse([page(card(["LIM AH KOW"], ["KAMPUNG TEKEK", "PULAU TIOMAN", "86800 MERSING", "PAHANG"]))])["checks"]}
     assert checks["postcode_matches_state"] is True
 
+    assert read(card(["0NG AH KOW"], ONE))["name"] == "0NG AH KOW"  # a name whose first letter was read as a digit is still the name
+    # a scrap of one or two characters read above the name, where the chip is, is not the name
+    for scrap in ("EE", "11"):
+        f = read(card(["LIM AH KOW"], TWO) + [_at(scrap, 62, 300)])
+        assert (f["name"], f["address"]) == ("LIM AH KOW", ", ".join(TWO))
+    # print that rises to the right (a card photographed a little from one side): a long line's highest corner is its
+    # far end, so how far lines stand apart is taken where they start. The state under a long postcode line is the card's.
+    def rising(lines, degrees):
+        import math
+        c, s = math.cos(math.radians(-degrees)), math.sin(math.radians(-degrees))
+        return [{**ln, "box": [[x * c - y * s, x * s + y * c] for x, y in ln["box"]]} for ln in lines]
+
+    sea = ["NO 8", "JALAN SS 2/4", "TAMAN SEA", "47300 PETALING JAYA", "SELANGOR"]
+    for lines in (card(["TAN MEI LING"], sea, right=("WARGANEGARA", "PEREMPUAN"), number="900412-10-5678"),
+                  new_card(["TAN MEI LING"], sea, [_span("WARGANEGARA", 67, 330, 857), _span("PEREMPUAN", 65, 290, 900)])):
+        for degrees in (3, 5, -5):
+            out = mykad.parse([page(rising(lines, degrees))])
+            assert (out["fields"]["address"], out["fields"]["state"]) == (", ".join(sea), "SELANGOR"), (degrees, out["fields"])
+            assert {c["name"]: c["passed"] for c in out["checks"]}["postcode_matches_state"] is True
+    # a card lying on a form, or shown in an app's screen, has labels around it and its own two headings: it is the card
+    on_a_form = card(["LIM AH KOW"], ONE) + [_at("IDENTITY CARD", 130, 60), _at("Nama", 900, 300), _at("Alamat", 900, 360), _at("No. Telefon", 900, 420)]
+    assert mykad.is_card(on_a_form) and read(on_a_form)["name"] == "LIM AH KOW"
+
     # --- pages that are not the card
     def not_a_card(lines, named=None):
         pg = page(lines)
@@ -1136,6 +1159,14 @@ def test_what_stands_under_a_card_is_not_read_into_it_and_a_page_that_is_no_card
             ("No. Telefon", "012-345 6789"), ("Pelan", "PRABAYAR 35")]
     not_a_card([_at("PENDAFTARAN PRABAYAR", 60, 40, 34)] + [ln for n, (label, value) in enumerate(slip)
                                                           for ln in (_at(label, 60, 120 + 44 * n), _at(value, 420, 120 + 44 * n))])
+    # the same slip with its labels worded otherwise: the reader refuses it (the gender stands among the name's lines),
+    # and what the reader refuses is not named a card
+    other = [("Nama Pemohon", "LIM AH KOW"), ("Jenis Pengenalan", "MyKad"), ("No. Pengenalan", "850412-10-5759"), ("Jantina Pemohon", "LELAKI"),
+             ("No. Telefon Bimbit", "012-345 6789"), ("Pelan Dipilih", "PRABAYAR 35")]
+    not_a_card([_at("PENDAFTARAN PRABAYAR", 60, 40, 34)] + [ln for n, (label, value) in enumerate(other)
+                                                          for ln in (_at(label, 60, 120 + 44 * n), _at(value, 420, 120 + 44 * n))])
+    # a person's details under one another with the gender second under the number
+    not_a_card([_at(t, 60, 40 + 50 * n) for n, t in enumerate(["KAD PENGENALAN", "850412-10-5759", "LIM AH KOW", "LELAKI", "NO 5 JALAN 3", "43000 KAJANG", "SELANGOR"])])
     profile = ["Profil saya", "Nama penuh", "LIM AH KOW", "MyKad", "850412-10-5759", "Jantina", "Lelaki", "Tarikh lahir", "12/04/1985", "Alamat",
                "NO 5 JALAN 3, 43000 KAJANG", "E-mel", "lim@example.com"]
     not_a_card([_at(t, 60, 40 + 60 * n) for n, t in enumerate(profile)])

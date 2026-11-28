@@ -91,6 +91,13 @@ def _height(line: dict) -> float:
     return max(p[1] for p in line["box"]) - min(p[1] for p in line["box"])
 
 
+def _row(line: dict) -> float:
+    """How far down a line stands, taken at its left end, where the column's lines start: the highest corner of
+    a line that slopes is its far end, which lies the higher the longer the line is."""
+    (_, y0), (_, y1) = sorted(line["box"])[:2]
+    return (y0 + y1) / 2
+
+
 # a name's line that ends on one of these has the rest of the name under it; a line that starts with one carries it on
 _NAME_GOES_ON = re.compile(r"(?:^|\s)(?:A\s?[/.]?\s?[LP]|BIN|BINTI|BINTE|BTE|BT|IBNI|IBNU|ANAK|AK|[SD]\s?/\s?O|@)\W*$"
                            r"|[A-Z']{4,}BINTI\W*$|[A-Z']{5,}BIN\W*$", re.I)  # or BIN, BINTI run into the word before it
@@ -154,13 +161,15 @@ def is_card(lines: list[dict]) -> bool:
     if not lines or len(lines) > 30:
         return False
     texts = [" ".join(ln["text"].split()) for ln in lines]
-    if _OTHER.search(" ".join(texts)) or _is_a_form(texts):
+    if _OTHER.search(" ".join(texts)):
         return False
     heads = {re.sub(r"[^a-z]", "", t.lower()) for t in texts if _is_heading(t)}
-    if not heads or not any(_ALONE.fullmatch(t) for t in texts):
-        return False
+    if not heads or not any(_ALONE.fullmatch(t) for t in texts) or (_is_a_form(texts) and len(heads) < 2):
+        return False  # (a card lying on a form, or shown in an app's screen, has labels around it and its own two headings)
     marks = any(t.upper() in _GENDERS or _CITIZEN.fullmatch(t) for t in texts)
-    return marks or len(heads) >= 2
+    # and the reader itself must read it one way up or the other: what it refuses, whatever its labels say, is no card
+    return (marks or len(heads) >= 2) and any(parse([{"page": 1, "lines": way}]) is not None for way in (
+        lines, [{**ln, "box": [[-x, -y] for x, y in ln["box"]]} for ln in lines]))
 
 
 def _misread(text: str) -> Optional[str]:
@@ -244,7 +253,7 @@ def _is_background(text: str) -> bool:
 def _pitch(column: list[dict], n: int) -> float:
     """How far the address's lines stand apart at line n: its distance from the line above, held to twice its own
     height (the line above may be the name, with the space that parts the two blocks between them)."""
-    return min(_top(column[n]) - _top(column[n - 1]), 2.0 * max(_height(column[n]), 1.0)) if n else 2.0 * max(_height(column[n]), 1.0)
+    return min(_row(column[n]) - _row(column[n - 1]), 2.0 * max(_height(column[n]), 1.0)) if n else 2.0 * max(_height(column[n]), 1.0)
 
 
 def _address_end(column: list[dict], texts: list[str]) -> tuple:
@@ -259,7 +268,7 @@ def _address_end(column: list[dict], texts: list[str]) -> tuple:
     for post in found:
         pitch, follow = _pitch(column, post), 0
         while post + follow + 1 < len(column) and \
-                _top(column[post + follow + 1]) - _top(column[post + follow]) <= 1.6 * pitch:
+                _row(column[post + follow + 1]) - _row(column[post + follow]) <= 1.6 * pitch:
             follow += 1
         if follow <= 1:
             return post, post + 1 + follow
@@ -277,11 +286,13 @@ def _name_lines(column: list[dict], texts: list[str], post: Optional[int]) -> in
     single word with the address starting under it; or when a clear space parts it from what
     follows. A line that holds a number, or begins as an address does, is the address. `column` and
     `texts` end where the card does."""
-    if _POSTCODE.match(texts[0]) or re.match(r"\W*(?:NO\.?\s*)?\d", texts[0], re.I) \
+    if _POSTCODE.match(texts[0]) or re.match(r"\W*(?:NO\.?\s*)?\d+[A-Z]?(?:[-/]\d+[A-Z]?)*(?:\s|$)", texts[0], re.I) \
             or (_ADDRESS_BEGINS.match(texts[0]) and re.search(r"\d", texts[0])):
-        return 0  # the address's first line stands where the name should: the name's own line was not read
+        # the address's first line stands where the name should, a house number at its start ("NO 29", "12-3A JALAN
+        # ..."): the name's own line was not read. (A name whose first letter was read as a digit, "0NG AH KOW", is a name.)
+        return 0
     until = len(texts) if post is None else post  # the lines that may be the name or the address's own lines
-    gaps = [_top(b) - _top(a) for a, b in zip(column, column[1:])]
+    gaps = [_row(b) - _row(a) for a, b in zip(column, column[1:])]
     apart = None  # after which line a clearly wider space parts the name from the address
     if len(gaps) > 1:
         usual = sorted(gaps)[len(gaps) // 2]
@@ -332,11 +343,13 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
     for page in pages:
         lines = page.get("lines") or []
         whole = " ".join(ln["text"] for ln in lines)
-        if len(lines) > MAX_LINES or _OTHER.search(whole) or _is_a_form([" ".join(ln["text"].split()) for ln in lines]):
+        if len(lines) > MAX_LINES or _OTHER.search(whole):
             continue
         heads = [ln for ln in lines if _is_heading(ln["text"])]
         if not heads and not _reads_as_a_card(lines):
             continue
+        if _is_a_form([" ".join(ln["text"].split()) for ln in lines]) and len({headings.key(ln["text"]) for ln in heads}) < 2:
+            continue  # a form that names a card; a card lying on a form has its own two headings
         # the card's number: under the heading, alone on its line (a twelve-digit run in a file's name or a
         # clock above the card is not it). A number that stands only above the heading is a card on its head:
         # nothing is read from it this way up, and the caller reads the page turned over.
@@ -381,7 +394,8 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
                     text = text[lettered.end():]
                 # a single character is a speck or the letter of Sabah or Sarawak, unless it is a digit: a house
                 # number may stand alone on the address's first line ("5", "12", "8A"), a short name on the name's last ("NG")
-                if (len(text) > 2 or re.search(r"\d", text) or re.fullmatch(r"[A-Z]{2}", text)) and _printed(text):
+                # (always under another line of the column: a scrap above the name is not the name)
+                if (len(text) > 2 or (column and (re.search(r"\d", text) or re.fullmatch(r"[A-Z]{2}", text)))) and _printed(text):
                     column.append({**ln, "text": text} if lettered else ln)
                     edge, level = _left(ln), _top(ln)
                 continue
@@ -421,8 +435,6 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
                 f["religion"] = text
         if not heads and not column:
             continue  # no heading to tell which way up the card is, and nothing under the number this way up
-        if column and (" ".join(column[0]["text"].upper().split()) in _GENDERS or _CITIZEN.fullmatch(column[0]["text"].strip())):
-            continue  # the gender or the citizenship stands where the name should: a list of a person's details, not the card
         read = None
         if column:
             texts = [" ".join(ln["text"].split()) for ln in column]
@@ -431,6 +443,9 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
             if not heads and post is None:
                 continue  # no heading, and no address that ends as a card's does: a caller's word alone does not make it one
             column, texts = column[:last], texts[:last]
+            if any(t.upper() in _GENDERS or _CITIZEN.fullmatch(t) for t in texts):
+                continue  # the gender or the citizenship stands among the name and the address: a list of a person's
+                #           details, not the card, which prints them beside the address
             cut = _name_lines(column, texts, post)
             if cut:
                 read = " ".join(texts[:cut])
