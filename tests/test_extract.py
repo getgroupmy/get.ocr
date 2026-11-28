@@ -1002,6 +1002,11 @@ def test_names_and_addresses_of_many_shapes_on_both_designs():
             f = mykad.parse([{"page": 1, "width": 1562, "lines": lines}])["fields"]
             assert (f["name"], f["address"].split(", ")) == (whole, address), (name, address, f)
             assert (f["gender"], f["citizenship"]) == ("male", "WARGANEGARA")
+    # photographed at an angle: the card's left edge slants, each line starting further left than the one above
+    for name, address, whole in SHAPES[:6]:
+        slanted = [{**ln, "box": [[x - 0.13 * y, y] for x, y in ln["box"]]} for ln in card(name, address, x=200)]
+        f = mykad.parse([{"page": 1, "width": 1562, "lines": slanted}])["fields"]
+        assert (f["name"], f["address"].split(", "), f["gender"]) == (whole, address, "male"), (name, address, f)
     # a second card lower in the picture, its lines starting where the first one's do, is not read into the first
     two = card(["LIM AH KOW"], ONE) + card(["TAN MEI LING"], TWO, y=900, number="900412-10-5678")
     f = mykad.parse([{"page": 1, "width": 1280, "lines": two}])["fields"]

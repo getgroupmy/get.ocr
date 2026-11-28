@@ -197,17 +197,19 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
         below = [ln for ln in sorted(lines, key=_top) if _top(ln) > _top(holder) and not _is_background(ln["text"])]
         column = []  # the name and the address: the lines under the number, starting where it starts
         beside = []  # the citizenship, religion and gender: right of the address on the older card, left of it on the new
-        edge = start  # where the column's lines start: followed down the card, which may lean a little in the photo
+        # where the column's lines start, followed down the card: photographed at an angle its left edge slants,
+        # so each line may start a little further over than the one above, the more so the lower it stands
+        edge, level = start, _top(holder)
         for ln in below:
             text = " ".join(ln["text"].split())
             if TITLE.search(text):
                 if column:
                     break  # another card's heading, lower in the picture: what stands under it is not this card's
                 continue
-            if abs(_left(ln) - edge) <= 0.12 * span:  # it starts where the column does: the name's or the address's
+            if abs(_left(ln) - edge) <= 0.12 * span + 0.15 * max(_top(ln) - level, 0.0):  # the name's or the address's
                 if len(text) > 2:
                     column.append(ln)
-                    edge = _left(ln)
+                    edge, level = _left(ln), _top(ln)
                 continue
             words, rest = _beside(text, glued=True)
             if words and not rest:
