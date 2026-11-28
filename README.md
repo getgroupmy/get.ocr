@@ -558,7 +558,10 @@ by where each value stands and what it looks like, with no model asked. Both are
   `place_of_birth` worked out from the number. The checks are `number_holds_a_date`,
   `gender_matches_number` (the last digit is odd for a man, even for a woman) and
   `postcode_matches_state` (a postcode that is not used in the state the card prints is a digit
-  misread). A heading with a letter lost to the card's hologram is still known. A stroke lost in
+  misread). A heading with a letter lost to the card's hologram is still known. The date of
+  birth takes the century in which the holder is twelve at least, and the place of birth is given
+  only where the number's code names one. An app's watermark or a stamp laid across the card at
+  another angle is left out: the readers by position and the naming take a page's own print only. A stroke lost in
   "A/L" or "A/P" is put back, and `name_as_read` then gives the name as it was read. A name that
   runs on to a second line ("RAVI A/L" over "MUTHUSAMY") is kept whole and out of the address,
   and the card may fill any part of the picture (on a table, or inside a phone's screen). Both

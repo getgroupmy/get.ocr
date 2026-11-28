@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import difflib
 import re
+import unicodedata
 from datetime import date
 from typing import Optional
 
@@ -71,7 +72,8 @@ def _height(line: dict) -> float:
 
 
 # a name's line that ends on one of these has the rest of the name under it; a line that starts with one carries it on
-_NAME_GOES_ON = re.compile(r"(?:^|\s)(?:A\s?[/.]?\s?[LP]|BIN|BINTI|BINTE|BTE|BT|IBNI|IBNU|ANAK|AK|[SD]\s?/\s?O|@)\W*$", re.I)
+_NAME_GOES_ON = re.compile(r"(?:^|\s)(?:A\s?[/.]?\s?[LP]|BIN|BINTI|BINTE|BTE|BT|IBNI|IBNU|ANAK|AK|[SD]\s?/\s?O|@)\W*$"
+                           r"|[A-Z']{4,}BINTI\W*$|[A-Z']{5,}BIN\W*$", re.I)  # or BIN, BINTI run into the word before it
 _NAME_CARRIED_ON = re.compile(r"^\W*(?:A\s?[/.]\s?[LP]|BIN|BINTI|BINTE|BTE|IBNI|IBNU|ANAK|[SD]\s?/\s?O|@)\s+\S", re.I)
 # how a line of an address begins, where it holds no number
 _ADDRESS_BEGINS = re.compile(
@@ -100,17 +102,25 @@ def _beside(text: str, glued: bool = False) -> tuple:
 
 
 def born(number: str, today: Optional[date] = None) -> Optional[str]:
-    """The date of birth in a card number's first six digits; None when they are not a date."""
+    """The date of birth in a card number's first six digits; None when they are not a date. The
+    card is held from the age of twelve, which says which century two digits of a year mean:
+    "250101" on a card read in 2026 is 1925, not a child of one."""
     today = today or date.today()
+    latest = date(today.year - 12, today.month, min(today.day, 28))
     yy, mm, dd = int(number[:2]), int(number[2:4]), int(number[4:6])
     for century in (2000, 1900):
         try:
             d = date(century + yy, mm, dd)
         except ValueError:
-            return None
-        if d <= today:
+            continue
+        if d <= latest:
             return d.isoformat()
     return None
+
+
+# the number's seventh and eighth digits name the place of birth: a state (STATES), or one of these for a country
+# or a part of the world. 82 is an unknown state, 98 a stateless holder, 99 no information: none of them says where.
+ABROAD = {"%02d" % n for n in [*range(60, 69), 71, 72, *range(74, 80), *range(83, 94)]}
 
 
 _ALONE = re.compile(r"\W*\d{6}[\s\-]*\d{2}[\s\-]*\d{4}\W*")
@@ -153,10 +163,14 @@ for _range, _states in (
         ("87", "Labuan"), ("88 89 90 91", "Sabah"), ("93 94 95 96 97 98", "Sarawak")):
     for _two in _range.split():
         POSTCODES[_two] = tuple(_states.split(", "))
+# A town on a state's border that uses the postcode of the town across it: Pulau Sebang in Melaka (Tampin's), Gemas
+# Baharu in Johor (Gemas's), Hulu Bernam in Selangor (Tanjong Malim's). Held against a public list of 2,933
+# postcodes, the table above allows every one of them in its own state.
+ALSO_USED_IN = {"73000": ("Melaka",), "73400": ("Johor",), "35900": ("Selangor",)}
 _STATE_WORDS = (("JOHOR", "Johor"), ("KEDAH", "Kedah"), ("KELANTAN", "Kelantan"), ("MELAKA", "Melaka"), ("SEMBILAN", "Negeri Sembilan"),
                 ("PAHANG", "Pahang"), ("PINANG", "Pulau Pinang"), ("PERAK", "Perak"), ("PERLIS", "Perlis"), ("SELANGOR", "Selangor"),
-                ("TERENGGANU", "Terengganu"), ("SABAH", "Sabah"), ("SARAWAK", "Sarawak"), ("LABUAN", "Labuan"),
-                ("PUTRAJAYA", "Putrajaya"), ("KUALA LUMPUR", "Kuala Lumpur"), ("(KL)", "Kuala Lumpur"))
+                ("TERENGGANU", "Terengganu"), ("TRENGGANU", "Terengganu"), ("SABAH", "Sabah"), ("SARAWAK", "Sarawak"),
+                ("LABUAN", "Labuan"), ("PUTRAJAYA", "Putrajaya"), ("KUALA LUMPUR", "Kuala Lumpur"), ("(KL", "Kuala Lumpur"))
 
 
 def _state_named(text: Optional[str]) -> Optional[str]:
@@ -172,10 +186,38 @@ def _reads_as_a_card(lines: list[dict]) -> bool:
     return any(_ALONE.fullmatch(t) for t in texts) and any(t in _GENDERS or _CITIZEN.fullmatch(t) for t in texts)
 
 
+def _plain(text: str) -> str:
+    """The card prints plain capitals: an accent over a letter is the reader's own ("GUNSÁLAM")."""
+    return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+
+
+def _tidy_name(read: str, muslim: bool) -> str:
+    """A name as the card prints it, from what a reader made of it: the spaces around "@", the space after
+    "A/L", the stroke of A/L or A/P where it was lost, BIN or BINTI where it ran into the word before it."""
+    name = " ".join(re.sub(r"\s*@\s*", " @ ", _plain(read)).split())
+    name = re.sub(r"\b(A/[LP])(?=[A-Z])", r"\1 ", name)  # "A/LMUTHUSAMY"
+    if not muslim and not re.search(r"\b(?:BIN|BINTI|BINTE|BTE|BT)\b", name):
+        # "RAVI AL MUTHU", "RAVI A L MUTHU", "RAVI AIL MUTHU": the stroke lost or read as a letter. Only on a card
+        # without ISLAM and a name without BIN or BINTI: AL is also a word of Arabic names ("MOHAMAD AL AMIN BIN
+        # ISMAIL", "SYED AHMAD AL ATTAS"), and those cards have one or the other.
+        name = re.sub(r"(?<=\w) A[ .I1l|]?([LP]) (?=\w)", r" A/\1 ", name)
+    if not re.search(r"\b(?:BIN|BINTI|BINTE|BTE|BT|IBNI|IBNU|ANAK|AK)\b|[SD]/O|A/[LP]", name):
+        # "SITI NORHALIZABINTI ZULKIFLI", "AHMAD ZULKIFLIBIN ABDULLAH": the space before BINTI or BIN lost, in a name
+        # that has no such word of its own
+        name = re.sub(r"\b([A-Z']{4,})(BINTI)(?= [A-Z])", r"\1 \2", name)
+        name = re.sub(r"\b([A-Z']{5,})(BIN)(?= [A-Z])", r"\1 \2", name)
+    return name
+
+
 def _is_background(text: str) -> bool:
-    """The card's background is printed over with KERAJAAN MALAYSIA in tiny letters: a run of it read as a line."""
+    """The card's background is printed over with KERAJAAN MALAYSIA in tiny letters: a run of it read as a
+    line ("AKERAJAANMALAY", "NMALA"), or with a letter wrong ("AKERAJAAI")."""
     letters = re.sub(r"[^A-Z]", "", text.upper())
-    return len(letters) >= 8 and letters in "KERAJAANMALAYSIA" * 4
+    print_ = "KERAJAANMALAYSIA" * 4
+    if len(letters) >= 5 and letters in print_:
+        return True
+    return len(letters) >= 8 and any(difflib.SequenceMatcher(None, letters, print_[at:at + len(letters)]).ratio() >= 0.85
+                                     for at in range(16))
 
 
 def _name_lines(column: list[dict], texts: list[str]) -> tuple:
@@ -236,7 +278,11 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
         # places are measured from the number: the name and the address start under its first digit, and
         # the citizenship, religion and gender stand well to the right of it
         start, span = _left(holder), max(_right(holder) - _left(holder), 1.0)
-        below = [ln for ln in sorted(lines, key=_top) if _top(ln) > _top(holder) and not _is_background(ln["text"])]
+        # the card's own lines slope as its number does: one laid across the card at another angle is a stamp or a
+        # watermark (an app's "Registration" across the photo it keeps), not the card's print
+        slope = headings.lean(holder)
+        below = [ln for ln in sorted(lines, key=_top) if _top(ln) > _top(holder) and not _is_background(ln["text"])
+                 and not (slope is not None and headings.lean(ln) is not None and abs(headings.lean(ln) - slope) >= 10.0)]
         column = []  # the name and the address: the lines under the number, starting where it starts
         beside = []  # the citizenship, religion and gender: right of the address on the older card, left of it on the new
         # where the column's lines start, followed down the card: photographed at an angle its left edge slants,
@@ -249,11 +295,18 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
                     break  # another card's heading, lower in the picture: what stands under it is not this card's
                 continue
             if abs(_left(ln) - edge) <= 0.12 * span + 0.15 * max(_top(ln) - level, 0.0):  # the name's or the address's
+                lettered = re.match(r"[HK]\s+(?=\d{5}(?!\d))", text)  # the letter of Sabah or Sarawak run into the postcode's line
+                if lettered:
+                    text = text[lettered.end():]
                 if len(text) > 2:
-                    column.append(ln)
+                    column.append({**ln, "text": text} if lettered else ln)
                     edge, level = _left(ln), _top(ln)
                 continue
             words, rest = _beside(text, glued=True)
+            first, _, more = text.partition(" ")
+            if not words and more and _misread(first):  # the first of those words read with a letter wrong: "IS'AM SELANGOR"
+                others, rest = _beside(more, glued=True)
+                words = [_misread(first)] + others
             if words and not rest:
                 beside += words
             elif words and _left(ln) < edge:
@@ -290,10 +343,10 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
             texts = [" ".join(ln["text"].split()) for ln in column]
             cut, post = _name_lines(column, texts)
             read = " ".join(texts[:cut])
-            f["name"] = re.sub(r"(?<=\w) (A)[ .]?([LP]) (?=\w)", r" \1/\2 ", read)  # A/L, A/P: the stroke is often lost
+            f["name"] = _tidy_name(read, muslim=f.get("religion") == "ISLAM")
             # the address ends with its state, the line under the postcode: what stands lower is not the card's
             last = len(texts) if post is None else min(post + 2, len(texts))
-            address = [re.sub(r"^NO(\.?)(?=\d)", r"NO\1 ", t) for t in texts[cut:last]][:6]
+            address = [re.sub(r"^NO(\.?)(?=\d)", r"NO\1 ", _plain(t)) for t in texts[cut:last]][:6]
             if post is not None and cut <= post < cut + len(address):  # "98000MIRI": the postcode and its town run together
                 address[post - cut] = re.sub(r"^(\W*\d{5})(?=[A-Za-z])", r"\1 ", address[post - cut])
             if address:
@@ -308,7 +361,7 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
         extra = {"name_as_read": read} if read and read != f.get("name") else {}
         birth = born(digits, today)
         f["date_of_birth"] = birth
-        f["place_of_birth"] = STATES.get(digits[6:8]) or ("outside Malaysia" if digits[6:8] >= "60" else None)
+        f["place_of_birth"] = STATES.get(digits[6:8]) or ("outside Malaysia" if digits[6:8] in ABROAD else None)
         checks = [{"name": "number_holds_a_date", "passed": birth is not None,
                    "detail": "the first six digits of the number are a date of birth" if birth
                    else f"the first six digits, {digits[:6]}, are not a date"}]
@@ -317,6 +370,8 @@ def parse(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
             checks.append({"name": "gender_matches_number", "passed": by_number == f["gender"],
                            "detail": f"the number's last digit says {by_number}, the card prints {f['gender']}"})
         printed, of_postcode = _state_named(f.get("state")), POSTCODES.get((f.get("postcode") or "")[:2])
+        if of_postcode:
+            of_postcode = of_postcode + ALSO_USED_IN.get(f["postcode"], ())
         if printed and of_postcode:
             checks.append({"name": "postcode_matches_state", "passed": printed in of_postcode,
                            "detail": f"postcode {f['postcode']} is used in {' and '.join(of_postcode)}, the card prints {f['state']}"})
