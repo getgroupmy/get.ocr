@@ -5,6 +5,7 @@ from typing import Optional
 import logging
 import queue
 import re
+import secrets
 import threading
 import time
 from datetime import datetime, timedelta
@@ -80,8 +81,10 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
         seen = []  # every page with its lines, whatever detail was asked for: the document is named from them
         looked = 0  # text pages whose pictures were read as well
         for n in numbers:
-            page = doc.page(n, use_text_layer=not options.get("force_ocr") and not glm,
-                            with_lines=bool(options.get("layer_lines")) or options.get("detail", "lines") == "lines")
+            placed = None  # the standard reader's lines of a page a vision model read
+            # the stored text's lines are always taken: the document is named from them, whatever detail was
+            # asked for (they go into the answer only when detail is "lines", below)
+            page = doc.page(n, use_text_layer=not options.get("force_ocr") and not glm, with_lines=True)
             out: dict = {"page": n, "width": page.width, "height": page.height}
             if glm:  # the vision model reads the picture: whole-page text, no positions or confidence
                 out.update(source=reader, text=vision.read(page.image, options.get("task") or "text", reader), confidence=None,
@@ -91,7 +94,8 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
                 if task == "text" and "<table" not in out["text"] and engine.available():
                     # a vision model can skip a heading or small print: what the standard reader
                     # read clearly and the model left out is put in
-                    out["text"], added = gaps.fill(out["text"], engine.read(page.image))
+                    placed = engine.read(page.image)
+                    out["text"], added = gaps.fill(out["text"], placed)
                     if added:
                         out["added_lines"] = added
                 elif task == "table" and engine.available():
@@ -122,7 +126,10 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
                 conf = round(sum(ln["confidence"] for ln in lines) / len(lines), 4) if lines else None
                 out.update(source="ocr", text=engine.layout_text(lines), confidence=conf,
                            quality=engine.quality(page.image))
-            seen.append({"page": n, "width": out["width"], "height": out["height"], "lines": lines, "text": out["text"]})
+            # a vision model gives no places: the document is then named from the standard reader's lines of
+            # the same picture, where it was read for the words the model left out
+            seen.append({"page": n, "width": out["width"], "height": out["height"], "lines": placed if glm and placed else lines,
+                         "text": out["text"]})
             if options.get("detail", "lines") == "lines":
                 out["lines"] = lines
             want_codes = options.get("codes")
@@ -161,9 +168,10 @@ def recognise(data: bytes, options: dict, max_pages: int) -> dict:
                     ok, jpeg = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 80])
                     out["preview"] = "data:image/jpeg;base64," + base64.b64encode(jpeg.tobytes()).decode() if ok else None
             pages.append(out)
-        named = None if options.get("task") in ("table", "formula", "seal", "chart") else extract.identify(
+        named = None if glm and options.get("task") in ("table", "formula", "seal", "chart") else extract.identify(
             seen, [engine.layout_columns(p["lines"]) if p["lines"] else p["text"] for p in seen])
         return {
+            **({"naming_pages": seen} if options.get("naming_pages") else {}),  # for extract_fields only, which takes it out
             # what kind of document this is, worked out from the reading itself (None: not recognised)
             "document_type": named,
             "document_label": extract.label(named),
@@ -223,7 +231,9 @@ def extract_fields(data: bytes, options: dict, max_pages: int) -> dict:
                        "field extraction is not available: the model server on this machine is not answering, "
                        "or the model is not installed")
     started = time.monotonic()
-    ocr = recognise(data, {**options, "detail": "lines", "layer_lines": True, "codes": "some"}, max_pages)
+    ocr = recognise(data, {**options, "detail": "lines", "codes": "some", "naming_pages": True}, max_pages)
+    look = ocr.pop("naming_pages")  # the pages as they were looked at to name the document: with a vision reader,
+    # the standard reader's lines of the same pictures. The values are read from `pages`, the reader that was asked for.
     texts = [engine.layout_columns(p["lines"]) if p["lines"] else p["text"] for p in ocr["pages"]]
     kind = options.get("extract") or "auto"
     if options.get("split"):
@@ -231,14 +241,14 @@ def extract_fields(data: bytes, options: dict, max_pages: int) -> dict:
         for group in extract.split_pages(texts):
             numbers = [ocr["pages"][i]["page"] for i in group]
             try:
-                one = extract.run([ocr["pages"][i] for i in group], [texts[i] for i in group], kind, options.get("fields"))
+                one = extract.run([ocr["pages"][i] for i in group], [texts[i] for i in group], kind, options.get("fields"),
+                                  [look[i] for i in group])
             except ApiError as exc:  # one unreadable document does not lose the others
                 one = {"error": exc.code, "message": exc.message}
-            documents.append(name_document({"pages": numbers, **one}, [ocr["pages"][i] for i in group],
-                                           [texts[i] for i in group]))
+            documents.append(name_document({"pages": numbers, **one}, [look[i] for i in group], [texts[i] for i in group]))
         out = {"documents": documents}  # each document is named; the file as a whole is not
     else:
-        out = name_document(extract.run(ocr["pages"], texts, kind, options.get("fields")), ocr["pages"], texts,
+        out = name_document(extract.run(ocr["pages"], texts, kind, options.get("fields"), look), look, texts,
                             ocr["document_type"])
     out.update(engine=ocr["engine"], kind=ocr["kind"], page_count=ocr["page_count"], file=ocr["file"],
                pages=[{k: p.get(k) for k in ("page", "width", "height", "source", "confidence", "quality", "rotated",
@@ -252,28 +262,31 @@ def extract_fields(data: bytes, options: dict, max_pages: int) -> dict:
     return out
 
 
-# `type` values that say how to read a document, not what kind of document it is
-NOT_A_KIND = ("custom", "table", "table_grid")
+# values of `document_type` that are no kind of document: the `type` values that say how to read one, and
+# "other", which the sales reader answers for a paper that is none of the sales kinds
+NOT_A_KIND = ("custom", "table", "table_grid", "other")
 _UNSET = object()
 
 
 def name_document(doc: dict, pages: list, texts: list, identified=_UNSET) -> dict:  # noqa: ANN001
-    """Give an extracted document its name. `document_type` stays the kind its fields were read as.
-    Where that is a way of reading and no kind of document (custom fields, a table), or the
-    extraction failed, `identified_type` says what the reading itself shows the document to be.
-    `document_label` is the document's kind as people say it, whichever of the two gave it."""
-    kind = doc.get("document_type")
-    if kind is None or kind in NOT_A_KIND:
-        doc["identified_type"] = extract.identify(pages, texts) if identified is _UNSET else identified
-        kind = doc["identified_type"]
+    """Give an extracted document its name. `document_type` stays what it always was: the kind its
+    fields were read as. The document's name is the form the pages show it to be; else the kind
+    its fields were read as; else the kind its heading names. Where the name is not
+    `document_type` (a type that is a way of reading, a form read as something else, an extraction
+    that failed), it is given as `identified_type`; `document_label` says it as people do."""
+    read_as = doc.get("document_type")
+    read_as = None if read_as in NOT_A_KIND else read_as
+    form, _ = extract.name_form(pages)  # a form is what it is, whatever it was read as
+    kind = form or read_as or (extract.identify(pages, texts) if identified is _UNSET else identified)
+    if kind != doc.get("document_type"):
+        doc["identified_type"] = kind
     doc["document_label"] = extract.label(kind)
     return doc
 
 
 def kind_of(doc: dict) -> Optional[str]:
     """The kind of document a result (or one document of a file that held several) was found to be."""
-    kind = doc.get("document_type")
-    return doc.get("identified_type") if kind is None or kind in NOT_A_KIND else kind
+    return doc["identified_type"] if "identified_type" in doc else doc.get("document_type")
 
 
 def run(data: bytes, options: dict, max_pages: int) -> dict:
@@ -343,16 +356,24 @@ def record_usage(db: Session, client_id: str, kind: str, ok: bool, pages: int, s
 def record_document(db: Session, client_id: str, kind: str, result: dict, job_id: Optional[str] = None,
                     external_ref: Optional[str] = None) -> None:
     """The record of a document read: its kind by name, never its content. A file that held
-    several documents gets a line for each."""
-    for doc in result.get("documents") or [result]:
-        db.add(DocumentRecord(client_id=client_id, kind=kind, job_id=job_id, external_ref=external_ref,
-                              document_type=kind_of(doc), pages=len(doc.get("pages") or [])))
+    several documents gets a line for each. A line that cannot be written is given up: the
+    reading, its usage row and the job are never lost to the record."""
+    if external_ref is not None:  # half a surrogate pair (a reference cut inside an emoji) cannot be stored
+        external_ref = external_ref.encode("utf-8", "replace").decode("utf-8")[:200]
+    try:
+        with db.begin_nested():  # a savepoint: only the lines are undone when they cannot be written
+            for doc in result.get("documents") or [result]:
+                db.add(DocumentRecord(public_id="doc_" + secrets.token_hex(12), client_id=client_id, kind=kind,
+                                      job_id=job_id, external_ref=external_ref, document_type=kind_of(doc),
+                                      pages=len(doc.get("pages") or [])))
+    except Exception:  # noqa: BLE001 - the record never fails a reading
+        log.warning("the record of a document read could not be written", exc_info=True)
 
 
 def document_out(row: DocumentRecord) -> dict:
-    return {"id": row.id, "at": row.at.isoformat() + "Z", "how": row.kind, "job_id": row.job_id, "external_ref": row.external_ref,
-            "document_type": row.document_type, "document_label": extract.label(row.document_type) or "Not recognised",
-            "pages": row.pages}
+    return {"id": row.public_id, "at": row.at.isoformat() + "Z", "how": row.kind, "job_id": row.job_id,
+            "external_ref": row.external_ref, "document_type": row.document_type,
+            "document_label": extract.label(row.document_type) or "Not recognised", "pages": row.pages}
 
 
 # --- job queue -----------------------------------------------------------------
@@ -408,7 +429,10 @@ def process(job_id: str) -> None:
         client = db.get(ApiClient, client_id)
         db.flush()
         if client is not None:
-            routes = {r.kind: r.url for r in db.scalars(select(Route).where(Route.client_id == client_id))}
+            # a route takes the jobs whose fields were read as its kind; a job read plainly is announced at
+            # the client's usual webhook, as it was before a plain reading was given a name
+            routes = {r.kind: r.url for r in db.scalars(select(Route).where(Route.client_id == client_id))} \
+                if options.get("extract") else None
             webhooks.notify(job, client, routes)
 
 
@@ -424,7 +448,12 @@ def _work() -> None:
 
 
 def housekeeping() -> None:
-    """Delete stored results once the retention period is over."""
+    """Delete stored results once the retention period is over, and old lines of the record of
+    documents read when a time is set for them."""
+    kept = get_settings().record_days
+    if kept > 0:
+        with session_scope() as db:
+            db.execute(delete(DocumentRecord).where(DocumentRecord.at < utcnow() - timedelta(days=kept)))
     days = get_settings().retention_days
     if days <= 0:
         return

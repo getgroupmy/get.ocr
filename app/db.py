@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Iterator, Optional
 
-from sqlalchemy import (JSON, Boolean, DateTime, ForeignKey, Integer, LargeBinary, String, TypeDecorator,
+from sqlalchemy import (JSON, Boolean, DateTime, ForeignKey, Index, Integer, LargeBinary, String, TypeDecorator,
                         create_engine, event)
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
@@ -127,11 +127,15 @@ class DocumentRecord(Base):
     """One line for every document read: when, for which client, how, and what kind of document
     it was found to be. Nothing of the document's content is kept here."""
     __tablename__ = "documents"
+    # a client's lines by its own reference: an index on external_ref alone is not the one SQLite takes
+    __table_args__ = (Index("ix_documents_client_ref", "client_id", "external_ref"),)
+    # the order the lines were written in. Never shown to a client: it counts every client's lines
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    public_id: Mapped[str] = mapped_column(String(40), unique=True, index=True)  # the handle a client sees
     client_id: Mapped[str] = mapped_column(ForeignKey("api_clients.id"), index=True)
-    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)  # old lines are removed by it
     kind: Mapped[str] = mapped_column(String(10))  # sync | job
-    job_id: Mapped[Optional[str]] = mapped_column(String(40), index=True)
+    job_id: Mapped[Optional[str]] = mapped_column(String(40), index=True)  # a job's lines go when the job is deleted
     external_ref: Mapped[Optional[str]] = mapped_column(String(200))
     document_type: Mapped[Optional[str]] = mapped_column(String(40), index=True)  # None: not recognised
     pages: Mapped[int] = mapped_column(Integer, default=0)

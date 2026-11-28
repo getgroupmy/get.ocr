@@ -14,7 +14,7 @@ webhooks, and data encrypted at rest.
 | | |
 |---|---|
 | **Input** | JPEG, PNG, HEIC (iPhone photos), WEBP, TIFF (multi-page), BMP, GIF, PDF (with `pdf_password` when it is locked), Word (.docx) and Excel (.xlsx), up to `OCR_MAX_UPLOAD_MB` |
-| **Read now** | `POST /v1/ocr` answers in the same request. Images and PDFs up to `OCR_SYNC_MAX_PAGES` pages. Nothing is stored |
+| **Read now** | `POST /v1/ocr` answers in the same request. Images and PDFs up to `OCR_SYNC_MAX_PAGES` pages. Neither the file nor its text is stored |
 | **Queue** | `POST /v1/jobs` for long PDFs. Answers at once with a job id; the result comes by signed webhook or by polling |
 | **Output** | Plain text in reading order, and every line with its position and the model's confidence |
 | **PDF text layer** | A PDF page that already carries text is read from that text (exact and fast). Scanned pages are read as pictures. `force_ocr` reads everything as pictures |
@@ -582,23 +582,42 @@ by where each value stands and what it looks like, with no model asked. Both are
 This gives what a card prints, for filling in a form. It does not show that a card is genuine or
 belongs to the person presenting it; verifying a person is what get.ekyc is for.
 
-**Every document is named by its kind.** Each answer of `/v1/ocr`, `/v1/extract` and a job carries
-`document_type` (for example `driving_licence`) and `document_label` ("Driving licence"). For a
-plain reading the kind is worked out from the reading itself with no model asked: the form whose
-reader knows the page, else the kind its words name; both are `null` for a picture that is no
-document this service knows. In an extraction `document_type` is, as before, the kind the fields
-were read as; where that is a way of reading and no kind of document (`custom`, `table`,
-`table_grid`), `identified_type` says what the document itself is and `document_label` names
-that. A file read with `split` names each of its documents and not the file as a whole.
+**Every document is named by its kind.** Each answer of `/v1/ocr` and of a job read plainly carries
+`document_type` (for example `driving_licence`) and `document_label` ("Driving licence"), worked
+out from the reading itself with no model asked. A name is given only on what a page itself shows:
+
+- the form it is: one of the forms read by position below, by its heading standing as a heading
+  (a line of its own, not a label such as "Driving Licence No." nor a phrase in a sentence) over
+  what that form prints. A rental agreement or a police report that mentions a driving licence, an
+  SSM certificate headed "Perakuan Pendaftaran", a summons for an expired road tax, a season pass
+  that is "valid until" a date, a houseowner's schedule and a claim form are not named as forms;
+- else the heading it carries: `invoice`, `receipt`, `quotation`, `purchase_order`,
+  `delivery_order`, `credit_note`, `debit_note`, `payslip`, `order`, and `bank_statement` for a
+  bank's statement of an account. An invoice that quotes its delivery order is an invoice; a
+  sales paper with no heading is known by its own number ("Invoice No: INV-17");
+- else nothing: both keys are `null` ("Not recognised"). Words found somewhere on a page give no
+  name. The first of the first three pages that says what it is names a file, and the name does
+  not depend on `detail`. A page read by a vision reader (`engine=glm` or `vision`) is named
+  from the standard reader's lines of the same picture; its `table`, `formula`, `seal` and
+  `chart` readings are not named.
+
+In an extraction `document_type` is, as before, the kind the fields were read as. Where the
+document's name is something else, `identified_type` gives it and `document_label` says it: when
+the type is a way of reading and no kind of document (`custom`, `table`, `table_grid`), when the
+model placed the paper under none of the sales kinds (`other`), or when a form was read as
+something it is not. A file read with `split` names each of its documents and not the file. With
+`type=auto` a form is taken for what it is only on the same strict test.
 
 The kind is also kept in a record of its own, one line per document read (a file that held
 several gets a line for each): when, for which client, how (in the call or as a job), how many
-pages, your `external_ref` and the kind. `GET /v1/documents` lists a client's own lines, newest
-first (filter with `document_type=`, `document_type=none` for those not recognised, or
-`external_ref=`), and the console's Documents tab shows them for every client with a count per
-kind. Nothing of a document's content is in that record, and a reading tried in the console is
-not recorded. A finished job read plainly now also follows a client's route for its kind
-(Routing by kind), as an extracted one always did.
+pages, your `external_ref` and the kind. No file name and no text. `GET /v1/documents` lists a
+client's own lines, newest first (filter with `document_type=`, `document_type=none` for those not
+recognised, or `external_ref=`); `DELETE /v1/documents/{id}` removes one, and deleting a job
+removes its lines. The console's Documents tab shows the lines of every client with a count per
+kind. A line stays until it is removed, or for `OCR_RECORD_DAYS` days when that is set (default
+0: kept). A reading tried in the console is not recorded. A job read plainly is announced at the
+client's usual webhook, as before: routes (Routing by kind) go by the kind an extraction's fields
+were read as.
 
 **The Malaysian vehicle ownership certificate (Sijil Pemilikan Kenderaan, JPJ) is read by its
 labels.** It is a form with a label at the left and the value at the right, so each value of
@@ -890,7 +909,10 @@ the NAS: treat a failed call as "no text yet", not as a blocker.
 
 ## Security and privacy
 
-- `POST /v1/ocr` and `POST /v1/extract` store nothing: the file and the text exist only in memory during the request.
+- `POST /v1/ocr` and `POST /v1/extract` keep neither the file nor its text: both exist only in memory during the request.
+- The record of documents read holds, per document, the time, the client, how it was read, the pages, the kind and
+  your `external_ref` if you sent one. No file name, no text. It is not encrypted. A line stays until it is removed
+  (`DELETE /v1/documents/{id}`, or with its job), or for `OCR_RECORD_DAYS` days when that is set.
 - A queued file is encrypted on disk (AES-256-GCM) and deleted as soon as it has been read. Job
   results are encrypted in the database and deleted after `OCR_RETENTION_DAYS` (default 7), or
   at once with `DELETE /v1/jobs/{id}`.

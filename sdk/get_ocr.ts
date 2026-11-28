@@ -85,10 +85,11 @@ export interface OcrPage {
 }
 
 export interface OcrResult {
-  /** What kind of document this is, worked out from the reading itself; null when it was not recognised. */
-  document_type: string | null;
+  /** What kind of document this is, when the reading itself shows it (the form it is, or its heading); null when it
+   *  was not recognised. Absent in results stored before the server gave names. */
+  document_type?: string | null;
   /** The document's kind as people say it, e.g. "Driving licence"; null when it was not recognised. */
-  document_label: string | null;
+  document_label?: string | null;
   engine: string;
   /** "image", "pdf", "docx" or "xlsx". */
   kind: string;
@@ -107,9 +108,11 @@ export interface OcrCheck {
 }
 
 export interface ExtractResult {
-  /** The kind the fields were read as. With type "custom", "table" or "table_grid" it is that word: see identified_type. */
+  /** The kind the fields were read as. With type "custom", "table" or "table_grid" it is that word, and "other"
+   *  where the model found none of the sales kinds: see identified_type. */
   document_type: string;
-  /** Only when document_type is a way of reading and no kind of document: what the document itself was found to be. */
+  /** Present when the document's name is not document_type: a way of reading (custom, table), "other", or a form
+   *  that was read as something else. What the document itself was found to be; null when it was not recognised. */
   identified_type?: string | null;
   /** The document's kind as people say it, e.g. "Driving licence"; null when it was not recognised. */
   document_label?: string | null;
@@ -144,7 +147,8 @@ export interface OcrJob {
 
 /** One line of the record of documents read: its kind by name, never its content. */
 export interface DocumentRecord {
-  id: number;
+  /** The line's own handle, for removeDocument(). */
+  id: string;
   at: string;
   /** "sync" (read in the call) or "job". */
   how: string;
@@ -226,6 +230,11 @@ export class GetOcr {
     const query = q.toString();
     const r = (await this.call("GET", "/v1/documents" + (query ? "?" + query : ""))) as { documents: DocumentRecord[] };
     return r.documents;
+  }
+
+  /** Remove one line of this key's record of documents read. A job's lines also go when the job is deleted. */
+  async removeDocument(id: string): Promise<void> {
+    await this.call("DELETE", `/v1/documents/${encodeURIComponent(id)}`);
   }
 
   /** The kinds of document extract() knows, each with its fields and checks. */

@@ -56,7 +56,10 @@ _FILE_BODY = {
                       "description": "Also read QR codes and barcodes on every page (extraction always looks for them)"},
             "include_text": {"type": "boolean", "default": False,
                              "description": "Extraction only: also return the full text that was read"},
-            "external_ref": {"type": "string", "description": "Jobs only: your own id for this document"},
+            "external_ref": {"type": "string",
+                             "description": "Your own id for this document (at most 200 characters). It is kept with "
+                                            "a job, and with the line every reading leaves in the record of "
+                                            "documents read (GET /v1/documents)"},
         }}},
         "application/json": {"schema": {"type": "object", "required": ["file"], "properties": {
             "file": {"type": "string", "description": "The file, base64 encoded"},
@@ -127,8 +130,10 @@ async def read_input(request: Request) -> tuple[bytes, dict, Optional[str]]:
 
 @router.post("/ocr", openapi_extra=_FILE_BODY, summary="Read a file now")
 async def ocr_now(request: Request, client: ApiClient = Depends(require_client), db: Session = Depends(get_db)):
-    """Reads an image or a short PDF and answers with the text. Nothing is stored:
-    the file and the text exist only in memory for the length of the request."""
+    """Reads an image or a short PDF and answers with the text. The file and the text are not
+    stored: they exist only in memory for the length of the request. One line goes into the record
+    of documents read (GET /v1/documents): the time, the number of pages, the kind of document it
+    was found to be and your `external_ref` if you sent one."""
     data, options, ref = await read_input(request)
     options["extract"] = None  # plain reading here; fields come from /v1/extract
     return await _now(db, client, data, options, "sync", ref)
@@ -145,6 +150,11 @@ async def _now(db: Session, client: ApiClient, data: bytes, options: dict, kind:
     service.record_document(db, client.id, "sync", result, external_ref=ref)  # what kind it was, never its content
     service.apply_corrections(db, client.id, result)
     service.note_duplicates(db, client.id, data, result)
+    try:
+        db.commit()  # before the answer leaves: the line can be asked for at once
+    except Exception as exc:  # noqa: BLE001 - keeping the count and the record never fails a reading
+        db.rollback()
+        service.log.warning("the usage count and the record line of a reading were not kept: %s", type(exc).__name__)
     return result
 
 
@@ -231,8 +241,9 @@ async def match_documents(request: Request, client: ApiClient = Depends(require_
 async def extract_now(request: Request, client: ApiClient = Depends(require_client), db: Session = Depends(get_db)):
     """Reads an invoice, receipt, bank statement or order list and answers with
     its fields, its lines, and checks on them. The text is turned into fields by
-    a language model running on this server; nothing is sent elsewhere and
-    nothing is stored."""
+    a language model running on this server; nothing is sent elsewhere, and the file, the text
+    and the fields are not stored. One line per document goes into the record of documents read
+    (GET /v1/documents): its kind, its pages and your `external_ref` if you sent one."""
     data, options, ref = await read_input(request)
     options["extract"] = options["extract"] or "auto"
     result = await _now(db, client, data, options, "extract", ref)
@@ -366,6 +377,17 @@ def list_documents(document_type: Optional[str] = None, external_ref: Optional[s
     return {"documents": [service.document_out(r) for r in db.scalars(q.limit(max(1, min(limit, 200))))]}
 
 
+@router.delete("/documents/{record_id}", status_code=204, summary="Remove a line from the record of documents read")
+def delete_document(record_id: str, client: ApiClient = Depends(require_client), db: Session = Depends(get_db)):
+    """Removes one line of this client's own record. The line of a job also goes when the job is deleted."""
+    row = db.scalar(select(DocumentRecord).where(DocumentRecord.public_id == record_id,
+                                                 DocumentRecord.client_id == client.id))
+    if row is None:
+        raise ApiError(404, "not_found", "document record not found")
+    db.delete(row)
+    return Response(status_code=204)
+
+
 @router.get("/jobs", summary="List your jobs")
 def list_jobs(status: Optional[str] = None, external_ref: Optional[str] = None, limit: int = 50,
               client: ApiClient = Depends(require_client), db: Session = Depends(get_db)):
@@ -386,5 +408,7 @@ def get_job(job_id: str, client: ApiClient = Depends(require_client), db: Sessio
 def delete_job(job_id: str, client: ApiClient = Depends(require_client), db: Session = Depends(get_db)):
     job = _get(db, client, job_id)
     storage.delete(job.id)
+    for row in db.scalars(select(DocumentRecord).where(DocumentRecord.job_id == job.id)).all():
+        db.delete(row)  # the lines the job left in the record of documents read go with it
     db.delete(job)
     return Response(status_code=204)

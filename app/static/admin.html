@@ -231,7 +231,7 @@
       </div>
       <div class="card">
         <h2>Documents read</h2>
-        <p class="muted small">Every document an app had read, named by its kind. The kind is worked out from the document itself; nothing of its content is kept here.</p>
+        <p class="muted small">Every document an app had read, named by its kind. A kind is given only when the document itself shows it (the form it is, or its heading); anything else is "Not recognised". Nothing of a document's content is kept here.</p>
         <p id="docs-kinds" class="small"></p>
         <div class="scroll"><table>
           <thead><tr><th>When</th><th>Client</th><th>Document</th><th>Pages</th><th>How</th><th>Your reference</th></tr></thead>
@@ -560,7 +560,10 @@ $("#try-form").addEventListener("submit", async (ev) => {
   try {
     const r = await api("/try", { method: "POST", body: fd });
     $("#try-out").hidden = false;
-    $("#try-meta").textContent = "Identified as: " + (r.document_label || "not recognised") + " · " + r.pages.length + " of " + r.page_count + " page(s) in " + (r.duration_ms / 1000).toFixed(2) + " s";
+    const namedAs = (d) => d.document_label || "not recognised";  // a file read as several documents names each one, not the file
+    $("#try-meta").textContent = (r.documents ? "Identified as: " + r.documents.map(namedAs).join(", ") + " · "
+      : task && !r.document_label ? "" : "Identified as: " + namedAs(r) + " · ")  // a table, stamp or chart reading is not named
+      + r.pages.length + " of " + r.page_count + " page(s) in " + (r.duration_ms / 1000).toFixed(2) + " s";
     $("#try-text").textContent = r.text || "(no text found)";
     const added = (r.pages || []).flatMap((p) => p.added_lines || []).map((a) => a.text);
     if (added.length) $("#try-meta").textContent += " · " + added.length + " line(s) the reader left out were added by the standard reader: " + added.join(" | ");

@@ -11,6 +11,7 @@ import re
 from datetime import date
 from typing import Optional
 
+from . import headings
 from .insurance import MONTHS
 
 EVP = re.compile(r"permit\s*kenderaan\s*e\s*-?\s*hailing", re.I)
@@ -83,6 +84,41 @@ EVP_LABELS = [("holder_name", r"nama\s*pemilik\s*kenderaan"), ("plate_number", r
               ("issue_date", r"tarikh\s*mula\s*permit"), ("expiry_date", r"tarikh\s*sah\s*laku\s*permit")]
 
 
+def is_permit(lines: list[dict]) -> bool:
+    """Whether a page is the e-hailing vehicle permit, for naming it: its heading as a line of its
+    own with three of the permit's labels under it. A letter about an application for one is not."""
+    heads, below = headings.under(lines, ("permitkenderaanehailing",))
+    if not heads:
+        return False
+    text = "\n".join(ln["text"] for ln in below)
+    return sum(1 for _, label in EVP_LABELS if re.search(label, text, re.I)) >= 3
+
+
+_CHASSIS = re.compile(r"[A-Z0-9]{17}")
+_SLIP_MARKS = (r"PUSPA", r"\bPERAKUAN\b[\s\S]*\bPEMERIKSAAN\b|\bPEMERIKSAAN\b[\s\S]*\bPERAKUAN\b", r"KOD\s*PUSAT",
+               r"SAH\s*SEHINGGA|VALID\s*UNTIL", r"(?:BERKALA|METER\s*TEKSI)\W*\d", r"(?:^|\n)[A-Z]\s?\d{9}(?:\n|$)")
+
+
+def is_inspection(lines: list[dict]) -> bool:
+    """Whether a page is a Puspakom inspection, for naming it. The report: its heading as a line
+    of its own over three of its labels. The windscreen slip, which prints hardly a label: the
+    vehicle's seventeen-character chassis number with two of the slip's own marks (Puspakom's
+    name, "Perakuan" and "Pemeriksaan", the centre's code, what it is valid until, a serial
+    number). "Valid until" beside a number plate alone is a season pass, a compound or a voucher."""
+    heads, below = headings.under(lines, ("laporanpemeriksaankenderaan",))
+    if heads:
+        text = "\n".join(ln["text"] for ln in below)
+        return sum(1 for name, label in REPORT_LABELS if name != "_" and re.search(label, text, re.I)) >= 3
+    if not lines or len(lines) > 60:
+        return False
+    texts = [" ".join(ln["text"].upper().split()) for ln in lines]
+    whole = "\n".join(texts)
+    if _OTHER.search(whole):
+        return False
+    chassis = any(_CHASSIS.fullmatch(t) and any(ch.isalpha() for ch in t) and any(ch.isdigit() for ch in t) for t in texts)
+    return chassis and sum(1 for mark in _SLIP_MARKS if re.search(mark, whole)) >= 2
+
+
 def evp(pages: list[dict], today: Optional[date] = None) -> Optional[dict]:
     """The e-hailing vehicle permit's fields, or None when no page is one."""
     for page in pages:
@@ -149,7 +185,8 @@ def inspection(pages: list[dict], today: Optional[date] = None) -> Optional[dict
             verdict = re.search(r"\b(LULUS|GAGAL|PASS(?:ED)?|FAIL(?:ED)?)\b", whole.upper())
             if verdict and not f.get("result"):
                 f["result"] = verdict.group(1)
-        elif _SLIP.search(whole) or (re.search(r"\bPERAKUAN\b", whole) and re.search(r"\bPEMERIKSAAN\b", whole)):
+        elif _SLIP.search(whole) or (re.search(r"\bPERAKUAN\b", whole) and re.search(r"\bPEMERIKSAAN\b", whole)) \
+                or is_inspection(lines):
             f = _slip(lines)
         else:
             continue
