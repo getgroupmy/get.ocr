@@ -11,7 +11,7 @@ import json
 import re
 from datetime import date
 
-from . import doctypes, insurance, licence, llm, mykad, permits, roadtax, statement, tables, vehicle
+from . import doctypes, headings, insurance, licence, llm, mykad, permits, roadtax, statement, tables, vehicle
 from .config import get_settings
 from .errors import ApiError
 
@@ -837,6 +837,7 @@ NAMERS = (_is("vehicle_registration", vehicle.is_certificate), _is("road_tax", r
 
 
 def _form_of(lines: list) -> Optional[str]:
+    lines = headings.level(lines)  # the page's own print: not a stamp or a watermark laid across it
     for which in NAMERS:
         try:
             kind = which(lines)
@@ -883,9 +884,16 @@ def label(kind: Optional[str]) -> Optional[str]:
     return next((c["label"] for c in catalogue() if c["type"] == kind), kind.replace("_", " ").capitalize())
 
 
-FORMS = {"vehicle_registration": vehicle.parse, "road_tax": roadtax.parse, "vocational_licence": _licence("vocational_licence"),
-         "driving_licence": _licence("driving_licence"), "mykad": mykad.parse, "driver_permit": permits.evp, "vehicle_inspection": permits.inspection,
-         "motor_insurance": insurance.parse}
+def _own_print(read):  # noqa: ANN001, ANN202
+    """A reader by position, given each page's own print only: a stamp or a watermark laid across the page at
+    another angle would be taken for a value where it happens to stand (an app's "Registration" for a name)."""
+    return lambda pages, *more, **named: read([{**p, "lines": headings.level(p.get("lines") or [])} for p in pages], *more, **named)
+
+
+FORMS = {kind: _own_print(read) for kind, read in {
+    "vehicle_registration": vehicle.parse, "road_tax": roadtax.parse, "vocational_licence": _licence("vocational_licence"),
+    "driving_licence": _licence("driving_licence"), "mykad": mykad.parse, "driver_permit": permits.evp,
+    "vehicle_inspection": permits.inspection, "motor_insurance": insurance.parse}.items()}
 
 
 def run(pages: list[dict], texts: list[str], wanted: str, custom: Optional[dict] = None,

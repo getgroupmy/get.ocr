@@ -1063,6 +1063,84 @@ def test_a_card_whose_heading_the_hologram_spoils_is_still_read():
     assert "postcode_matches_state" not in by(card(["LIM AH KOW"], ["NO 5 JALAN 3", "43000 KAJANG"]))  # no state printed: nothing to hold it against
 
 
+def test_a_stamp_laid_across_a_card_is_not_read_as_its_name():
+    """An app stamps "GET RIDE / Registration" in red across the photo of a card it keeps. Read as a line where
+    the name's column starts, "Registration" became the name and the name the first line of the address."""
+    import math
+    from app import headings, mykad
+
+    def slanted(text, x, y, degrees, h=60):  # a line as a reader gives it when it runs across the page at an angle
+        w, a = 30 * len(text), math.radians(degrees)
+        across, down = (w * math.cos(a), w * math.sin(a)), (-h * math.sin(a), h * math.cos(a))
+        return {"text": text, "confidence": 0.99, "box": [[x, y], [x + across[0], y + across[1]], [x + across[0] + down[0], y + across[1] + down[1]],
+                                                          [x + down[0], y + down[1]]]}
+
+    address = ["NO 29", "JALAN WATAN 11", "TAMAN SRI WATAN", "68000 AMPANG", "SELANGOR"]
+    plain = card(["LIM AH KOW"], address)
+    stamped = plain + [slanted("GETRIDE", 150, 400, -15), slanted("Registration", 70, 495, -15)]
+    page = {"page": 1, "width": 1280, "height": 800, "lines": stamped, "text": "\n".join(ln["text"] for ln in stamped)}
+    assert [ln["text"] for ln in headings.level(stamped)] == [ln["text"] for ln in plain]
+    assert mykad.parse([page])["fields"]["name"] == "LIM AH KOW"  # the card's own lines slope as its number does
+    for wanted in ("mykad", "auto"):
+        f = extract.run([page], [page["text"]], wanted)["fields"]
+        assert (f["name"], f["address"]) == ("LIM AH KOW", ", ".join(address))
+    assert extract.identify([page], [page["text"]]) == "mykad"
+    # a page that leans as a whole loses nothing; nor does a line too short to tell its slope by; a page turned over reads the same
+    leaning = [slanted(t, 40, 100 + 60 * n, 10, 30) for n, t in enumerate(["KAD PENGENALAN", "850412-10-5759", "LIM AH KOW", "NO 5 JALAN 3"])]
+    assert headings.level(leaning) == leaning
+    short = plain + [slanted("K", 1200, 700, -40), slanted("OK", 600, 300, 35)]
+    assert headings.level(short) == short
+    over = [{**ln, "box": [[1280 - x, 800 - y] for x, y in ln["box"]]} for ln in stamped]
+    assert sorted(ln["text"] for ln in headings.level(over)) == sorted(ln["text"] for ln in plain)
+    # two slopes in numbers are two things in one picture (a disc lying level in a tilted holder), not a stamp: nothing is left out
+    both = [slanted("LINE %d OF THE HOLDER" % n, 40, 60 * n, 22, 30) for n in range(6)] + [_at("LINE %d OF THE DISC" % n, 300, 500 + 40 * n) for n in range(5)]
+    assert headings.level(both) == both
+    # the card's background print, read as a line with a letter wrong, is no line of the card
+    assert all(mykad._is_background(t) for t in ("AKERAJAANMALAY", "NMALA", "AKERAJAAI", "KERAJAANMALAYSIAKERAJAAN"))
+    assert not any(mykad._is_background(t) for t in ("MALAYSIAN AIRLINES", "LIM AH KOW", "JALAN RAJA", "KERA", "TAMAN MALAYSIA RAYA"))
+
+
+def test_a_name_is_put_right_only_where_the_card_itself_says_how():
+    from datetime import date
+    from app import mykad
+    tidy = mykad._tidy_name
+    # AL is A/L with its stroke lost only on a card without ISLAM and in a name without BIN or BINTI: it is also a
+    # word of Arabic names, and those cards have one or the other
+    assert tidy("RAVI AL MUTHU", muslim=False) == "RAVI A/L MUTHU" and tidy("KAVITHA AIP RAMASAMY", muslim=False) == "KAVITHA A/P RAMASAMY"
+    for name in ("SYED AHMAD AL ATTAS", "NUR AL HUDA BINTI MOHD YUSOF", "SHARIFAH NUR ATIQAH BINTI SYED MOHD FAIZAL AL IDRUS"):
+        assert tidy(name, muslim=True) == name
+    assert tidy("MOHAMAD AL AMIN BIN ISMAIL", muslim=False) == "MOHAMAD AL AMIN BIN ISMAIL"  # ISLAM not read, BIN is
+    # a space the reader lost where the card's own words show it, and no other
+    assert tidy("ALEXANDER WONG KAH WAI @WONG KA WAI", False) == "ALEXANDER WONG KAH WAI @ WONG KA WAI"
+    assert tidy("RAVI A/LMUTHUSAMY", False) == "RAVI A/L MUTHUSAMY"
+    assert tidy("SITI NORHALIZABINTI ZULKIFLI", True) == "SITI NORHALIZA BINTI ZULKIFLI"
+    assert tidy("AHMAD ZULKIFLIBIN ABDULLAH", True) == "AHMAD ZULKIFLI BIN ABDULLAH"
+    for name in ("TAN ROBIN LEE", "MUHIBBIN BIN ALI", "AHMAD MUBIN", "JUGAH AKBARIENG"):  # a word that ends so, or a name with its own BIN
+        assert tidy(name, True) == name
+    assert tidy("MARY MAGDALENE @ MARIAM BINTI PETRUS GUNS\u00c1LAM", False) == "MARY MAGDALENE @ MARIAM BINTI PETRUS GUNSALAM"  # plain capitals
+
+    def read(lines):
+        return mykad.parse([{"page": 1, "width": 1562, "lines": lines}], today=date(2026, 11, 28))
+
+    f = read(card(["SYED AHMAD AL", "ATTAS"], ONE, right=("WARGANEGARA", "ISLAM", "LELAKI")))["fields"]
+    assert (f["name"], f["religion"]) == ("SYED AHMAD AL ATTAS", "ISLAM")
+    out = read(card(["AHMAD ZULKIFLIBIN", "ABDULLAH"], THREE, right=("WARGANEGARA", "ISLAM", "LELAKI")))
+    assert out["fields"]["name"] == "AHMAD ZULKIFLI BIN ABDULLAH" and out["extra"] == {"name_as_read": "AHMAD ZULKIFLIBIN ABDULLAH"}
+    assert out["fields"]["address"] == ", ".join(THREE)
+    # the holder is twelve at least: that says which century the number's two digits of a year mean
+    assert mykad.born("250101085012", date(2026, 11, 28)) == "1925-01-01" and mykad.born("140101105012", date(2026, 11, 28)) == "2014-01-01"
+    assert mykad.born("150101105012", date(2026, 11, 28)) == "1915-01-01" and mykad.born("000229105012", date(2026, 11, 28)) == "2000-02-29"
+    # the place of birth: a state, a country or part of the world, or nothing where the code says nothing
+    place = lambda code: read(card(["LIM AH KOW"], ONE, number="850412-%s-5759" % code))["fields"]["place_of_birth"]  # noqa: E731
+    assert [place(c) for c in ("13", "71", "75", "82", "98", "99", "70", "00")] == ["Sarawak", "outside Malaysia", "outside Malaysia", None, None, None, None, None]
+    # a town on a state's border with the postcode of the town across it is right as printed; a state written in older ways is known
+    check = lambda address: {c["name"]: c["passed"] for c in read(card(["LIM AH KOW"], address))["checks"]}.get("postcode_matches_state")  # noqa: E731
+    assert check(["PULAU SEBANG", "73000 TAMPIN", "MELAKA"]) is True and check(["GEMAS BAHARU", "73400 GEMAS", "JOHOR"]) is True
+    assert check(["HULU BERNAM", "35900 TANJONG MALIM", "SELANGOR"]) is True and check(["NO 5 JALAN 3", "73000 TAMPIN", "KEDAH"]) is False
+    assert check(["NO 5 JALAN 3", "21000 KUALA TERENGGANU", "TRENGGANU"]) is True and check(["NO 5 JALAN 3", "50000 KUALA LUMPUR", "W. PERSEKUTUAN(KL"]) is True
+    assert check(["NO 5 JALAN 3", "50000 KUALA LUMPUR", "W. PERSEKUTUAN"]) is None  # which territory is not printed: nothing to hold it against
+
+
 def test_the_new_generation_card_is_read_with_its_photo_at_the_left():
     from app import mykad
 
@@ -1081,6 +1159,19 @@ def test_the_new_generation_card_is_read_with_its_photo_at_the_left():
     f = read(new_card(["RAVI A/L", "MUTHUSAMY"], ["NO 7 JALAN 2", "43000 KAJANG", "SELANGOR"], apart, number="850412-10-5759"))
     assert (f["name"], f["address"]) == ("RAVI A/L MUTHUSAMY", "NO 7 JALAN 2, 43000 KAJANG, SELANGOR")
     assert (f["state"], f["citizenship"], f["religion"], f["gender"]) == ("SELANGOR", "WARGANEGARA", "ISLAM", "male")
+    # the words under the photo read with a letter wrong where they run into the address, and the letter of Sarawak
+    # run into the postcode's line
+    woman = dict(number="900412-10-5678")
+    for beside, rows in (
+            ([_span("WARGANEGARA", 67, 330, 857), _span("PEREMPUAN", 65, 290, 900), _span("IS'AM SELANGOR", 330, 680, 900)], ["NO 7 JALAN 2", "TAMAN MELATI", "43000 KAJANG", ""]),
+            ([_span("WARGANEGARA", 67, 330, 857), _span("PEREMPUAM ISLAM SELANGOR", 65, 680, 900)], ["NO 7 JALAN 2", "TAMAN MELATI", "43000 KAJANG", ""]),
+            ([_span("WARGANEGAPA 43000 KAJANG", 67, 780, 857), _span("PEREMPUAN ISLAM", 65, 460, 900)], ["NO 7 JALAN 2", "TAMAN MELATI", "", "SELANGOR"])):
+        f = read(new_card(["NUR AISYAH BINTI", "ZULKIFLI"], rows, beside, **woman))
+        assert f["address"] == "NO 7 JALAN 2, TAMAN MELATI, 43000 KAJANG, SELANGOR", (beside, f)
+        assert (f["name"], f["citizenship"], f["religion"], f["gender"]) == ("NUR AISYAH BINTI ZULKIFLI", "WARGANEGARA", "ISLAM", "female")
+    f = read(new_card(["NUR AISYAH BINTI", "ZULKIFLI"], ["NO 11 LORONG 3", "TAMAN TUNKU", "", "SARAWAK"],
+                      [_span("WARGANEGARA", 67, 392, 857), _span("K 93050 KUCHING", 428, 800, 857), _span("PEREMPUAN ISLAM", 65, 460, 900)], **woman))
+    assert (f["address"], f["postcode"], f["state"]) == ("NO 11 LORONG 3, TAMAN TUNKU, 93050 KUCHING, SARAWAK", "93050", "SARAWAK")
     # a line of the address that begins as those words do stays the address's: it starts where the column does
     f = read(new_card(["LIM AH KOW"], ["ISLAMIC CENTRE QUARTERS", "JALAN PERDANA", "50480 KUALA LUMPUR", "W.P KUALA LUMPUR"],
                       [_span("WARGANEGARA", 67, 330, 857), _span("LELAKI", 65, 216, 900)], number="850412-10-5759"))
